@@ -10,7 +10,7 @@ func GeoRouters(r *gin.Engine) {
 	UserController := &views.UserController{}
 	mapRouter := r.Group("/geo")
 	{
-
+		mapRouter.GET(":tablename/:z/:x/:y.pbf", UserController.OutMVT)
 		mapRouter.GET("/GetColorSet", UserController.GetColorSet)
 		mapRouter.GET("/GetSchema", UserController.GetSchema)
 		mapRouter.GET("/SchemaToExcel", UserController.SchemaToExcel)

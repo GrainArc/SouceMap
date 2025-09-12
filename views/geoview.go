@@ -1284,3 +1284,17 @@ func (uc *UserController) AutoPolygon(c *gin.Context) {
 func (uc *UserController) GetDeviceName(c *gin.Context) {
 	c.String(http.StatusOK, config.DeviceName)
 }
+
+func (uc *UserController) OutMVT(c *gin.Context) {
+	dbname := strings.ToLower(c.Param("tablename"))
+	x, _ := strconv.Atoi(c.Param("x"))
+	y, _ := strconv.Atoi(strings.TrimSuffix(c.Param("y.pbf"), ".pbf"))
+	z, _ := strconv.Atoi(c.Param("z"))
+	DB := models.DB
+	mvtdata := pgmvt.MakeMvtNew(x, y, z, dbname, DB)
+	if mvtdata != nil {
+		c.Data(http.StatusOK, "application/x-protobuf", mvtdata)
+	} else {
+		c.String(http.StatusOK, "err")
+	}
+}
