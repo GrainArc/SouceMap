@@ -208,36 +208,7 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
 		return
 	}
-	//判断是否为dwg文件
-	dwgfiles := Transformer.FindFiles(dirpath, "dwg")
-	if len(dwgfiles) != 0 {
-		for _, item := range dwgfiles {
-			data := methods.SendData(item)
-			for index, feature := range data.Features {
-				tbid := uuid.New().String()
-				var name string
-				if _, exists := feature.Properties["name"]; exists {
-					name = feature.Properties["name"].(string)
-				} else {
-					feature.Properties["name"] = strconv.Itoa(index)
-					name = strconv.Itoa(index)
-				}
-				feature.ID = tbid
-				featureCollection := geojson.NewFeatureCollection()
-				featureCollection.Append(feature)
-				geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
-				result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
-				result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
-				DB.Create(&result_att)
-				DB.Create(&result)
-			}
-		}
-		//
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
+
 	//判断是否存在gdb文件
 	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
 	if len(gdbfiles) != 0 {
@@ -970,7 +941,7 @@ func (uc *UserController) DownloadTempGeo(c *gin.Context) {
 	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
 	outDir := filepath.Join("OutFile", bsm)
 	filePath_shp := filepath.Join(outDir, mytable[0].Name+"shp矢量.zip") //  例如  "output.zip"
-	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")      //  例如  "output.zip"
+	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")        //  例如  "output.zip"
 	//  将解码后的数据写入到文件
 	absolutePath_shp, _ := filepath.Abs(filePath_shp)
 	err := os.WriteFile(absolutePath_shp, decodedBytes, 0666)
