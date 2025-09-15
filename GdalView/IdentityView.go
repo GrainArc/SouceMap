@@ -349,7 +349,7 @@ func (uc *UserController) IdentityWebSocket(c *gin.Context) {
 			OutTable = OutTable + "_1"
 		}
 
-		err := Gogeo.SaveGDALLayerToPGBatch(DB, result.OutputLayer, req.OutTable, "", 4326, 1000)
+		err := Gogeo.SaveGDALLayerToPGBatch(DB, result.OutputLayer, OutTable, "", 4326, 1000)
 		if err != nil {
 			task.UpdateStatus(TaskStatusFailed)
 			task.mutex.Lock()

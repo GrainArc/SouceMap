@@ -941,7 +941,7 @@ func (uc *UserController) DownloadTempGeo(c *gin.Context) {
 	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
 	outDir := filepath.Join("OutFile", bsm)
 	filePath_shp := filepath.Join(outDir, mytable[0].Name+"shp矢量.zip") //  例如  "output.zip"
-	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")        //  例如  "output.zip"
+	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")      //  例如  "output.zip"
 	//  将解码后的数据写入到文件
 	absolutePath_shp, _ := filepath.Abs(filePath_shp)
 	err := os.WriteFile(absolutePath_shp, decodedBytes, 0666)
