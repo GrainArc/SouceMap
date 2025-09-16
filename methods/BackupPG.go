@@ -2,7 +2,7 @@ package methods
 
 import (
 	"database/sql"
-	"github.com/fmecool/SouceMap/config"
+	"github.com/GrainArc/SouceMap/config"
 
 	"fmt"
 	"log"

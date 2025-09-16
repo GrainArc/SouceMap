@@ -2,7 +2,7 @@ package OSGEO
 
 import (
 	"fmt"
-	"github.com/fmecool/Gogeo"
+	"github.com/GrainArc/Gogeo"
 )
 
 // SpatialIdentityAnalysisParallel 执行并行空间Identity分析

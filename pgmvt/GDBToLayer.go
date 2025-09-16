@@ -2,9 +2,9 @@ package pgmvt
 
 import (
 	"fmt"
-	"github.com/fmecool/Gogeo"
-	"github.com/fmecool/SouceMap/methods"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/Gogeo"
+	"github.com/GrainArc/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/mozillazg/go-pinyin"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

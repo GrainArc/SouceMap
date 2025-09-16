@@ -2,7 +2,7 @@ package OSGEO
 
 import (
 	"fmt"
-	"github.com/fmecool/Gogeo"
+	"github.com/GrainArc/Gogeo"
 )
 
 // SpatialEraseAnalysisParallel 执行并行空间擦除分析

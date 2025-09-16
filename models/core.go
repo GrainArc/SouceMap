@@ -1,7 +1,7 @@
 package models
 
 import (
-	"github.com/fmecool/SouceMap/config"
+	"github.com/GrainArc/SouceMap/config"
 
 	"errors"
 	"fmt"

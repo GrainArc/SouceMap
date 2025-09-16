@@ -3,7 +3,7 @@ package Transformer
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
 	"math"

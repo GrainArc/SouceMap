@@ -3,9 +3,9 @@ package views
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/fmecool/SouceMap/config"
-	"github.com/fmecool/SouceMap/methods"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/SouceMap/config"
+	"github.com/GrainArc/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"

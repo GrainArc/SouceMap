@@ -3,8 +3,8 @@ package OSGEO
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/fmecool/Gogeo"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/Gogeo"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/paulmach/orb/geojson"
 )
 

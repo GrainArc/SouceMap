@@ -2,7 +2,7 @@ package views
 
 import (
 	"fmt"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
 	"log"
 	"net/http"

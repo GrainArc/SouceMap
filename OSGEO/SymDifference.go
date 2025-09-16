@@ -2,7 +2,7 @@ package OSGEO
 
 import (
 	"fmt"
-	"github.com/fmecool/Gogeo"
+	"github.com/GrainArc/Gogeo"
 )
 
 func SpatialSymDifferenceAnalysisParallel(inputTable, updateTable string, config *Gogeo.ParallelGeosConfig) (*Gogeo.GeosAnalysisResult, error) {

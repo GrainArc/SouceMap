@@ -2,6 +2,8 @@ gitee.com/LJ_COOL/go-shp v0.0.0-20241016031859-2d92f5483dba h1:KZQdz7OHF6dSCvc1C
 gitee.com/LJ_COOL/go-shp v0.0.0-20241016031859-2d92f5483dba/go.mod h1:106ArxZjGFbxAHJHDlMXPF6Bnp3AWYwqSvK/xquFstc=
 gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93 h1:Aq5znH5v9quy6eWspBTHUOH8+CxbraxW15wFpc/wkIk=
 gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93/go.mod h1:Y3q9DdGSKANzWBiCBwpKvDE2f2B59E667lsLiJaVNDg=
+github.com/GrainArc/Gogeo v1.2.3 h1:L9Px/+9qSEeHkfwS0OZjRhdObmDsnOx91b3M5p41YKE=
+github.com/GrainArc/Gogeo v1.2.3/go.mod h1:t1aRw/bRhG+ML84vtFR2FoI31DOxb2B+vcJZDJYi7o0=
 github.com/adrg/strutil v0.1.0/go.mod h1:pXRr2+IyX5AEPAF5icj/EeTaiflPSD2hvGjnguilZgE=
 github.com/adrg/sysfont v0.1.1/go.mod h1:19nTHzfIn/HbngFMet+yNAvwSQYtOJYMI7vWexLWyNw=
 github.com/adrg/xdg v0.2.1/go.mod h1:ZuOshBmzV4Ta+s23hdfFZnBsdzmoR3US0d7ErpqSbTQ=
@@ -23,8 +25,6 @@ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5 h1:iFaUwBSo5Svw6L7HYpRu/0lE3e0BaElwnNO1qkNQxBY=
 github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5/go.mod h1:qssHWj60/X5sZFNxpG4HBPDHVqxNm4DfnCKgrbZOT+s=
 github.com/dsnet/golib v0.0.0-20171103203638-1ea166775780/go.mod h1:Lj+Z9rebOhdfkVLjJ8T6VcRQv3SXugXy999NBtR9aFY=
-github.com/fmecool/Gogeo v1.2.2 h1:w/CYsima7Wd5AILydpuL9eCdgR75QAPEyKZVlS9U2qY=
-github.com/fmecool/Gogeo v1.2.2/go.mod h1:x+emr1QE91cRzstuKjbac5uZ4XtEM97OCEsp0quctmg=
 github.com/gabriel-vasile/mimetype v1.4.2 h1:w5qFW6JKBz9Y393Y4q372O9A7cUSequkh1Q7OhCmWKU=
 github.com/gabriel-vasile/mimetype v1.4.2/go.mod h1:zApsH/mKG4w07erKIaJPFiX0Tsq9BFQgN3qGY5GnNgA=
 github.com/gin-contrib/sse v0.1.0 h1:Y/yl/+YNO8GZSjAhjMsSuLt29uWRFHdHYUb5lYOV9qE=

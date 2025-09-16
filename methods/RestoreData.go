@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"database/sql"
 	"fmt"
-	"github.com/fmecool/SouceMap/config"
+	"github.com/GrainArc/SouceMap/config"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"io"

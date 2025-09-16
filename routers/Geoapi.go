@@ -1,8 +1,8 @@
 package routers
 
 import (
-	"github.com/fmecool/SouceMap/config"
-	"github.com/fmecool/SouceMap/views"
+	"github.com/GrainArc/SouceMap/config"
+	"github.com/GrainArc/SouceMap/views"
 	"github.com/gin-gonic/gin"
 )
 

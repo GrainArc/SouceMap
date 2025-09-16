@@ -2,7 +2,7 @@ package methods
 
 import (
 	"fmt"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/SouceMap/models"
 	"strings"
 )
 

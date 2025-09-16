@@ -2,7 +2,7 @@ package Transformer
 
 import (
 	"encoding/xml"
-	"github.com/fmecool/SouceMap/Transformer/KmlGeo"
+	"github.com/GrainArc/SouceMap/Transformer/KmlGeo"
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
 	"io"

@@ -1,7 +1,7 @@
 package methods
 
 import (
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/SouceMap/models"
 	"gorm.io/gorm"
 	"reflect"
 	"strings"

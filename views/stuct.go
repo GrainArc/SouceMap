@@ -2,8 +2,8 @@ package views
 
 import (
 	"fmt"
-	"github.com/fmecool/SouceMap/methods"
-	"github.com/fmecool/SouceMap/models"
+	"github.com/GrainArc/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/paulmach/orb/geojson"
 )
 

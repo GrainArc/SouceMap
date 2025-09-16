@@ -2,7 +2,7 @@ package OSGEO
 
 import (
 	"fmt"
-	"github.com/fmecool/Gogeo"
+	"github.com/GrainArc/Gogeo"
 )
 
 // SpatialUpdateAnalysisParallel 执行并行空间更新分析

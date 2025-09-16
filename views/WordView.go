@@ -3,8 +3,8 @@ package views
 import (
 	"encoding/json"
 	"gitee.com/gooffice/gooffice/document"
-	"github.com/fmecool/SouceMap/WordGenerator"
-	"github.com/fmecool/SouceMap/config"
+	"github.com/GrainArc/SouceMap/WordGenerator"
+	"github.com/GrainArc/SouceMap/config"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paulmach/orb/geojson"

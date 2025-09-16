@@ -2,7 +2,7 @@ package OSGEO
 
 import (
 	"fmt"
-	"github.com/fmecool/Gogeo"
+	"github.com/GrainArc/Gogeo"
 )
 
 // SpatialIntersectionAnalysisParallel 并行空间相交分析

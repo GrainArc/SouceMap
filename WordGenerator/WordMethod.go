@@ -6,7 +6,7 @@ import (
 	"gitee.com/gooffice/gooffice/document"
 	"gitee.com/gooffice/gooffice/measurement"
 	"gitee.com/gooffice/gooffice/schema/soo/wml"
-	"github.com/fmecool/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/methods"
 )
 
 // 插入一级标题

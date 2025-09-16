@@ -1,12 +1,12 @@
-module github.com/fmecool/SouceMap
+module github.com/GrainArc/SouceMap
 
 go 1.24.2
 
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20241016031859-2d92f5483dba
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93
+	github.com/GrainArc/Gogeo v1.2.3
 	github.com/chai2010/webp v1.4.0
-	github.com/fmecool/Gogeo v1.2.2
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3

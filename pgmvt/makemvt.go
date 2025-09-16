@@ -2,7 +2,7 @@ package pgmvt
 
 import (
 	"fmt"
-	"github.com/fmecool/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/methods"
 	"github.com/paulmach/orb"
 	"gorm.io/gorm"
 	"log"

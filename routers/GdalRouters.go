@@ -1,7 +1,7 @@
 package routers
 
 import (
-	"github.com/fmecool/SouceMap/GdalView"
+	"github.com/GrainArc/SouceMap/GdalView"
 	"github.com/gin-gonic/gin"
 )
 
