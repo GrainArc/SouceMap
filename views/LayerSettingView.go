@@ -221,6 +221,15 @@ func (uc *UserController) AddField(c *gin.Context) {
 		return
 	}
 
+	// 验证varchar类型必须有长度
+	if strings.ToLower(req.FieldType) == "varchar" && req.Length <= 0 {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "varchar类型必须指定长度参数",
+		})
+		return
+	}
+
 	// 检查表是否存在
 	if !uc.fieldService.CheckTableExists(req.TableName) {
 		c.JSON(http.StatusBadRequest, models.Response{
@@ -239,9 +248,27 @@ func (uc *UserController) AddField(c *gin.Context) {
 		return
 	}
 
+	// 检查表是否有数据，如果有数据且字段不允许为空，必须提供默认值
+	var rowCount int64
+	if err := models.DB.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, req.TableName)).Scan(&rowCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "检查表数据失败: " + err.Error(),
+		})
+		return
+	}
+
+	if rowCount > 0 && !req.IsNullable && req.DefaultValue == "" {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "表中已有数据，添加非空字段时必须提供默认值",
+		})
+		return
+	}
+
 	// 添加字段
 	err := uc.fieldService.AddField(req.TableName, req.FieldName, req.FieldType,
-		req.DefaultValue, req.Comment, req.IsNullable)
+		req.Length, req.DefaultValue, req.Comment, req.IsNullable)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Code:    500,
@@ -257,6 +284,7 @@ func (uc *UserController) AddField(c *gin.Context) {
 			"table_name": req.TableName,
 			"field_name": req.FieldName,
 			"field_type": req.FieldType,
+			"length":     req.Length,
 		},
 	})
 }
@@ -277,6 +305,15 @@ func (uc *UserController) ModifyField(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, models.Response{
 			Code:    400,
 			Message: "字段类型不能为空",
+		})
+		return
+	}
+
+	// 验证varchar类型必须有长度
+	if strings.ToLower(req.FieldType) == "varchar" && req.Length <= 0 {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "varchar类型必须指定长度参数",
 		})
 		return
 	}
@@ -312,7 +349,7 @@ func (uc *UserController) ModifyField(c *gin.Context) {
 
 	// 修改字段
 	err := uc.fieldService.ModifyField(req.TableName, req.FieldName, req.NewFieldName,
-		req.FieldType, req.DefaultValue, req.Comment, req.IsNullable)
+		req.FieldType, req.Length, req.DefaultValue, req.Comment, req.IsNullable)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Code:    500,
@@ -334,11 +371,12 @@ func (uc *UserController) ModifyField(c *gin.Context) {
 			"old_field_name": req.FieldName,
 			"new_field_name": finalFieldName,
 			"field_type":     req.FieldType,
+			"length":         req.Length,
 		},
 	})
 }
 
-// 删除字段
+// 删除字段保持不变
 func (uc *UserController) DeleteField(c *gin.Context) {
 	var req models.FieldOperation
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -387,33 +425,6 @@ func (uc *UserController) DeleteField(c *gin.Context) {
 	})
 }
 
-// GetTableStructure 获取表结构接口
-func (fc *UserController) GetTableStructure(c *gin.Context) {
-	tableName := c.Param("table_name")
-	if tableName == "" {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "表名不能为空",
-		})
-		return
-	}
-
-	structure, err := fc.fieldService.GetTableStructure(tableName)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, models.Response{
-		Code:    200,
-		Message: "获取表结构成功",
-		Data:    structure,
-	})
-}
-
 // GetFieldInfo 获取单个字段信息接口
 func (fc *UserController) GetFieldInfo(c *gin.Context) {
 	tableName := c.Param("table_name")
@@ -440,26 +451,5 @@ func (fc *UserController) GetFieldInfo(c *gin.Context) {
 		Code:    200,
 		Message: "获取字段信息成功",
 		Data:    fieldInfo,
-	})
-}
-
-// GetTableList 获取所有表列表接口
-func (fc *UserController) GetTableList(c *gin.Context) {
-	tables, err := fc.fieldService.GetTableList()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.Response{
-			Code:    500,
-			Message: "获取表列表失败: " + err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, models.Response{
-		Code:    200,
-		Message: "获取表列表成功",
-		Data: map[string]interface{}{
-			"tables": tables,
-			"count":  len(tables),
-		},
 	})
 }
