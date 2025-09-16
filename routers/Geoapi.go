@@ -102,9 +102,9 @@ func GeoRouters(r *gin.Engine) {
 	}
 	fields := r.Group("/fields")
 	{
-		fields.POST("/AddField", UserController.AddField)         // 添加字段
-		fields.DELETE("/DeleteField", UserController.DeleteField) // 删除字段
-		fields.PUT("/ModifyField", UserController.ModifyField)    // 修改字段
+		fields.POST("/AddField", UserController.AddField)       // 添加字段
+		fields.POST("/DeleteField", UserController.DeleteField) // 删除字段
+		fields.POST("/ModifyField", UserController.ModifyField) // 修改字段
 	}
 	tables := r.Group("/tables")
 	{
