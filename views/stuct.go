@@ -2,6 +2,7 @@ package views
 
 import (
 	"fmt"
+	"github.com/fmecool/SouceMap/methods"
 	"github.com/fmecool/SouceMap/models"
 	"github.com/paulmach/orb/geojson"
 )
@@ -11,7 +12,9 @@ type TempLayerGeo struct {
 
 	Geojson geojson.Feature
 }
-type UserController struct{}
+type UserController struct {
+	fieldService *methods.FieldService
+}
 
 func GetAtt(TableName string, QZ string) []string {
 	var result []Res

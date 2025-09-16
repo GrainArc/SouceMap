@@ -145,7 +145,7 @@ func (uc *UserController) AddUpdateCESet(c *gin.Context) {
 }
 
 func GetCEMap(LayerName string) map[string]string {
-	DB := *models.DB
+	DB := models.DB
 
 	// Fetch Chinese property mappings first
 	var searchData []models.ChineseProperty
@@ -199,4 +199,267 @@ func (uc *UserController) GetCESet(c *gin.Context) {
 	LayerName := c.Query("LayerName")
 	result := GetCEMap(LayerName)
 	c.JSON(http.StatusOK, result)
+}
+
+// 添加字段
+func (uc *UserController) AddField(c *gin.Context) {
+	var req models.FieldOperation
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 验证必要参数
+	if req.FieldType == "" {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "字段类型不能为空",
+		})
+		return
+	}
+
+	// 检查表是否存在
+	if !uc.fieldService.CheckTableExists(req.TableName) {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "表不存在",
+		})
+		return
+	}
+
+	// 检查字段是否已存在
+	if uc.fieldService.CheckFieldExists(req.TableName, req.FieldName) {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "字段已存在",
+		})
+		return
+	}
+
+	// 添加字段
+	err := uc.fieldService.AddField(req.TableName, req.FieldName, req.FieldType,
+		req.DefaultValue, req.Comment, req.IsNullable)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "添加字段失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Code:    200,
+		Message: "字段添加成功",
+		Data: map[string]interface{}{
+			"table_name": req.TableName,
+			"field_name": req.FieldName,
+			"field_type": req.FieldType,
+		},
+	})
+}
+
+// 修改字段
+func (uc *UserController) ModifyField(c *gin.Context) {
+	var req models.FieldOperation
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 验证必要参数
+	if req.FieldType == "" {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "字段类型不能为空",
+		})
+		return
+	}
+
+	// 检查表是否存在
+	if !uc.fieldService.CheckTableExists(req.TableName) {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "表不存在",
+		})
+		return
+	}
+
+	// 检查原字段是否存在
+	if !uc.fieldService.CheckFieldExists(req.TableName, req.FieldName) {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "原字段不存在",
+		})
+		return
+	}
+
+	// 如果要重命名字段，检查新字段名是否已存在
+	if req.NewFieldName != "" && req.NewFieldName != req.FieldName {
+		if uc.fieldService.CheckFieldExists(req.TableName, req.NewFieldName) {
+			c.JSON(http.StatusBadRequest, models.Response{
+				Code:    400,
+				Message: "新字段名已存在",
+			})
+			return
+		}
+	}
+
+	// 修改字段
+	err := uc.fieldService.ModifyField(req.TableName, req.FieldName, req.NewFieldName,
+		req.FieldType, req.DefaultValue, req.Comment, req.IsNullable)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "修改字段失败: " + err.Error(),
+		})
+		return
+	}
+
+	finalFieldName := req.NewFieldName
+	if finalFieldName == "" {
+		finalFieldName = req.FieldName
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Code:    200,
+		Message: "字段修改成功",
+		Data: map[string]interface{}{
+			"table_name":     req.TableName,
+			"old_field_name": req.FieldName,
+			"new_field_name": finalFieldName,
+			"field_type":     req.FieldType,
+		},
+	})
+}
+
+// 删除字段
+func (uc *UserController) DeleteField(c *gin.Context) {
+	var req models.FieldOperation
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "参数错误: " + err.Error(),
+		})
+		return
+	}
+
+	// 检查表是否存在
+	if !uc.fieldService.CheckTableExists(req.TableName) {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "表不存在",
+		})
+		return
+	}
+
+	// 检查字段是否存在
+	if !uc.fieldService.CheckFieldExists(req.TableName, req.FieldName) {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "字段不存在",
+		})
+		return
+	}
+
+	// 删除字段
+	err := uc.fieldService.DeleteField(req.TableName, req.FieldName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "删除字段失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Code:    200,
+		Message: "字段删除成功",
+		Data: map[string]interface{}{
+			"table_name": req.TableName,
+			"field_name": req.FieldName,
+		},
+	})
+}
+
+// GetTableStructure 获取表结构接口
+func (fc *UserController) GetTableStructure(c *gin.Context) {
+	tableName := c.Param("table_name")
+	if tableName == "" {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "表名不能为空",
+		})
+		return
+	}
+
+	structure, err := fc.fieldService.GetTableStructure(tableName)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Code:    200,
+		Message: "获取表结构成功",
+		Data:    structure,
+	})
+}
+
+// GetFieldInfo 获取单个字段信息接口
+func (fc *UserController) GetFieldInfo(c *gin.Context) {
+	tableName := c.Param("table_name")
+	fieldName := c.Param("field_name")
+
+	if tableName == "" || fieldName == "" {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: "表名和字段名不能为空",
+		})
+		return
+	}
+
+	fieldInfo, err := fc.fieldService.GetSingleFieldInfo(tableName, fieldName)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Code:    200,
+		Message: "获取字段信息成功",
+		Data:    fieldInfo,
+	})
+}
+
+// GetTableList 获取所有表列表接口
+func (fc *UserController) GetTableList(c *gin.Context) {
+	tables, err := fc.fieldService.GetTableList()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "获取表列表失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Code:    200,
+		Message: "获取表列表成功",
+		Data: map[string]interface{}{
+			"tables": tables,
+			"count":  len(tables),
+		},
+	})
 }

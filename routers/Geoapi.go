@@ -100,5 +100,16 @@ func GeoRouters(r *gin.Engine) {
 		AttRouter.GET("/GetCESet", UserController.GetCESet)
 		AttRouter.POST("/AddUpdateCESet", UserController.AddUpdateCESet)
 	}
-
+	fields := r.Group("/fields")
+	{
+		fields.POST("/add", UserController.AddField)         // 添加字段
+		fields.DELETE("/delete", UserController.DeleteField) // 删除字段
+		fields.PUT("/modify", UserController.ModifyField)    // 修改字段
+	}
+	tables := r.Group("/tables")
+	{
+		tables.GET("/", UserController.GetTableList)                               // 获取所有表列表
+		tables.GET("/:table_name/structure", UserController.GetTableStructure)     // 获取表结构
+		tables.GET("/:table_name/fields/:field_name", UserController.GetFieldInfo) // 获取单个字段信息
+	}
 }
