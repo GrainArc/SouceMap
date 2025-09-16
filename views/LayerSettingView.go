@@ -427,8 +427,8 @@ func (uc *UserController) DeleteField(c *gin.Context) {
 
 // GetFieldInfo 获取单个字段信息接口
 func (fc *UserController) GetFieldInfo(c *gin.Context) {
-	tableName := c.Param("table_name")
-	fieldName := c.Param("field_name")
+	tableName := c.Query("table_name")
+	fieldName := c.Query("field_name")
 
 	if tableName == "" || fieldName == "" {
 		c.JSON(http.StatusBadRequest, models.Response{
