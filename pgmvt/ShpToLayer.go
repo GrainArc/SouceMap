@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -206,9 +207,15 @@ func createTable(DB *gorm.DB, tablename string, fields []shp.Field, geoType stri
 }
 
 // 直接写入shapefile数据到数据库
+// 直接写入shapefile数据到数据库
 func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fields []shp.Field, CPG string) {
 	const batchSize = 1000
 	const workerCount = 8
+
+	// 动态计算安全的批次大小（考虑参数限制）
+	fieldCount := len(fields) + 1 // +1 for geom field
+	maxSafeBatchSize := calculateSafeBatchSize(fieldCount)
+	actualBatchSize := min(batchSize, maxSafeBatchSize)
 
 	// 获取数据库表的字段信息
 	dbColumns, err := getTableColumns(DB, tablename)
@@ -218,20 +225,40 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 	}
 
 	// 创建通道用于批量处理
-	recordChan := make(chan []map[string]interface{}, workerCount)
+	recordChan := make(chan []map[string]interface{}, workerCount*2) // 增加缓冲
 	var wg sync.WaitGroup
+	var insertErrors int64 // 用于统计错误
 
-	// 启动工作协程
+	// 启动工作协程 - 使用CreateInBatches
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer wg.Done()
+			localBatchSize := actualBatchSize / 2 // 进一步细分批次
+
 			for batch := range recordChan {
-				if err := DB.Table(tablename).Create(&batch).Error; err != nil {
-					log.Printf("Error inserting batch: %v", err)
+				// 使用事务和CreateInBatches确保数据一致性和避免参数限制
+				err := DB.Transaction(func(tx *gorm.DB) error {
+					return tx.Table(tablename).CreateInBatches(batch, localBatchSize).Error
+				})
+
+				if err != nil {
+					atomic.AddInt64(&insertErrors, 1)
+					log.Printf("Worker %d - Error inserting batch of %d records: %v",
+						workerID, len(batch), err)
+
+					// 如果批量插入失败，尝试单条插入以找出问题记录
+					if len(batch) <= 10 { // 只对小批次尝试单条插入
+						for i, record := range batch {
+							if err := DB.Table(tablename).Create(record).Error; err != nil {
+								log.Printf("Worker %d - Failed to insert record %d: %v",
+									workerID, i, err)
+							}
+						}
+					}
 				}
 			}
-		}()
+		}(i)
 	}
 
 	// 读取和处理数据
@@ -240,6 +267,7 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 
 		var batch []map[string]interface{}
 		recordCount := 0
+		errorCount := 0
 
 		for shape.Next() {
 			n, p := shape.Shape()
@@ -262,11 +290,9 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 				lowerFieldName := strings.ToLower(fieldName)
 
 				// 只处理数据库表中存在的字段，且不是id字段
-
 				if lowerFieldName != "id" && dbColumns[lowerFieldName] {
 					// 清理字符串
 					cleanValue := cleanString(fieldValue)
-
 					record[lowerFieldName] = Transformer.TrimTrailingZeros(cleanValue)
 				}
 			}
@@ -290,12 +316,19 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 				recordCount++
 
 				// 当批次达到指定大小时发送到通道
-				if len(batch) >= batchSize {
-					batchCopy := make([]map[string]interface{}, len(batch))
-					copy(batchCopy, batch)
-					recordChan <- batchCopy
-					batch = batch[:0] // 清空批次
+				if len(batch) >= actualBatchSize {
+					// 非阻塞发送，避免死锁
+					select {
+					case recordChan <- batch:
+						batch = make([]map[string]interface{}, 0, actualBatchSize) // 重新分配
+					default:
+						log.Printf("Channel full, waiting...")
+						recordChan <- batch
+						batch = make([]map[string]interface{}, 0, actualBatchSize)
+					}
 				}
+			} else {
+				errorCount++
 			}
 		}
 
@@ -304,10 +337,39 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 			recordChan <- batch
 		}
 
-		log.Printf("Processed %d records for table %s", recordCount, tablename)
+		log.Printf("Processed %d records, %d geometry errors for table %s",
+			recordCount, errorCount, tablename)
 	}()
 
 	wg.Wait()
+
+	// 报告最终统计
+	if insertErrors > 0 {
+		log.Printf("Completed with %d insert errors for table %s", insertErrors, tablename)
+	}
+}
+
+// 计算安全的批次大小
+func calculateSafeBatchSize(fieldCount int) int {
+	const maxParams = 60000 // 留一些安全余量，避免接近65535限制
+	safeBatchSize := maxParams / fieldCount
+
+	// 确保批次大小在合理范围内
+	if safeBatchSize > 2000 {
+		return 2000
+	}
+	if safeBatchSize < 100 {
+		return 100
+	}
+	return safeBatchSize
+}
+
+// min 函数
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // 将shapefile几何对象转换为WKB

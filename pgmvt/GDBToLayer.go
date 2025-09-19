@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 )
 
@@ -540,6 +541,11 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 	const batchSize = 1000
 	const workerCount = 8
 
+	// 动态计算安全的批次大小（考虑参数限制）
+	fieldCount := len(validFields) + 1 // +1 for geom field
+	maxSafeBatchSize := calculateSafeBatchSize(fieldCount)
+	actualBatchSize := min(batchSize, maxSafeBatchSize)
+
 	// 创建字段映射表
 	fieldMap := make(map[string]string) // originalName -> processedName
 	for _, field := range processedFields {
@@ -547,20 +553,40 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 	}
 
 	// 创建通道用于批量处理
-	recordChan := make(chan []map[string]interface{}, workerCount)
+	recordChan := make(chan []map[string]interface{}, workerCount*2) // 增加缓冲
 	var wg sync.WaitGroup
+	var insertErrors int64 // 用于统计错误
 
-	// 启动工作协程
+	// 启动工作协程 - 使用CreateInBatches
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
-		go func() {
+		go func(workerID int) {
 			defer wg.Done()
+			localBatchSize := actualBatchSize / 2 // 进一步细分批次
+
 			for batch := range recordChan {
-				if err := DB.Table(tableName).Create(&batch).Error; err != nil {
-					log.Printf("批量插入失败: %v", err)
+				// 使用事务和CreateInBatches确保数据一致性和避免参数限制
+				err := DB.Transaction(func(tx *gorm.DB) error {
+					return tx.Table(tableName).CreateInBatches(batch, localBatchSize).Error
+				})
+
+				if err != nil {
+					atomic.AddInt64(&insertErrors, 1)
+					log.Printf("Worker %d - Error inserting batch of %d records: %v",
+						workerID, len(batch), err)
+
+					// 如果批量插入失败，尝试单条插入以找出问题记录
+					if len(batch) <= 10 { // 只对小批次尝试单条插入
+						for i, record := range batch {
+							if err := DB.Table(tableName).Create(record).Error; err != nil {
+								log.Printf("Worker %d - Failed to insert record %d: %v",
+									workerID, i, err)
+							}
+						}
+					}
 				}
 			}
-		}()
+		}(i)
 	}
 
 	// 处理数据
@@ -568,6 +594,9 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 		defer close(recordChan)
 
 		var batch []map[string]interface{}
+		recordCount := 0
+		errorCount := 0
+		skippedCount := 0
 
 		for _, feature := range featureData {
 			record := make(map[string]interface{})
@@ -597,14 +626,23 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 				}
 
 				batch = append(batch, record)
+				recordCount++
 
 				// 批量发送
-				if len(batch) >= batchSize {
-					batchCopy := make([]map[string]interface{}, len(batch))
-					copy(batchCopy, batch)
-					recordChan <- batchCopy
-					batch = batch[:0]
+				if len(batch) >= actualBatchSize {
+					// 非阻塞发送，避免死锁
+					select {
+					case recordChan <- batch:
+						batch = make([]map[string]interface{}, 0, actualBatchSize) // 重新分配
+					default:
+						log.Printf("Channel full, waiting...")
+						recordChan <- batch
+						batch = make([]map[string]interface{}, 0, actualBatchSize)
+					}
 				}
+			} else {
+				// 记录没有几何数据的要素
+				skippedCount++
 			}
 		}
 
@@ -612,7 +650,17 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 		if len(batch) > 0 {
 			recordChan <- batch
 		}
+
+		log.Printf("GDB data processed: %d records inserted, %d skipped (no geometry), %d errors for table %s",
+			recordCount, skippedCount, errorCount, tableName)
 	}()
 
 	wg.Wait()
+
+	// 报告最终统计
+	if insertErrors > 0 {
+		log.Printf("GDB import completed with %d insert errors for table %s", insertErrors, tableName)
+	} else {
+		log.Printf("GDB import completed successfully for table %s", tableName)
+	}
 }
