@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/GrainArc/Gogeo"
@@ -16,6 +17,8 @@ import (
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -32,24 +35,147 @@ type DeviceData struct {
 }
 
 func (uc *UserController) GetAllDeviceName(c *gin.Context) {
+	// 获取所有IP地址列表
 	ips := methods.GetIP(config.UpdateIP)
-	var data []DeviceData
+
+	// 输入验证：检查IP列表是否为空
+	if len(ips) == 0 {
+		c.JSON(http.StatusOK, []DeviceData{}) // 返回空数组而不是nil
+		return
+	}
+
+	// 创建带超时的上下文，防止请求无限期阻塞
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel() // 确保资源被释放
+
+	// 创建通道和等待组用于并发控制和数据收集
+	dataChan := make(chan DeviceData, len(ips)) // 缓冲通道，容量等于IP数量
+	var wg sync.WaitGroup                       // 等待组，用于等待所有goroutine完成
+
+	// 限制并发数量，避免过多的goroutine占用系统资源
+	const maxConcurrency = 10                        // 定义最大并发数为常量
+	semaphore := make(chan struct{}, maxConcurrency) // 信号量通道，控制并发数
+
+	// 获取主路由器IP，用于过滤自身IP
+	mainRouterIP := strings.Split(config.MainRouter, ":")[0]
+
+	// 遍历所有IP地址，为每个非主路由器IP启动goroutine
 	for _, ip := range ips {
-		if ip != strings.Split(config.MainRouter, ":")[0] {
-			url := fmt.Sprintf("http://%s:8181/geo/GetDeviceName", ip)
-			resp, _ := http.Get(url)
-			var aa DeviceData
-			aa.IP = ip
-			body, _ := io.ReadAll(resp.Body)
-			aa.DeviceName = string(body)
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				data = append(data, aa)
-			}
+		// 跳过主路由器IP，避免自己请求自己
+		if ip == mainRouterIP {
+			continue // 跳过当前循环，处理下一个IP
 		}
 
+		wg.Add(1) // 增加等待组计数
+		go func(ip string) { // 启动goroutine处理单个IP
+			defer wg.Done() // goroutine结束时减少等待组计数
+
+			// 获取信号量，控制并发数量
+			select {
+			case semaphore <- struct{}{}: // 尝试获取信号量
+				defer func() { <-semaphore }() // 确保释放信号量
+			case <-ctx.Done(): // 检查上下文是否已取消
+				return // 如果上下文取消，直接返回
+			}
+
+			// 调用辅助函数获取设备名称
+			if deviceData, ok := uc.fetchDeviceName(ctx, ip); ok {
+				// 尝试将数据发送到通道
+				select {
+				case dataChan <- deviceData: // 发送数据到通道
+					// 数据发送成功
+				case <-ctx.Done(): // 检查上下文是否已取消
+					return // 如果上下文取消，直接返回
+				}
+			}
+		}(ip) // 传递IP参数到goroutine
 	}
+
+	// 启动goroutine等待所有请求完成并关闭通道
+	go func() {
+		wg.Wait()       // 等待所有goroutine完成
+		close(dataChan) // 关闭数据通道，通知接收方没有更多数据
+	}()
+
+	// 收集结果，从通道中读取所有设备数据
+	var data []DeviceData              // 初始化结果切片
+	for deviceData := range dataChan { // 从通道中读取数据直到通道关闭
+		data = append(data, deviceData) // 将设备数据添加到结果切片
+	}
+
+	// 返回JSON响应，包含所有收集到的设备数据
 	c.JSON(http.StatusOK, data)
+}
+
+// fetchDeviceName 辅助函数：获取指定IP的设备名称
+// 参数：ctx - 上下文，ip - 目标IP地址
+// 返回：DeviceData - 设备数据，bool - 是否成功获取
+func (uc *UserController) fetchDeviceName(ctx context.Context, ip string) (DeviceData, bool) {
+	// 创建带超时的HTTP客户端，设置合理的超时时间
+	client := &http.Client{
+		Timeout: 5 * time.Second, // HTTP请求超时时间为5秒
+		Transport: &http.Transport{ // 自定义传输配置
+			DialContext: (&net.Dialer{
+				Timeout: 2 * time.Second, // 连接超时时间为2秒
+			}).DialContext,
+			TLSHandshakeTimeout: 2 * time.Second, // TLS握手超时时间
+		},
+	}
+
+	// 构造请求URL，使用配置的端口号
+	url := fmt.Sprintf("http://%s:8181/geo/GetDeviceName", ip)
+
+	// 创建HTTP GET请求，并绑定上下文
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		log.Printf("Failed to create request for %s: %v", ip, err) // 记录请求创建失败的错误
+		return DeviceData{}, false                                 // 返回空数据和失败标志
+	}
+
+	// 发送HTTP请求
+	resp, err := client.Do(req)
+	if err != nil {
+		// 检查是否是上下文取消导致的错误
+		if ctx.Err() != nil {
+			log.Printf("Request to %s cancelled due to timeout", ip) // 记录超时取消的日志
+		} else {
+			log.Printf("Failed to get device name from %s: %v", ip, err) // 记录其他网络错误
+		}
+		return DeviceData{}, false // 返回空数据和失败标志
+	}
+	defer func() { // 确保响应体被正确关闭，防止资源泄漏
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			log.Printf("Failed to close response body for %s: %v", ip, closeErr) // 记录关闭失败的错误
+		}
+	}()
+
+	// 检查HTTP响应状态码是否表示成功
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		log.Printf("Received non-success status %d from %s", resp.StatusCode, ip) // 记录非成功状态码
+		return DeviceData{}, false                                                // 返回空数据和失败标志
+	}
+
+	// 读取响应体内容
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Failed to read response body from %s: %v", ip, err) // 记录读取响应体失败的错误
+		return DeviceData{}, false                                      // 返回空数据和失败标志
+	}
+
+	// 验证响应体内容不为空
+	if len(body) == 0 {
+		log.Printf("Received empty response from %s", ip) // 记录空响应的日志
+		return DeviceData{}, false                        // 返回空数据和失败标志
+	}
+
+	// 构造并返回设备数据
+	deviceData := DeviceData{
+		IP:         ip,           // 设备IP地址
+		DeviceName: string(body), // 设备名称（从响应体转换而来）
+	}
+
+	log.Printf("Successfully retrieved device name '%s' from %s", deviceData.DeviceName, ip) // 记录成功获取的日志
+	return deviceData, true                                                                  // 返回设备数据和成功标志
 }
 
 // 更新设备
