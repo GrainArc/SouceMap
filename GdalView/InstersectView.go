@@ -466,11 +466,52 @@ func addLayerSchema(DB *gorm.DB, inputLayerName, cn, en string) {
 		mvtTableName = en + "_mvt"
 	}
 	//清空mvt
-
 	DB.Exec(fmt.Sprintf("DELETE FROM %s", mvtTableName))
-
 	mvtQuery := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (ID SERIAL PRIMARY KEY, X INT8, Y INT8, Z INT8, Byte BYTEA)", mvtTableName)
 	if err := DB.Exec(mvtQuery).Error; err != nil {
 		log.Printf("创建MVT表 %s 失败: %v", mvtTableName, err)
+	}
+	//同步配色
+	var searchData []models.AttColor
+	DB.Where("layer_name = ? ", inputLayerName).Find(&searchData)
+	data := make([]models.AttColor, 0, len(searchData))
+	for _, colorItem := range searchData {
+		// 创建新的属性颜色记录
+		attColor := models.AttColor{
+			Color:     colorItem.Color,    // 设置颜色值
+			Property:  colorItem.Property, // 设置属性值
+			LayerName: en,                 // 设置图层名称
+			AttName:   colorItem.AttName,  // 设置属性名称
+		}
+		// 将记录添加到数据切片中
+		data = append(data, attColor)
+	}
+	// 批量插入数据到数据库，并处理可能的错误
+	if err := DB.Create(&data).Error; err != nil {
+		// 记录错误日志或返回错误给调用者
+		log.Printf("Failed to create AttColor records: %v", err)
+	}
+	//同步中文字段
+	var PropertyData []models.ChineseProperty
+	DB.Where("layer_name = ? ", inputLayerName).Find(&PropertyData)
+	attdata := make([]models.ChineseProperty, 0, len(PropertyData))
+	// 遍历颜色映射数据，构建数据库记录
+	for _, colorItem := range PropertyData {
+		// 创建新的属性颜色记录
+		attCE := models.ChineseProperty{
+			CName:     colorItem.CName, // 设置颜色值
+			EName:     colorItem.EName, // 设置属性值
+			LayerName: en,              // 设置图层名称
+
+		}
+		// 将记录添加到数据切片中
+		attdata = append(attdata, attCE)
+	}
+
+	// 批量插入数据到数据库，并处理可能的错误
+	if err := DB.Create(&data).Error; err != nil {
+		// 记录错误日志或返回错误给调用者
+		log.Printf("Failed to create AttColor records: %v", err)
+
 	}
 }

@@ -364,6 +364,7 @@ func (uc *UserController) ClipWebSocket(c *gin.Context) {
 			return
 		}
 		addLayerSchema(DB, req.Table1, req.OutTable, OutTable)
+
 		// 保存结果到任务中
 		task.mutex.Lock()
 		task.Result = result

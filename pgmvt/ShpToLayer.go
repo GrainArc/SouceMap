@@ -47,7 +47,7 @@ func AddGeoDirectly(DB *gorm.DB, dirpath string, EN string, CN string, Main stri
 
 	if len(shpfiles) != 0 {
 		parts := strings.Split(EN, "_")
-		ENs := []string{"dltb", "lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
+		ENs := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
 		isos, newEN := judgeSlice(parts, ENs)
 
 		if isos == true {
@@ -501,15 +501,6 @@ func createSchemaIfNotExists(DB *gorm.DB, newEN string) {
 	DB.Model(&models.MySchema{}).Where("en = ?", newEN).Count(&count)
 	if count == 0 {
 		switch newEN {
-		case "dltb":
-			DB.Create(&models.MySchema{
-				Main:    "变更数据",
-				CN:      "年度变更调查（最新）",
-				EN:      newEN,
-				Type:    "polygon",
-				Opacity: "1",
-				Color:   "",
-			})
 		case "tdxz":
 			DB.Create(&models.MySchema{
 				Main:    "管理数据",
@@ -703,7 +694,7 @@ func UpdateSHPDirectly(DB *gorm.DB, shpPath string, EN, CN, Main string, Color s
 
 	// 检查是否为预定义图层
 	parts := strings.Split(tableName, "_")
-	validEN := []string{"dltb", "lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
+	validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
 	isPreDefined, newEN := judgeSlice(validEN, parts)
 
 	if isPreDefined {
@@ -993,7 +984,7 @@ func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, C
 
 	// 检查是否为预定义图层
 	parts := strings.Split(tableName, "_")
-	validEN := []string{"dltb", "lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
+	validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
 	isPreDefined, newEN := judgeSlice(validEN, parts)
 
 	if isPreDefined {

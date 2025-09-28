@@ -274,7 +274,7 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 
 		// 检查是否为预定义图层
 		parts := strings.Split(tableName, "_")
-		validEN := []string{"dltb", "lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
+		validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
 		isPreDefined, newEN := judgeSlice(validEN, parts)
 
 		if isPreDefined {
@@ -351,7 +351,7 @@ func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color s
 
 		// 检查是否为预定义图层
 		parts := strings.Split(tableName, "_")
-		validEN := []string{"dltb", "lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
+		validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
 		isPreDefined, newEN := judgeSlice(validEN, parts)
 
 		if isPreDefined {

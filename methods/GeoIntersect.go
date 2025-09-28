@@ -270,7 +270,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 			}
 		} else {
 			if strings.Contains(att, "tkj") == true {
-				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, tkj_kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
+				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
 			} else {
 				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
 			}
@@ -287,7 +287,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 				tempResult := make(map[string]interface{})
 				var kcxsFloat float64
 				if strings.Contains(att, "tkj") == true {
-					switch v := item["tkj_kcxs"].(type) {
+					switch v := item["kcxs"].(type) {
 					case float64: // 如果Kcxs是float64类型
 						kcxsFloat = v // 直接赋值
 					case string: // 如果Kcxs是string类型
