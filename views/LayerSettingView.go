@@ -60,35 +60,44 @@ func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 func GetColor(LayerName string) []ColorData {
 	DB := models.DB
 
-	colorDataMap := make(map[string]map[string][]CMap)
 	var searchData []models.AttColor
-	DB.Where("layer_name = ? ", LayerName).Find(&searchData)
-	// 按 LayerName 和 AttName 分组
+	DB.Where("layer_name = ?", LayerName).Find(&searchData)
+
+	if len(searchData) == 0 {
+		return []ColorData{}
+	}
+
+	// 使用 map 按 AttName 分组，同时对 Property 去重
+	attColorMap := make(map[string]map[string]CMap) // attName -> property -> CMap
+
 	for _, item := range searchData {
-		if colorDataMap[item.LayerName] == nil {
-			colorDataMap[item.LayerName] = make(map[string][]CMap)
+		if attColorMap[item.AttName] == nil {
+			attColorMap[item.AttName] = make(map[string]CMap)
 		}
 
-		colorDataMap[item.LayerName][item.AttName] = append(
-			colorDataMap[item.LayerName][item.AttName],
-			CMap{
-				Property: item.Property,
-				Color:    item.Color,
-			},
-		)
+		// 使用 Property 作为 key 实现去重
+		// 如果相同 Property 已存在，会被覆盖（保留最后一个）
+		attColorMap[item.AttName][item.Property] = CMap{
+			Property: item.Property,
+			Color:    item.Color,
+		}
 	}
 
 	// 转换为 ColorData 切片
-	var result []ColorData
-	for layerName, attMap := range colorDataMap {
-		for attName, colorMaps := range attMap {
-			result = append(result, ColorData{
-				LayerName: layerName,
-				AttName:   attName,
-				ColorMap:  colorMaps,
-			})
+	result := make([]ColorData, 0, len(attColorMap))
+	for attName, propertyMap := range attColorMap {
+		colorMaps := make([]CMap, 0, len(propertyMap))
+		for _, cmap := range propertyMap {
+			colorMaps = append(colorMaps, cmap)
 		}
+
+		result = append(result, ColorData{
+			LayerName: LayerName, // 直接使用参数，因为查询条件已经限定了 LayerName
+			AttName:   attName,
+			ColorMap:  colorMaps,
+		})
 	}
+
 	return result
 }
 

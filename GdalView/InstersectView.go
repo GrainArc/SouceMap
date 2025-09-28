@@ -442,7 +442,6 @@ func (uc *UserController) GetTaskStatus(c *gin.Context) {
 
 func addLayerSchema(DB *gorm.DB, inputLayerName, cn, en string) {
 	//创建对应的schema映射
-
 	var inputLayer models.MySchema
 	DB.Where("en = ?", inputLayerName).First(&inputLayer)
 	Main := inputLayer.Main
