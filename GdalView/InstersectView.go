@@ -509,7 +509,7 @@ func addLayerSchema(DB *gorm.DB, inputLayerName, cn, en string) {
 	}
 
 	// 批量插入数据到数据库，并处理可能的错误
-	if err := DB.Create(&data).Error; err != nil {
+	if err := DB.Create(&attdata).Error; err != nil {
 		// 记录错误日志或返回错误给调用者
 		log.Printf("Failed to create AttColor records: %v", err)
 
