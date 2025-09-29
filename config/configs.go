@@ -65,6 +65,6 @@ func init() {
 	Download = MainConfig.Download
 	DeviceName = MainConfig.DeviceName
 
-	DSN = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=Asia/Shanghai", MainConfig.Host, MainConfig.Username, MainConfig.Password, MainConfig.Dbname, MainConfig.Port)
+	DSN = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC", MainConfig.Host, MainConfig.Username, MainConfig.Password, MainConfig.Dbname, MainConfig.Port)
 
 }
