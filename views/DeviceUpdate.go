@@ -1,10 +1,10 @@
 package views
 
 import (
-	"context"
-
 	"compress/gzip"
+	"context"
 	"encoding/json"
+
 	"fmt"
 	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/Transformer"
@@ -685,12 +685,12 @@ func (uc *UserController) GetUpdateMSG(c *gin.Context) {
 // TableBackupData 表备份数据结构
 type TableBackupData struct {
 	TableName    string                   `json:"table_name"`
-	Schema       map[string]interface{}   `json:"schema"`        // my_schema表中的记录
-	TableData    []map[string]interface{} `json:"table_data"`    // 几何表数据
-	AttColors    []models.AttColor        `json:"att_colors"`    // 属性颜色配置
-	ChineseProps []models.ChineseProperty `json:"chinese_props"` // 中文属性配置
-	Columns      []ColumnIfo              `json:"columns"`       // 表结构信息
-	BackupTime   string                   `json:"backup_time"`   // 备份时间
+	Schema       models.MySchema          `json:"my_schema"`    // my_schema表中的记录
+	TableData    []map[string]interface{} `json:"table_data"`   // 几何表数据
+	AttColors    []models.AttColor        `json:"att_color"`    // 属性颜色配置
+	ChineseProps []models.ChineseProperty `json:"chinese_prop"` // 中文属性配置
+	Columns      []ColumnIfo              `json:"columns"`      // 表结构信息
+	BackupTime   string                   `json:"backup_time"`  // 备份时间
 }
 
 // ExportTableToFile 将指定表的数据导出为静态文件
@@ -706,8 +706,8 @@ func ExportTableToFile(tableName string, outputDir string) (string, error) {
 	}
 
 	// 1. 获取schema信息
-	var schema map[string]interface{}
-	if err := DB.Table("my_schema").Where("EN = ?", tableName).First(&schema).Error; err != nil {
+	var schema models.MySchema
+	if err := DB.Where("EN = ?", tableName).First(&schema).Error; err != nil {
 		return "", fmt.Errorf("获取schema信息失败: %v", err)
 	}
 
@@ -814,18 +814,27 @@ func ImportTableFromFile(filePath string, targetDB *gorm.DB) error {
 	}()
 
 	// 5. 检查并更新my_schema表
-	var existingSchema map[string]interface{}
+	// 使用 Save 方法，如果记录存在则更新，不存在则创建
+	schemaToSave := backupData.Schema
+
+	// 先查询是否存在
+	var existingSchema models.MySchema
 	err = tx.Table("my_schema").Where("EN = ?", tableName).First(&existingSchema).Error
+
 	if err != nil {
-		// schema不存在，创建新的
-		if err := tx.Table("my_schema").Create(&backupData.Schema).Error; err != nil {
+		fmt.Println(err.Error())
+		// 记录不存在，创建新记录
+		schemaToSave.ID = 0 // 清除ID让数据库自动分配
+		if err := tx.Table("my_schema").Create(&schemaToSave).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("创建schema记录失败: %v", err)
 		}
 		fmt.Printf("已创建schema记录\n")
+
 	} else {
-		// schema存在，更新
-		if err := tx.Table("my_schema").Where("EN = ?", tableName).Updates(&backupData.Schema).Error; err != nil {
+		// 记录存在，保留原有ID进行更新
+		schemaToSave.ID = existingSchema.ID
+		if err := tx.Table("my_schema").Save(&schemaToSave).Error; err != nil {
 			tx.Rollback()
 			return fmt.Errorf("更新schema记录失败: %v", err)
 		}
@@ -863,11 +872,18 @@ func ImportTableFromFile(filePath string, targetDB *gorm.DB) error {
 	// 10. 更新配置表 - AttColor
 	if len(backupData.AttColors) > 0 {
 		// 删除现有配置
-		tx.Where("layer_name = ?", tableName).Delete(&models.AttColor{})
-		// 插入新配置
-		if err := tx.Create(&backupData.AttColors).Error; err != nil {
+		if err := tx.Where("layer_name = ?", tableName).Delete(&models.AttColor{}).Error; err != nil {
 			tx.Rollback()
-			return fmt.Errorf("更新AttColor配置失败: %v", err)
+			return fmt.Errorf("删除现有AttColor配置失败: %v", err)
+		}
+
+		// 逐条插入，便于定位问题
+		for i, attColor := range backupData.AttColors {
+			attColor.ID = 0 // 清除主键
+			if err := tx.Create(&attColor).Error; err != nil {
+				tx.Rollback()
+				return fmt.Errorf("插入第 %d 条AttColor配置失败: %v", i+1, err)
+			}
 		}
 		fmt.Printf("已更新 %d 条AttColor配置\n", len(backupData.AttColors))
 	}
@@ -875,11 +891,18 @@ func ImportTableFromFile(filePath string, targetDB *gorm.DB) error {
 	// 11. 更新配置表 - ChineseProperty
 	if len(backupData.ChineseProps) > 0 {
 		// 删除现有配置
-		tx.Where("layer_name = ?", tableName).Delete(&models.ChineseProperty{})
-		// 插入新配置
-		if err := tx.Create(&backupData.ChineseProps).Error; err != nil {
+		if err := tx.Where("layer_name = ?", tableName).Delete(&models.ChineseProperty{}).Error; err != nil {
 			tx.Rollback()
-			return fmt.Errorf("更新ChineseProperty配置失败: %v", err)
+			return fmt.Errorf("删除现有ChineseProperty配置失败: %v", err)
+		}
+
+		// 逐条插入，便于定位问题
+		for i, chineseProp := range backupData.ChineseProps {
+			chineseProp.ID = 0 // 清除主键
+			if err := tx.Create(&chineseProp).Error; err != nil {
+				tx.Rollback()
+				return fmt.Errorf("插入第 %d 条ChineseProperty配置失败: %v", i+1, err)
+			}
 		}
 		fmt.Printf("已更新 %d 条ChineseProperty配置\n", len(backupData.ChineseProps))
 	}
@@ -894,21 +917,18 @@ func ImportTableFromFile(filePath string, targetDB *gorm.DB) error {
 }
 
 // createTableFromColumns 根据列信息创建表
-func createTableFromColumns(db *gorm.DB, tableName string, columns []ColumnIfo, schema map[string]interface{}) error {
+func createTableFromColumns(db *gorm.DB, tableName string, columns []ColumnIfo, schema models.MySchema) error {
 	// 确定几何类型
 	var geoType string
-	if schemaType, ok := schema["type"].(string); ok {
-		switch schemaType {
-		case "line":
-			geoType = "LINESTRING"
-		case "polygon":
-			geoType = "MULTIPOLYGON"
-		case "point":
-			geoType = "POINT"
-		default:
-			geoType = "GEOMETRY"
-		}
-	} else {
+	schemaType := schema.Type
+	switch schemaType {
+	case "line":
+		geoType = "LINESTRING"
+	case "polygon":
+		geoType = "MULTIPOLYGON"
+	case "point":
+		geoType = "POINT"
+	default:
 		geoType = "GEOMETRY"
 	}
 
@@ -1000,15 +1020,17 @@ func batchInsertData(db *gorm.DB, tableName string, data []map[string]interface{
 
 // 导出表数据到文件
 func ExportTable(tableName string, outputDir string) (string, error) {
-
 	filePath, err := ExportTableToFile(tableName, outputDir)
 	if err != nil {
 		log.Printf("导出失败: %v", err)
 		return "", err
 	}
-	log.Printf("导出成功，文件路径: %s", filePath)
-	return filePath, nil
 
+	// 将路径中的反斜杠替换为正斜杠
+	normalizedPath := strings.ReplaceAll(filePath, "\\", "/")
+
+	log.Printf("导出成功，文件路径: %s", normalizedPath)
+	return normalizedPath, nil
 }
 
 // 从文件恢复表数据
@@ -1030,7 +1052,9 @@ func ExampleImport(filePath string, ip string) error {
 			sqlDB.Close()
 		}
 	}()
-
+	targetDB.NamingStrategy = schema.NamingStrategy{
+		SingularTable: true,
+	}
 	if err := ImportTableFromFile(filePath, targetDB); err != nil {
 		log.Printf("恢复失败: %v", err)
 		return err
@@ -1068,4 +1092,42 @@ func (uc *UserController) RestoreOfflineLayer(c *gin.Context) {
 	}
 	c.String(http.StatusOK, "ok")
 
+}
+
+// GetReatoreFile 读取固定路径中的tar文件，并返回为[]string格式数据
+func (uc *UserController) GetReatoreFile(c *gin.Context) {
+	// 固定路径
+	dirPath := "/storage/emulated/0/地图更新"
+
+	// 递归遍历目录获取tar文件
+	tarFiles, err := traverseDirectory(dirPath)
+	if err != nil {
+		c.JSON(http.StatusOK, []string{})
+		return
+	}
+
+	c.JSON(http.StatusOK, tarFiles)
+}
+
+// traverseDirectory 递归遍历目录，查找tar文件
+func traverseDirectory(dirPath string) ([]string, error) {
+	var tarFiles []string
+	err := filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			// 如果遇到错误，跳过该文件/目录
+			return nil
+		}
+		// 如果是文件且扩展名匹配
+		if !info.IsDir() {
+			ext := strings.ToLower(filepath.Ext(info.Name()))
+			if ext == ".tar" || ext == ".gz" || ext == ".tgz" {
+				// 可以选择返回相对路径或绝对路径
+
+				tarFiles = append(tarFiles, path)
+			}
+		}
+		return nil
+	})
+
+	return tarFiles, err
 }
