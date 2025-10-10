@@ -2,6 +2,8 @@ package views
 
 import (
 	"context"
+
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"github.com/GrainArc/Gogeo"
@@ -269,7 +271,7 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 		}
 	}
 	DB := models.DB
-	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=Asia/Shanghai", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	// 确保数据库连接被正确释放
 	defer func() {
@@ -407,7 +409,7 @@ func UpdateConfigSingle(jsonData UpdateData) bool {
 	TableName := jsonData.TableName
 
 	DB := models.DB
-	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=Asia/Shanghai", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	DeviceDB.NamingStrategy = schema.NamingStrategy{
 		SingularTable: true,
@@ -676,4 +678,394 @@ func (uc *UserController) GetUpdateMSG(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"data": MSG,
 	})
+}
+
+//离线更新
+
+// TableBackupData 表备份数据结构
+type TableBackupData struct {
+	TableName    string                   `json:"table_name"`
+	Schema       map[string]interface{}   `json:"schema"`        // my_schema表中的记录
+	TableData    []map[string]interface{} `json:"table_data"`    // 几何表数据
+	AttColors    []models.AttColor        `json:"att_colors"`    // 属性颜色配置
+	ChineseProps []models.ChineseProperty `json:"chinese_props"` // 中文属性配置
+	Columns      []ColumnIfo              `json:"columns"`       // 表结构信息
+	BackupTime   string                   `json:"backup_time"`   // 备份时间
+}
+
+// ExportTableToFile 将指定表的数据导出为静态文件
+// tableName: 要导出的表名
+// outputDir: 输出目录
+// 返回: 生成的文件路径和错误信息
+func ExportTableToFile(tableName string, outputDir string) (string, error) {
+	DB := models.DB
+
+	// 创建输出目录
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return "", fmt.Errorf("创建输出目录失败: %v", err)
+	}
+
+	// 1. 获取schema信息
+	var schema map[string]interface{}
+	if err := DB.Table("my_schema").Where("EN = ?", tableName).First(&schema).Error; err != nil {
+		return "", fmt.Errorf("获取schema信息失败: %v", err)
+	}
+
+	// 2. 获取表数据
+	var tableData []map[string]interface{}
+	if err := DB.Table(tableName).Find(&tableData).Error; err != nil {
+		return "", fmt.Errorf("获取表数据失败: %v", err)
+	}
+
+	// 3. 获取属性颜色配置
+	var attColors []models.AttColor
+	DB.Where("layer_name = ?", tableName).Find(&attColors)
+
+	// 4. 获取中文属性配置
+	var chineseProps []models.ChineseProperty
+	DB.Where("layer_name = ?", tableName).Find(&chineseProps)
+
+	// 5. 获取表结构信息
+	columnSQL := fmt.Sprintf(`SELECT column_name, data_type, character_maximum_length
+		FROM information_schema.columns
+		WHERE table_name = '%s'`, tableName)
+	var columns []ColumnIfo
+	DB.Raw(columnSQL).Scan(&columns)
+
+	// 6. 构建备份数据
+	backupData := TableBackupData{
+		TableName:    tableName,
+		Schema:       schema,
+		TableData:    tableData,
+		AttColors:    attColors,
+		ChineseProps: chineseProps,
+		Columns:      columns,
+		BackupTime:   time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	// 7. 序列化为JSON
+	jsonData, err := json.Marshal(backupData)
+	if err != nil {
+		return "", fmt.Errorf("JSON序列化失败: %v", err)
+	}
+
+	// 8. 生成文件名（包含时间戳）
+	timestamp := time.Now().Format("20060102_150405")
+	fileName := fmt.Sprintf("%s_backup_%s.json.gz", tableName, timestamp)
+	filePath := filepath.Join(outputDir, fileName)
+
+	// 9. 创建压缩文件
+	file, err := os.Create(filePath)
+	if err != nil {
+		return "", fmt.Errorf("创建文件失败: %v", err)
+	}
+	defer file.Close()
+
+	// 10. 使用gzip压缩写入
+	gzWriter := gzip.NewWriter(file)
+	defer gzWriter.Close()
+
+	if _, err := gzWriter.Write(jsonData); err != nil {
+		return "", fmt.Errorf("写入压缩文件失败: %v", err)
+	}
+
+	fmt.Printf("表 %s 数据已成功导出到: %s\n", tableName, filePath)
+	fmt.Printf("备份包含 %d 条记录\n", len(tableData))
+
+	return filePath, nil
+}
+
+// ImportTableFromFile 从静态文件恢复表数据到数据库
+// filePath: 备份文件路径
+// targetDB: 目标数据库连接
+// 返回: 错误信息
+func ImportTableFromFile(filePath string, targetDB *gorm.DB) error {
+	// 1. 打开并读取压缩文件
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("打开文件失败: %v", err)
+	}
+	defer file.Close()
+
+	// 2. 创建gzip读取器
+	gzReader, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("创建gzip读取器失败: %v", err)
+	}
+	defer gzReader.Close()
+
+	// 3. 读取并解压数据
+	var backupData TableBackupData
+	decoder := json.NewDecoder(gzReader)
+	if err := decoder.Decode(&backupData); err != nil {
+		return fmt.Errorf("JSON反序列化失败: %v", err)
+	}
+
+	tableName := backupData.TableName
+	fmt.Printf("开始恢复表: %s (备份时间: %s)\n", tableName, backupData.BackupTime)
+
+	// 4. 开始数据库事务
+	tx := targetDB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			fmt.Printf("恢复过程中发生错误，已回滚: %v\n", r)
+		}
+	}()
+
+	// 5. 检查并更新my_schema表
+	var existingSchema map[string]interface{}
+	err = tx.Table("my_schema").Where("EN = ?", tableName).First(&existingSchema).Error
+	if err != nil {
+		// schema不存在，创建新的
+		if err := tx.Table("my_schema").Create(&backupData.Schema).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("创建schema记录失败: %v", err)
+		}
+		fmt.Printf("已创建schema记录\n")
+	} else {
+		// schema存在，更新
+		if err := tx.Table("my_schema").Where("EN = ?", tableName).Updates(&backupData.Schema).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("更新schema记录失败: %v", err)
+		}
+		fmt.Printf("已更新schema记录\n")
+	}
+
+	// 6. 创建或重建几何表
+	if err := createTableFromColumns(tx, tableName, backupData.Columns, backupData.Schema); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("创建几何表失败: %v", err)
+	}
+
+	// 7. 清空现有数据并插入新数据
+	if err := tx.Table(tableName).Where("id != ?", 0).Delete(nil).Error; err != nil {
+		tx.Rollback()
+		return fmt.Errorf("清空表数据失败: %v", err)
+	}
+
+	// 8. 批量插入数据
+	if len(backupData.TableData) > 0 {
+		if err := batchInsertData(tx, tableName, backupData.TableData); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("插入表数据失败: %v", err)
+		}
+		fmt.Printf("已插入 %d 条记录\n", len(backupData.TableData))
+	}
+
+	// 9. 清空并重建MVT缓存表
+	mvtTableName := tableName + "mvt"
+	if isEndWithNumber(tableName) {
+		mvtTableName = tableName + "_mvt"
+	}
+	tx.Table(mvtTableName).Where("id != ?", 0).Delete(nil)
+
+	// 10. 更新配置表 - AttColor
+	if len(backupData.AttColors) > 0 {
+		// 删除现有配置
+		tx.Where("layer_name = ?", tableName).Delete(&models.AttColor{})
+		// 插入新配置
+		if err := tx.Create(&backupData.AttColors).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("更新AttColor配置失败: %v", err)
+		}
+		fmt.Printf("已更新 %d 条AttColor配置\n", len(backupData.AttColors))
+	}
+
+	// 11. 更新配置表 - ChineseProperty
+	if len(backupData.ChineseProps) > 0 {
+		// 删除现有配置
+		tx.Where("layer_name = ?", tableName).Delete(&models.ChineseProperty{})
+		// 插入新配置
+		if err := tx.Create(&backupData.ChineseProps).Error; err != nil {
+			tx.Rollback()
+			return fmt.Errorf("更新ChineseProperty配置失败: %v", err)
+		}
+		fmt.Printf("已更新 %d 条ChineseProperty配置\n", len(backupData.ChineseProps))
+	}
+
+	// 12. 提交事务
+	if err := tx.Commit().Error; err != nil {
+		return fmt.Errorf("提交事务失败: %v", err)
+	}
+
+	fmt.Printf("表 %s 数据恢复完成\n", tableName)
+	return nil
+}
+
+// createTableFromColumns 根据列信息创建表
+func createTableFromColumns(db *gorm.DB, tableName string, columns []ColumnIfo, schema map[string]interface{}) error {
+	// 确定几何类型
+	var geoType string
+	if schemaType, ok := schema["type"].(string); ok {
+		switch schemaType {
+		case "line":
+			geoType = "LINESTRING"
+		case "polygon":
+			geoType = "MULTIPOLYGON"
+		case "point":
+			geoType = "POINT"
+		default:
+			geoType = "GEOMETRY"
+		}
+	} else {
+		geoType = "GEOMETRY"
+	}
+
+	// 构建字段定义
+	var fields []string
+	for _, col := range columns {
+		if col.ColumnName != "id" && col.ColumnName != "geom" {
+			var fieldDef string
+			switch col.DataType {
+			case "character varying":
+				fieldDef = fmt.Sprintf(`%s VARCHAR(%s)`, col.ColumnName, col.CharacterMaximumLength)
+			case "integer":
+				fieldDef = fmt.Sprintf(`%s INT`, col.ColumnName)
+			case "boolean":
+				fieldDef = fmt.Sprintf(`%s BOOLEAN`, col.ColumnName)
+			case "real", "double precision":
+				fieldDef = fmt.Sprintf(`%s FLOAT`, col.ColumnName)
+			case "time without time zone":
+				fieldDef = fmt.Sprintf(`%s TIME`, col.ColumnName)
+			case "bigint":
+				fieldDef = fmt.Sprintf(`%s BIGINT`, col.ColumnName)
+			case "numeric":
+				fieldDef = fmt.Sprintf(`%s NUMERIC`, col.ColumnName)
+			case "text":
+				fieldDef = fmt.Sprintf(`%s TEXT`, col.ColumnName)
+			case "bytea":
+				fieldDef = fmt.Sprintf(`%s BYTEA`, col.ColumnName)
+			case "date":
+				fieldDef = fmt.Sprintf(`%s DATE`, col.ColumnName)
+			default:
+				fieldDef = fmt.Sprintf(`%s %s`, col.ColumnName, col.DataType)
+			}
+			fields = append(fields, fieldDef)
+		}
+	}
+
+	// 添加主键
+	fields = append(fields, "id SERIAL PRIMARY KEY")
+
+	// 去重
+	fields = removeDuplicates(fields)
+	fieldDefs := strings.Join(fields, ",")
+
+	// 删除现有表
+	dropSQL := fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)
+	if err := db.Exec(dropSQL).Error; err != nil {
+		return fmt.Errorf("删除现有表失败: %v", err)
+	}
+
+	// 创建新表
+	createSQL := fmt.Sprintf("CREATE TABLE %s (%s, geom GEOMETRY(%s, 4326))", tableName, fieldDefs, geoType)
+	if err := db.Exec(createSQL).Error; err != nil {
+		return fmt.Errorf("创建表失败: %v", err)
+	}
+
+	// 创建MVT缓存表
+	mvtTableName := tableName + "mvt"
+	if isEndWithNumber(tableName) {
+		mvtTableName = tableName + "_mvt"
+	}
+
+	mvtSQL := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (ID SERIAL PRIMARY KEY, X INT8, Y INT8, Z INT8, Byte BYTEA)", mvtTableName)
+	if err := db.Exec(mvtSQL).Error; err != nil {
+		return fmt.Errorf("创建MVT表失败: %v", err)
+	}
+
+	return nil
+}
+
+// batchInsertData 批量插入数据
+func batchInsertData(db *gorm.DB, tableName string, data []map[string]interface{}) error {
+	const batchSize = 1000
+	totalRecords := len(data)
+
+	for i := 0; i < totalRecords; i += batchSize {
+		end := i + batchSize
+		if end > totalRecords {
+			end = totalRecords
+		}
+
+		batch := data[i:end]
+		if err := db.Table(tableName).Create(&batch).Error; err != nil {
+			return fmt.Errorf("批量插入第 %d-%d 条记录失败: %v", i+1, end, err)
+		}
+	}
+
+	return nil
+}
+
+// 导出表数据到文件
+func ExportTable(tableName string, outputDir string) (string, error) {
+
+	filePath, err := ExportTableToFile(tableName, outputDir)
+	if err != nil {
+		log.Printf("导出失败: %v", err)
+		return "", err
+	}
+	log.Printf("导出成功，文件路径: %s", filePath)
+	return filePath, nil
+
+}
+
+// 从文件恢复表数据
+func ExampleImport(filePath string, ip string) error {
+
+	// 连接目标数据库
+	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	targetDB, err := gorm.Open(postgres.Open(DSN), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		log.Printf("连接数据库失败: %v", err)
+		return err
+	}
+
+	// 确保数据库连接被正确释放
+	defer func() {
+		if sqlDB, err := targetDB.DB(); err == nil {
+			sqlDB.Close()
+		}
+	}()
+
+	if err := ImportTableFromFile(filePath, targetDB); err != nil {
+		log.Printf("恢复失败: %v", err)
+		return err
+	}
+
+	log.Printf("恢复成功")
+	return nil
+}
+
+// 数据导出
+func (uc *UserController) DownloadOfflineLayer(c *gin.Context) {
+	table := c.Query("tablename")
+	taskid := uuid.New().String()
+	existingZipPath := "OutFile/" + taskid + "/" + table
+	outpath, err := ExportTable(table, existingZipPath)
+	if err != nil {
+		c.String(500, "数据无法导出")
+	}
+	host := c.Request.Host
+	url := &url.URL{
+		Scheme: "http",
+		Host:   host,
+		Path:   "/geo/" + outpath,
+	}
+	c.String(http.StatusOK, url.String())
+
+}
+
+// 数据回复
+func (uc *UserController) RestoreOfflineLayer(c *gin.Context) {
+	filePath := c.Query("filePath")
+	err := ExampleImport(filePath, "127.0.0.1")
+	if err != nil {
+		c.String(500, err.Error())
+	}
+	c.String(http.StatusOK, "ok")
+
 }

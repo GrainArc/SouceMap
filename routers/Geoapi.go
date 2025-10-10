@@ -61,6 +61,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/UpdateLayer", UserController.UpdateLayer)
 		mapRouter.POST("/AppendLayer", UserController.AppendLayer)
 		mapRouter.GET("/GetUpdateMSG", UserController.GetUpdateMSG)
+		mapRouter.GET("/DownloadOfflineLayer", UserController.DownloadOfflineLayer)
 
 	}
 	SurveyRouter := r.Group("/Survey")
