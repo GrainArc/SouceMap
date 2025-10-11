@@ -447,6 +447,28 @@ func (sbm *SQLBackupManager) getAllTables() ([]TableInfo, error) {
 }
 
 // 修改获取表创建SQL的方法
+// getPrimaryKeyColumns 获取表的所有主键列
+func (sbm *SQLBackupManager) getPrimaryKeyColumns(tableName string) ([]string, error) {
+	query := `
+		SELECT kcu.column_name
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
+		WHERE tc.constraint_type = 'PRIMARY KEY'
+		AND tc.table_schema = 'public'
+		AND tc.table_name = ?
+		ORDER BY kcu.ordinal_position
+	`
+
+	var columnNames []string
+	err := sbm.db.Raw(query, tableName).Pluck("column_name", &columnNames).Error
+	if err != nil {
+		return nil, err
+	}
+
+	return columnNames, nil
+}
+
+// 修改获取表创建SQL的方法 - 包含主键定义
 func (sbm *SQLBackupManager) getCreateTableSQL(schemaName, tableName string) (string, error) {
 	// 获取表的列信息
 	query := `
@@ -489,6 +511,12 @@ func (sbm *SQLBackupManager) getCreateTableSQL(schemaName, tableName string) (st
 		return "", fmt.Errorf("表 %s.%s 不存在或没有列", schemaName, tableName)
 	}
 
+	// 获取主键信息
+	primaryKeyColumns, err := sbm.getPrimaryKeyColumns(tableName)
+	if err != nil {
+		log.Printf("获取表%s主键信息失败: %v", tableName, err)
+	}
+
 	// 构建CREATE TABLE语句
 	var createSQL strings.Builder
 	createSQL.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n", tableName))
@@ -500,6 +528,12 @@ func (sbm *SQLBackupManager) getCreateTableSQL(schemaName, tableName string) (st
 			col.CharacterMaximumLength, col.NumericPrecision, col.NumericScale,
 			col.IsNullable, col.ColumnDefault)
 		columnDefs = append(columnDefs, "    "+columnDef)
+	}
+
+	// 如果有主键，添加主键约束
+	if len(primaryKeyColumns) > 0 {
+		primaryKeyDef := fmt.Sprintf("    PRIMARY KEY (%s)", strings.Join(primaryKeyColumns, ", "))
+		columnDefs = append(columnDefs, primaryKeyDef)
 	}
 
 	createSQL.WriteString(strings.Join(columnDefs, ",\n"))
@@ -963,38 +997,11 @@ func (sbm *SQLBackupManager) backupIndexesAndConstraints(backupDir string) error
 
 // backupPrimaryKeys 备份主键
 func (sbm *SQLBackupManager) backupPrimaryKeys(file *os.File) error {
-	query := `
-        SELECT 
-            tc.table_name,
-            tc.constraint_name,
-            string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position) as columns
-        FROM information_schema.table_constraints tc
-        JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name
-        WHERE tc.constraint_type = 'PRIMARY KEY'
-        AND tc.table_schema = 'public'
-        GROUP BY tc.table_name, tc.constraint_name
-    `
+	// 由于主键已经在CREATE TABLE时创建，这里可以选择跳过
+	// 或者只备份那些需要单独添加的主键约束
 
-	var constraints []struct {
-		TableName      string `gorm:"column:table_name"`
-		ConstraintName string `gorm:"column:constraint_name"`
-		Columns        string `gorm:"column:columns"`
-	}
-
-	if err := sbm.db.Raw(query).Scan(&constraints).Error; err != nil {
-		return err
-	}
-
-	file.WriteString("-- Primary Keys\n")
-	for _, constraint := range constraints {
-		if constraint.TableName == "spatial_ref_sys" {
-			continue
-		}
-		sql := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s);\n",
-			constraint.TableName, constraint.ConstraintName, constraint.Columns)
-		file.WriteString(sql)
-	}
-	file.WriteString("\n")
+	file.WriteString("-- Primary Keys (already created with tables)\n")
+	file.WriteString("-- Primary key constraints are included in table creation\n\n")
 
 	return nil
 }
@@ -1084,7 +1091,7 @@ func (sbm *SQLBackupManager) createRestoreScript(backupDir string) error {
 	file.WriteString(fmt.Sprintf("-- Database: %s\n", sbm.config.Database))
 	file.WriteString(fmt.Sprintf("-- Generated: %s\n\n", time.Now().Format("2006-01-02 15:04:05")))
 
-	file.WriteString("-- Step 1: Create tables\n")
+	file.WriteString("-- Step 1: Create tables (with primary keys)\n")
 	file.WriteString("\\i schema.sql\n\n")
 
 	file.WriteString("-- Step 2: Insert data\n")
@@ -1093,18 +1100,27 @@ func (sbm *SQLBackupManager) createRestoreScript(backupDir string) error {
 	dataDir := filepath.Join(backupDir, "data")
 	files, err := os.ReadDir(dataDir)
 	if err == nil {
+		// 按表名排序，确保有依赖关系的表按正确顺序恢复
+		var dataFiles []string
 		for _, f := range files {
 			if strings.HasSuffix(f.Name(), "_data.sql") {
-				file.WriteString(fmt.Sprintf("\\i data/%s\n", f.Name()))
+				dataFiles = append(dataFiles, f.Name())
 			}
+		}
+		sort.Strings(dataFiles)
+
+		for _, fileName := range dataFiles {
+			file.WriteString(fmt.Sprintf("\\i data/%s\n", fileName))
 		}
 	}
 
-	file.WriteString("\n-- Step 3: Create constraints and indexes\n")
+	file.WriteString("\n-- Step 3: Create foreign keys and additional constraints\n")
 	file.WriteString("\\i constraints.sql\n\n")
 
-	file.WriteString("-- Step 4: Create views and functions\n")
-	file.WriteString("\\i views_functions.sql\n\n")
+	file.WriteString("-- Step 4: Create indexes\n")
+	file.WriteString("-- (Indexes are included in constraints.sql)\n\n")
+
+	file.WriteString("-- Restore completed successfully!\n")
 
 	return nil
 }
