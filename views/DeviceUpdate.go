@@ -68,7 +68,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 			continue // 跳过当前循环，处理下一个IP
 		}
 
-		wg.Add(1)            // 增加等待组计数
+		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
 
@@ -311,7 +311,7 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 		var Geo string
 		switch Schemas["type"].(string) {
 		case "line":
-			Geo = "LINESTRING"
+			Geo = "MULTILINESTRING"
 		case "polygon":
 			Geo = "MULTIPOLYGON"
 		case "point":
@@ -923,7 +923,7 @@ func createTableFromColumns(db *gorm.DB, tableName string, columns []ColumnIfo, 
 	schemaType := schema.Type
 	switch schemaType {
 	case "line":
-		geoType = "LINESTRING"
+		geoType = "MULTILINESTRING"
 	case "polygon":
 		geoType = "MULTIPOLYGON"
 	case "point":
