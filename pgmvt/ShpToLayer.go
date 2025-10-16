@@ -301,12 +301,12 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 			if wkb != "" {
 				if isTransormer != "4326" {
 					record["geom"] = clause.Expr{
-						SQL:  fmt.Sprintf("ST_Transform(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')),%s), 4326)", isTransormer),
+						SQL:  fmt.Sprintf("ST_Transform(ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')),%s)), 4326)", isTransormer),
 						Vars: []interface{}{wkb},
 					}
 				} else {
 					record["geom"] = clause.Expr{
-						SQL:  "ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)",
+						SQL:  "ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))",
 						Vars: []interface{}{wkb},
 					}
 				}
@@ -932,7 +932,7 @@ func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 			// 处理几何数据
 			if feature.WKBHex != "" {
 				record["geom"] = clause.Expr{
-					SQL:  "ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)",
+					SQL:  "ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))",
 					Vars: []interface{}{feature.WKBHex},
 				}
 

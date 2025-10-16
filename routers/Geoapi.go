@@ -64,6 +64,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.GET("/DownloadOfflineLayer", UserController.DownloadOfflineLayer)
 		mapRouter.GET("/RestoreOfflineLayer", UserController.RestoreOfflineLayer)
 		mapRouter.GET("/GetReatoreFile", UserController.GetReatoreFile)
+		mapRouter.GET("/GetLayerExtent", UserController.GetLayerExtent)
 
 	}
 	SurveyRouter := r.Group("/Survey")

@@ -261,7 +261,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 		Area = CalculateGeodesicArea(jsonData.Features[0])
 		// 将GeoJSON字符串转为几何类型，并设定SRID为4326，同时计算交集的面积，并将结果作为area返回
 		if strings.Contains(att, "dlbm") == false && strings.Contains(att, "dlmc") == false {
-			sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, %s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr) // 合并SQL查询
+			sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom))::geography)) AS area, %s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr) // 合并SQL查询
 			err := DB.Raw(sql).Scan(&tempResults)
 			if err.Error != nil { // 检查是否发生错误
 				// 错误处理逻辑
@@ -270,9 +270,9 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 			}
 		} else {
 			if strings.Contains(att, "tkj") == true {
-				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
+				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom))::geography)) AS area, kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
 			} else {
-				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
+				sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom))::geography)) AS area, kcxs ,%s AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, att, att, tablename, jsonDataStr)
 			}
 
 			var KCdata []map[string]interface{}
@@ -351,7 +351,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 		if att == "" {
 			Area = CalculateGeodesicArea(jsonData.Features[0])
 			att = "dlmc"
-			sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)::geography)) AS area, kcxs  AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, "dlmc", tablename, jsonDataStr) // 合并SQL查询
+			sql = fmt.Sprintf("SELECT \"numeric\"(ST_Area(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom))::geography)) AS area, kcxs  AS \"%s\" FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", jsonDataStr, "dlmc", tablename, jsonDataStr) // 合并SQL查询
 
 			var KCdata []map[string]interface{}
 			err := DB.Raw(sql).Scan(&KCdata)
@@ -401,7 +401,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 			}
 		} else {
 			Area = CalculateArea(jsonData.Features[0])
-			attrSelect := fmt.Sprintf("\"numeric\"(ST_Area(St_Transform(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom),4523))) AS area, %s AS \""+att+"\"", jsonDataStr, att)
+			attrSelect := fmt.Sprintf("\"numeric\"(ST_Area(St_Transform(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom)),4523))) AS area, %s AS \""+att+"\"", jsonDataStr, att)
 			sql = fmt.Sprintf("SELECT %s FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", attrSelect, tablename, jsonDataStr)
 			// 将GeoJSON字符串转为几何类型，并设定SRID为4326，同时计算交集的面积，并将结果作为area返回
 			err := DB.Raw(sql).Scan(&tempResults)
@@ -417,7 +417,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 		Area = CalculateArea(jsonData.Features[0])
 		// 动态构建查询字符串
 		if att != "" {
-			attrSelect := fmt.Sprintf("\"numeric\"(ST_Area(St_Transform(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom),4523))) AS area, %s AS \""+att+"\"", jsonDataStr, att)
+			attrSelect := fmt.Sprintf("\"numeric\"(ST_Area(St_Transform(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom)),4523))) AS area, %s AS \""+att+"\"", jsonDataStr, att)
 			sql = fmt.Sprintf("SELECT %s FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", attrSelect, tablename, jsonDataStr)
 			// 将GeoJSON字符串转为几何类型，并设定SRID为4326，同时计算交集的面积，并将结果作为area返回
 			err := DB.Raw(sql).Scan(&tempResults)
@@ -429,7 +429,7 @@ func GeoIntersect(jsonData geojson.FeatureCollection, tablename string, att stri
 
 		} else {
 			att = "aa"
-			attrSelect := fmt.Sprintf("\"numeric\"(ST_Area(St_Transform(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom),4523))) AS area", jsonDataStr)
+			attrSelect := fmt.Sprintf("\"numeric\"(ST_Area(St_Transform(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom)),4523))) AS area", jsonDataStr)
 			sql = fmt.Sprintf("SELECT %s FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)", attrSelect, tablename, jsonDataStr)
 			err := DB.Raw(sql).Scan(&tempResults)
 			if err.Error != nil { // 检查是否发生错误
@@ -491,7 +491,7 @@ func GetIntersectGeo(jsonData geojson.FeatureCollection, tablename string, atts 
 	DB := models.DB
 	sql := fmt.Sprintf(`
 SELECT 
-    ST_AsGeoJSON(ST_Intersection(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)) AS geojson, -- 将相交后的几何转换为GeoJSON格式
+    ST_AsGeoJSON(ST_Intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom))) AS geojson, -- 将相交后的几何转换为GeoJSON格式
     %s 
 FROM 
     "%s" 
@@ -685,11 +685,11 @@ func GeoIntersectLine(jsonData geojson.FeatureCollection, tablename string, attr
 
 	selectParts := make([]string, 0, len(attributes))
 	for _, attr := range attributes {
-		selectPart := fmt.Sprintf("\"numeric\"(st_length(st_transform(st_intersection(st_setsrid(st_geomfromgeojson('%s'), 4326), geom), 4523))) AS length, \"%s\" AS \"%s\"", jsonDataStr, attr, attr)
+		selectPart := fmt.Sprintf("\"numeric\"(st_length(st_transform(st_intersection(ST_MakeValid(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326)), ST_MakeValid(geom)), 4523))) AS length, \"%s\" AS \"%s\"", jsonDataStr, attr, attr)
 		selectParts = append(selectParts, selectPart)
 	}
 	// 拼接所有的SELECT部分
-	attrSelect := fmt.Sprintf("SELECT %s FROM \"%s\" WHERE ST_Intersects(st_setsrid(st_geomfromgeojson('%s'), 4326), geom)",
+	attrSelect := fmt.Sprintf("SELECT %s FROM \"%s\" WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326), geom)",
 		strings.Join(selectParts, ", "), tablename, jsonDataStr)
 
 	DB.Raw(attrSelect).Scan(&tempResults)

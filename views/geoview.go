@@ -1,6 +1,7 @@
 package views
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"gitee.com/gooffice/gooffice/document"
@@ -13,10 +14,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paulmach/orb/geojson"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1297,4 +1300,115 @@ func (uc *UserController) OutMVT(c *gin.Context) {
 	} else {
 		c.String(http.StatusOK, "err")
 	}
+}
+
+// 获取图层的范围 - 返回GeoJSON格式
+func (uc *UserController) GetLayerExtent(c *gin.Context) {
+	layername := strings.ToLower(c.Query("tablename"))
+
+	// 参数验证
+	if layername == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "tablename参数不能为空",
+		})
+		return
+	}
+
+	// 安全性检查 - 防止SQL注入
+	if !isValidTableName(layername) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "无效的表名",
+		})
+		return
+	}
+
+	// 获取采样比例参数，默认10%
+	samplePercent := c.DefaultQuery("sample", "10")
+
+	// 构建高性能SQL查询 - 直接返回GeoJSON
+	sql := fmt.Sprintf(`
+		SELECT ST_AsGeoJSON(
+			ST_Envelope(
+				ST_Collect(ST_Envelope(geom))
+			)
+		) as bbox_geojson,
+		ST_XMin(ST_Collect(ST_Envelope(geom))) as min_x,
+		ST_YMin(ST_Collect(ST_Envelope(geom))) as min_y,
+		ST_XMax(ST_Collect(ST_Envelope(geom))) as max_x,
+		ST_YMax(ST_Collect(ST_Envelope(geom))) as max_y
+		FROM %s 
+		TABLESAMPLE SYSTEM(%s)
+		WHERE geom IS NOT NULL
+	`, layername, samplePercent)
+
+	// 执行查询
+	var result struct {
+		BboxGeoJSON string  `gorm:"column:bbox_geojson"`
+		MinX        float64 `gorm:"column:min_x"`
+		MinY        float64 `gorm:"column:min_y"`
+		MaxX        float64 `gorm:"column:max_x"`
+		MaxY        float64 `gorm:"column:max_y"`
+	}
+
+	// 设置查询超时
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	DB := models.DB
+	// 使用原生SQL执行，避免GORM开销
+	err := DB.WithContext(ctx).Raw(sql).Scan(&result).Error
+	if err != nil {
+		log.Printf("获取图层范围失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询失败",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// 检查结果有效性
+	if result.BboxGeoJSON == "" || (result.MinX == 0 && result.MinY == 0 && result.MaxX == 0 && result.MaxY == 0) {
+		c.JSON(http.StatusNotFound, gin.H{
+			"code":    404,
+			"message": "表不存在或无几何数据",
+		})
+		return
+	}
+
+	// 解析GeoJSON字符串为JSON对象
+	var geoJSON map[string]interface{}
+	if err := json.Unmarshal([]byte(result.BboxGeoJSON), &geoJSON); err != nil {
+		log.Printf("解析GeoJSON失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "GeoJSON解析失败",
+		})
+		return
+	}
+
+	// 返回结果
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data": gin.H{
+			"tablename": layername,
+			"extent": gin.H{
+				"minX": result.MinX,
+				"minY": result.MinY,
+				"maxX": result.MaxX,
+				"maxY": result.MaxY,
+			},
+			"bbox":    []float64{result.MinX, result.MinY, result.MaxX, result.MaxY},
+			"geojson": geoJSON,
+		},
+	})
+}
+
+// 表名安全验证函数
+func isValidTableName(tablename string) bool {
+	// 只允许字母、数字和下划线，长度限制
+	matched, _ := regexp.MatchString(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`, tablename)
+	return matched
 }

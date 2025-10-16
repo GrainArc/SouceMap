@@ -621,7 +621,7 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 			// 处理几何数据
 			if feature.WKBHex != "" {
 				record["geom"] = clause.Expr{
-					SQL:  "ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)",
+					SQL:  "ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))",
 					Vars: []interface{}{feature.WKBHex},
 				}
 
