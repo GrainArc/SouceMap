@@ -8,6 +8,7 @@ import (
 
 func GeoRouters(r *gin.Engine) {
 	UserController := &views.UserController{}
+	fieldCalcCtrl := views.NewFieldCalculatorController()
 	mapRouter := r.Group("/geo")
 	{
 		mapRouter.GET(":tablename/:z/:x/:y.pbf", UserController.OutMVT)
@@ -106,9 +107,12 @@ func GeoRouters(r *gin.Engine) {
 	}
 	fields := r.Group("/fields")
 	{
-		fields.POST("/AddField", UserController.AddField)       // 添加字段
-		fields.POST("/DeleteField", UserController.DeleteField) // 删除字段
-		fields.POST("/ModifyField", UserController.ModifyField) // 修改字段
+		fields.POST("/AddField", UserController.AddField)         // 添加字段
+		fields.POST("/DeleteField", UserController.DeleteField)   // 删除字段
+		fields.POST("/ModifyField", UserController.ModifyField)   // 修改字段
+		fields.POST("/calculate", fieldCalcCtrl.CalculateField)   // 执行计算
+		fields.POST("/preview", fieldCalcCtrl.PreviewCalculation) // 预览结果
+
 	}
 	tables := r.Group("/tables")
 	{

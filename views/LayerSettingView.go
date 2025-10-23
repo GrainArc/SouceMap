@@ -793,7 +793,7 @@ func (uc *UserController) ModifyField(c *gin.Context) {
 	})
 }
 
-// 删除字段保持不变
+// 删除字段
 func (uc *UserController) DeleteField(c *gin.Context) {
 	var req models.FieldOperation
 	if err := c.ShouldBindJSON(&req); err != nil {
