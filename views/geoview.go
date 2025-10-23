@@ -441,50 +441,89 @@ func (uc *UserController) GetSchemaByUnits(c *gin.Context) {
 }
 
 func (uc *UserController) AddSchema(c *gin.Context) {
+	// 获取表单参数
 	Main := c.PostForm("Main")
 	CN := c.PostForm("CN")
 	EN := methods.ConvertToInitials(Main) + "_" + methods.ConvertToInitials(CN)
-
 	Color := c.PostForm("Color")
 	Opacity := c.PostForm("Opacity")
-	LineWidth := c.PostForm("LineWidth")
 	Userunits := c.PostForm("userunits")
+
+	// 处理 LineWidth 参数，如果没有传入则默认为 1
+	LineWidth := c.PostForm("LineWidth")
+	if LineWidth == "" {
+		LineWidth = "1"
+	}
+
+	// 验证必要参数
+	if Main == "" || CN == "" {
+		c.String(http.StatusBadRequest, "Main and CN parameters are required")
+		return
+	}
+
+	// 处理文件上传
 	file, err := c.FormFile("file")
 	if err != nil {
-		c.String(400, "Bad request")
+		c.String(http.StatusBadRequest, "File upload failed: "+err.Error())
 		return
 	}
 
+	// 创建任务ID和文件路径
 	taskid := uuid.New().String()
-	path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
-	dirpath := filepath.Dir(path)
-	err = c.SaveUploadedFile(file, path)
+	path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
 	if err != nil {
-		c.String(500, "Internal server error")
+		c.String(http.StatusInternalServerError, "Failed to create file path: "+err.Error())
 		return
 	}
-	if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
-		methods.Unzip(path)
+
+	// 确保目录存在
+	dirpath := filepath.Dir(path)
+	if err := os.MkdirAll(dirpath, 0755); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to create directory: "+err.Error())
+		return
 	}
+
+	// 保存上传的文件
+	if err := c.SaveUploadedFile(file, path); err != nil {
+		c.String(http.StatusInternalServerError, "Failed to save file: "+err.Error())
+		return
+	}
+
+	// 如果是压缩文件，则解压
+	ext := filepath.Ext(path)
+	if ext == ".zip" || ext == ".rar" {
+		if err := methods.Unzip(path); err != nil {
+			c.String(http.StatusInternalServerError, "Failed to unzip file: "+err.Error())
+			return
+		}
+	}
+
 	DB := models.DB
 
-	// 直接处理SHP文件并写入数据库
+	// 处理 GDB 文件
 	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
-	if len(gdbfiles) != 0 {
-		for _, gdbfile := range gdbfiles {
-			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits, LineWidth)
-			for _, item := range ENS {
-				MakeGeoIndex(item)
-			}
+	for _, gdbfile := range gdbfiles {
+		ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits, LineWidth)
+		for _, item := range ENS {
+			MakeGeoIndex(item)
 		}
-
 	}
+
+	// 处理 SHP 文件
 	shpfiles := Transformer.FindFiles(dirpath, "shp")
-	if len(shpfiles) != 0 {
+	if len(shpfiles) > 0 {
 		EN2 := pgmvt.AddSHPDirectlyOptimized(DB, shpfiles[0], EN, CN, Main, Color, Opacity, Userunits, LineWidth)
 		MakeGeoIndex(EN2)
 	}
-	c.String(http.StatusOK, "ok")
+
+	// 清理临时文件（可选）
+	defer func() {
+		if err := os.RemoveAll(filepath.Dir(dirpath)); err != nil {
+			log.Printf("Failed to cleanup temp directory: %v", err)
+		}
+	}()
+
+	c.String(http.StatusOK, "Schema added successfully")
 }
 
 // 删除图层

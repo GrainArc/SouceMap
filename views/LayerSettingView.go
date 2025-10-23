@@ -374,7 +374,6 @@ func GetColor(LayerName string) []ColorData {
 	return result
 }
 
-// 验证并清理颜色数据
 func validateAndCleanColorData(db *gorm.DB, layerName string, searchData []models.AttColor) []models.AttColor {
 	// 按 AttName 分组
 	attGroupMap := make(map[string][]models.AttColor)
@@ -389,9 +388,15 @@ func validateAndCleanColorData(db *gorm.DB, layerName string, searchData []model
 		// 检查表中是否存在该属性字段
 		if !checkTableColumnExists(db, layerName, attName) {
 			log.Printf("属性字段 '%s' 在表 '%s' 中不存在，将删除相关配置", attName, layerName)
-			// 收集无效记录的ID用于删除
+			// 收集无效记录的ID用于删除（但排除"默认"配置）
 			for _, item := range items {
-				invalidIDs = append(invalidIDs, item.ID)
+				if item.Property != "默认" {
+					invalidIDs = append(invalidIDs, item.ID)
+				} else {
+					// 保留"默认"配置
+					validData = append(validData, item)
+					log.Printf("保留默认配置: AttName='%s', Property='默认'", attName)
+				}
 			}
 			continue
 		}
@@ -411,6 +416,14 @@ func validateAndCleanColorData(db *gorm.DB, layerName string, searchData []model
 
 		// 验证每个属性值是否存在
 		for _, item := range items {
+			// 如果是"默认"配置，直接保留
+			if item.Property == "默认" {
+				validData = append(validData, item)
+				log.Printf("保留默认配置: AttName='%s', Property='默认'", attName)
+				continue
+			}
+
+			// 非"默认"配置需要验证属性值是否存在
 			if propertyMap[item.Property] {
 				validData = append(validData, item)
 			} else {
@@ -432,6 +445,7 @@ func validateAndCleanColorData(db *gorm.DB, layerName string, searchData []model
 
 	return validData
 }
+
 func CleanColorMapForTable(db *gorm.DB, layerName string) (*CleanResult, error) {
 	// 查询该表的所有颜色配置
 	var searchData []models.AttColor
@@ -446,11 +460,20 @@ func CleanColorMapForTable(db *gorm.DB, layerName string) (*CleanResult, error) 
 			TotalCount:   0,
 			ValidCount:   0,
 			DeletedCount: 0,
+			DefaultCount: 0,
 			Message:      "该表没有颜色配置数据",
 		}, nil
 	}
 
 	totalCount := len(searchData)
+
+	// 统计"默认"配置数量
+	defaultCount := 0
+	for _, item := range searchData {
+		if item.Property == "默认" {
+			defaultCount++
+		}
+	}
 
 	// 使用 validateAndCleanColorData 进行验证和清理
 	validData := validateAndCleanColorData(db, layerName, searchData)
@@ -463,12 +486,14 @@ func CleanColorMapForTable(db *gorm.DB, layerName string) (*CleanResult, error) 
 		TotalCount:   totalCount,
 		ValidCount:   validCount,
 		DeletedCount: deletedCount,
+		DefaultCount: defaultCount,
 	}
 
 	if deletedCount > 0 {
-		result.Message = fmt.Sprintf("成功清理 %d 条无效配置，保留 %d 条有效配置", deletedCount, validCount)
+		result.Message = fmt.Sprintf("成功清理 %d 条无效配置，保留 %d 条有效配置（包含 %d 条默认配置）",
+			deletedCount, validCount, defaultCount)
 	} else {
-		result.Message = "所有配置都是有效的，无需清理"
+		result.Message = fmt.Sprintf("所有配置都是有效的，无需清理（包含 %d 条默认配置）", defaultCount)
 	}
 
 	return result, nil
@@ -480,6 +505,7 @@ type CleanResult struct {
 	TotalCount   int    `json:"total_count"`   // 清理前总配置数
 	ValidCount   int    `json:"valid_count"`   // 有效配置数
 	DeletedCount int    `json:"deleted_count"` // 删除的配置数
+	DefaultCount int    `json:"default_count"` // 默认配置数（被保护）
 	Message      string `json:"message"`       // 结果消息
 }
 
