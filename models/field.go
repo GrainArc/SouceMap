@@ -68,3 +68,41 @@ type FieldCalculatorResponse struct {
 	AffectedRows  int64  `json:"affected_rows"`
 	SQLStatement  string `json:"sql_statement"`
 }
+
+// CalcType 计算类型
+type CalcType string
+
+const (
+	CalcTypeArea      CalcType = "area"       // 面积
+	CalcTypePerimeter CalcType = "perimeter"  // 周长
+	CalcTypeCentroidX CalcType = "centroid_x" // 中心点X坐标(经度)
+	CalcTypeCentroidY CalcType = "centroid_y" // 中心点Y坐标(纬度)
+)
+
+// AreaType 面积计算类型
+type AreaType string
+
+const (
+	AreaTypePlanar    AreaType = "planar"    // 平面面积
+	AreaTypeEllipsoid AreaType = "ellipsoid" // 椭球面积
+)
+
+// GeometryUpdateRequest 几何字段更新请求
+type GeometryUpdateRequest struct {
+	TableName   string   `json:"table_name" binding:"required"`   // 表名
+	TargetField string   `json:"target_field" binding:"required"` // 目标字段名
+	GeomField   string   `json:"geom_field"`                      // 几何字段名(默认geom)
+	CalcType    CalcType `json:"calc_type" binding:"required"`    // 计算类型
+	AreaType    AreaType `json:"area_type,omitempty"`             // 面积类型(仅area时需要)
+	WhereClause string   `json:"where_clause,omitempty"`          // 可选的WHERE条件
+}
+
+// GeometryUpdateResponse 几何字段更新响应
+type GeometryUpdateResponse struct {
+	TableName    string `json:"table_name"`
+	TargetField  string `json:"target_field"`
+	CalcType     string `json:"calc_type"`
+	RowsAffected int64  `json:"rows_affected"` // 影响的行数
+	Success      bool   `json:"success"`
+	Message      string `json:"message"`
+}

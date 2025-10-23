@@ -1,9 +1,11 @@
 package methods
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"github.com/GrainArc/SouceMap/models"
+	"gorm.io/gorm"
 	"strings"
 )
 
@@ -263,77 +265,250 @@ func (s *FieldCalculatorService) validateField(tableName, fieldName string) erro
 	return nil
 }
 
-// PreviewCalculation 预览计算结果(不实际执行)
-func (s *FieldCalculatorService) PreviewCalculation(req models.FieldCalculatorRequest, limit int) ([]map[string]interface{}, error) {
-	// 构建预览SQL
-	var calcExpr string
-	var err error
+type GeometryService struct {
+}
 
-	switch req.OperationType {
-	case "assign":
-		if req.Expression == nil || req.Expression.Value == nil {
-			return nil, errors.New("赋值操作需要提供value")
-		}
-		calcExpr = s.formatValue(req.Expression.Value)
+func NewGeometryService() *GeometryService {
+	return &GeometryService{}
+}
 
-	case "copy":
-		if req.Expression == nil || req.Expression.Field == "" {
-			return nil, errors.New("复制操作需要提供源字段")
-		}
-		calcExpr = fmt.Sprintf(`"%s"`, req.Expression.Field)
-
-	case "concat":
-		if req.Expression == nil || len(req.Expression.Fields) == 0 {
-			return nil, errors.New("组合操作需要提供至少一个字段")
-		}
-		separator := req.Expression.Separator
-		var concatParts []string
-		for i, field := range req.Expression.Fields {
-			concatParts = append(concatParts, fmt.Sprintf(`COALESCE("%s"::text, '')`, field))
-			if i < len(req.Expression.Fields)-1 && separator != "" {
-				concatParts = append(concatParts, fmt.Sprintf(`'%s'`, separator))
-			}
-		}
-		calcExpr = strings.Join(concatParts, " || ")
-
-	case "calculate":
-		calcExpr, err = s.buildExpression(req.TableName, req.Expression)
-		if err != nil {
-			return nil, err
-		}
+// UpdateGeometryField 批量更新几何计算字段
+func (s *GeometryService) UpdateGeometryField(DB *gorm.DB, ctx context.Context, req *models.GeometryUpdateRequest) (*models.GeometryUpdateResponse, error) {
+	// 设置默认几何字段名
+	if req.GeomField == "" {
+		req.GeomField = "geom"
 	}
 
-	// 构建预览查询
-	sql := fmt.Sprintf(`SELECT *, (%s) as calculated_value FROM "%s"`, calcExpr, req.TableName)
-	if req.Condition != "" {
-		sql += " WHERE " + req.Condition
+	// 验证标识符
+	if err := s.validateIdentifier(req.TableName); err != nil {
+		return nil, fmt.Errorf("invalid table_name: %w", err)
 	}
-	sql += fmt.Sprintf(" LIMIT %d", limit)
+	if err := s.validateIdentifier(req.TargetField); err != nil {
+		return nil, fmt.Errorf("invalid target_field: %w", err)
+	}
+	if err := s.validateIdentifier(req.GeomField); err != nil {
+		return nil, fmt.Errorf("invalid geom_field: %w", err)
+	}
 
-	// 执行查询
-	var results []map[string]interface{}
-	rows, err := models.DB.Raw(sql).Rows()
+	// 构建更新SQL
+	updateSQL, err := s.buildUpdateSQL(req)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	columns, _ := rows.Columns()
-	for rows.Next() {
-		values := make([]interface{}, len(columns))
-		valuePtrs := make([]interface{}, len(columns))
-		for i := range values {
-			valuePtrs[i] = &values[i]
-		}
-
-		rows.Scan(valuePtrs...)
-
-		row := make(map[string]interface{})
-		for i, col := range columns {
-			row[col] = values[i]
-		}
-		results = append(results, row)
+	// 执行更新
+	db, _ := DB.DB()
+	result, err := db.ExecContext(ctx, updateSQL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update geometry field: %w", err)
 	}
 
-	return results, nil
+	rowsAffected, _ := result.RowsAffected()
+
+	return &models.GeometryUpdateResponse{
+		TableName:    req.TableName,
+		TargetField:  req.TargetField,
+		CalcType:     string(req.CalcType),
+		RowsAffected: rowsAffected,
+		Success:      true,
+		Message:      fmt.Sprintf("Successfully updated %d rows", rowsAffected),
+	}, nil
+}
+
+// buildUpdateSQL 构建更新SQL
+func (s *GeometryService) buildUpdateSQL(req *models.GeometryUpdateRequest) (string, error) {
+	var calcSQL string
+
+	switch req.CalcType {
+	case models.CalcTypeArea:
+		if req.AreaType == "" {
+			return "", fmt.Errorf("area_type is required for area calculation")
+		}
+		calcSQL = s.buildAreaSQL(req.GeomField, req.AreaType)
+
+	case models.CalcTypePerimeter:
+		calcSQL = s.buildPerimeterSQL(req.GeomField)
+
+	case models.CalcTypeCentroidX:
+		calcSQL = s.buildCentroidXSQL(req.GeomField)
+
+	case models.CalcTypeCentroidY:
+		calcSQL = s.buildCentroidYSQL(req.GeomField)
+
+	default:
+		return "", fmt.Errorf("unsupported calc_type: %s", req.CalcType)
+	}
+
+	// 构建UPDATE语句
+	updateSQL := fmt.Sprintf(`
+        UPDATE %s
+        SET %s = %s
+    `, req.TableName, req.TargetField, calcSQL)
+
+	// 添加WHERE子句（如果有）
+	if req.WhereClause != "" {
+		updateSQL += fmt.Sprintf("\nWHERE %s", req.WhereClause)
+	}
+
+	return updateSQL, nil
+}
+
+// buildAreaSQL 构建面积计算SQL
+func (s *GeometryService) buildAreaSQL(geomField string, areaType models.AreaType) string {
+	switch areaType {
+	case models.AreaTypePlanar:
+		// 平面面积 - 使用CGCS2000 3度带投影
+		return fmt.Sprintf(`
+            ST_Area(
+                CASE 
+                    WHEN ST_SRID(%s) = 4326 THEN ST_Transform(%s, 4523)
+                    WHEN ST_SRID(%s) = 4490 THEN ST_Transform(%s, 4523)
+                    ELSE %s
+                END
+            )`, geomField, geomField, geomField, geomField, geomField)
+
+	case models.AreaTypeEllipsoid:
+		// 椭球面积 - 使用CGCS2000地理坐标系
+		return fmt.Sprintf(`
+            ST_Area(
+                CASE 
+                    WHEN ST_SRID(%s) = 4326 THEN ST_Transform(%s, 4490)::geography
+                    WHEN ST_SRID(%s) = 4490 THEN %s::geography
+                    ELSE ST_Transform(ST_SetSRID(%s, 4326), 4490)::geography
+                END
+            )`, geomField, geomField, geomField, geomField, geomField)
+
+	default:
+		return fmt.Sprintf("ST_Area(%s::geography)", geomField)
+	}
+}
+
+// buildPerimeterSQL 构建周长计算SQL
+func (s *GeometryService) buildPerimeterSQL(geomField string) string {
+	return fmt.Sprintf(`
+        ST_Perimeter(
+            CASE 
+                WHEN ST_SRID(%s) = 4326 THEN ST_Transform(%s, 4490)::geography
+                WHEN ST_SRID(%s) = 4490 THEN %s::geography
+                ELSE ST_Transform(ST_SetSRID(%s, 4326), 4490)::geography
+            END
+        )`, geomField, geomField, geomField, geomField, geomField)
+}
+
+// buildCentroidXSQL 构建中心点X坐标(经度)计算SQL
+func (s *GeometryService) buildCentroidXSQL(geomField string) string {
+	return fmt.Sprintf(`
+        ST_X(
+            ST_Transform(
+                ST_Centroid(%s), 
+                4326
+            )
+        )`, geomField)
+}
+
+// buildCentroidYSQL 构建中心点Y坐标(纬度)计算SQL
+func (s *GeometryService) buildCentroidYSQL(geomField string) string {
+	return fmt.Sprintf(`
+        ST_Y(
+            ST_Transform(
+                ST_Centroid(%s), 
+                4326
+            )
+        )`, geomField)
+}
+
+// validateIdentifier 验证标识符（防止SQL注入）
+func (s *GeometryService) validateIdentifier(identifier string) error {
+	if identifier == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+
+	// 只允许字母、数字、下划线
+	for _, r := range identifier {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '_') {
+			return fmt.Errorf("invalid character in identifier: %s", identifier)
+		}
+	}
+
+	// 不能以数字开头
+	if identifier[0] >= '0' && identifier[0] <= '9' {
+		return fmt.Errorf("identifier cannot start with a number: %s", identifier)
+	}
+
+	return nil
+}
+
+// PreviewUpdateSQL 预览将要执行的SQL（用于调试）
+func (s *GeometryService) PreviewUpdateSQL(req *models.GeometryUpdateRequest) (string, error) {
+	if req.GeomField == "" {
+		req.GeomField = "geom"
+	}
+
+	if err := s.validateIdentifier(req.TableName); err != nil {
+		return "", err
+	}
+	if err := s.validateIdentifier(req.TargetField); err != nil {
+		return "", err
+	}
+	if err := s.validateIdentifier(req.GeomField); err != nil {
+		return "", err
+	}
+
+	return s.buildUpdateSQL(req)
+}
+
+// GetUpdateStatistics 获取更新统计信息（更新前预览）
+func (s *GeometryService) GetUpdateStatistics(DB *gorm.DB, ctx context.Context, req *models.GeometryUpdateRequest) (*UpdateStatistics, error) {
+	if req.GeomField == "" {
+		req.GeomField = "geom"
+	}
+
+	// 验证标识符
+	if err := s.validateIdentifier(req.TableName); err != nil {
+		return nil, err
+	}
+	if err := s.validateIdentifier(req.GeomField); err != nil {
+		return nil, err
+	}
+
+	// 构建统计查询
+	whereClause := ""
+	if req.WhereClause != "" {
+		whereClause = fmt.Sprintf("WHERE %s", req.WhereClause)
+	}
+
+	statsSQL := fmt.Sprintf(`
+        SELECT 
+            COUNT(*) as total_rows,
+            COUNT(%s) as geom_not_null,
+            COUNT(*) - COUNT(%s) as geom_null
+        FROM %s
+        %s
+    `, req.GeomField, req.GeomField, req.TableName, whereClause)
+
+	var stats UpdateStatistics
+	db, _ := DB.DB()
+	err := db.QueryRowContext(ctx, statsSQL).Scan(
+		&stats.TotalRows,
+		&stats.GeomNotNull,
+		&stats.GeomNull,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get statistics: %w", err)
+	}
+
+	stats.TableName = req.TableName
+	stats.TargetField = req.TargetField
+
+	return &stats, nil
+}
+
+// UpdateStatistics 更新统计信息
+type UpdateStatistics struct {
+	TableName   string `json:"table_name"`
+	TargetField string `json:"target_field"`
+	TotalRows   int64  `json:"total_rows"`
+	GeomNotNull int64  `json:"geom_not_null"`
+	GeomNull    int64  `json:"geom_null"`
 }

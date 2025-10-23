@@ -44,33 +44,38 @@ func (fc *FieldCalculatorController) CalculateField(c *gin.Context) {
 	})
 }
 
-// PreviewCalculation 预览计算结果
-func (fc *FieldCalculatorController) PreviewCalculation(c *gin.Context) {
-	var req models.FieldCalculatorRequest
+type GeometryHandler struct {
+	service *methods.GeometryService
+}
+
+func NewGeometryHandler(service *methods.GeometryService) *GeometryHandler {
+	return &GeometryHandler{service: service}
+}
+
+// UpdateGeometryField 批量更新几何计算字段
+// POST /api/geometry/update-field
+func (h *GeometryHandler) UpdateGeometryField(c *gin.Context) {
+
+	var req models.GeometryUpdateRequest
+	DB := models.DB
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "参数错误: " + err.Error(),
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 参数校验
+	if req.CalcType == models.CalcTypeArea && req.AreaType == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "area_type is required when calc_type is 'area'",
 		})
 		return
 	}
 
-	limit := 10 // 默认预览10条
-	results, err := fc.calculatorService.PreviewCalculation(req, limit)
+	result, err := h.service.UpdateGeometryField(DB, c.Request.Context(), &req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "预览失败: " + err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, models.Response{
-		Code:    200,
-		Message: "预览成功",
-		Data: map[string]interface{}{
-			"preview_rows": results,
-			"limit":        limit,
-		},
-	})
+	c.JSON(http.StatusOK, result)
 }
