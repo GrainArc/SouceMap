@@ -432,6 +432,56 @@ func validateAndCleanColorData(db *gorm.DB, layerName string, searchData []model
 
 	return validData
 }
+func CleanColorMapForTable(db *gorm.DB, layerName string) (*CleanResult, error) {
+	// 查询该表的所有颜色配置
+	var searchData []models.AttColor
+	if err := db.Where("layer_name = ?", layerName).Find(&searchData).Error; err != nil {
+		return nil, fmt.Errorf("查询颜色配置失败: %v", err)
+	}
+
+	// 如果没有配置数据，直接返回
+	if len(searchData) == 0 {
+		return &CleanResult{
+			LayerName:    layerName,
+			TotalCount:   0,
+			ValidCount:   0,
+			DeletedCount: 0,
+			Message:      "该表没有颜色配置数据",
+		}, nil
+	}
+
+	totalCount := len(searchData)
+
+	// 使用 validateAndCleanColorData 进行验证和清理
+	validData := validateAndCleanColorData(db, layerName, searchData)
+
+	validCount := len(validData)
+	deletedCount := totalCount - validCount
+
+	result := &CleanResult{
+		LayerName:    layerName,
+		TotalCount:   totalCount,
+		ValidCount:   validCount,
+		DeletedCount: deletedCount,
+	}
+
+	if deletedCount > 0 {
+		result.Message = fmt.Sprintf("成功清理 %d 条无效配置，保留 %d 条有效配置", deletedCount, validCount)
+	} else {
+		result.Message = "所有配置都是有效的，无需清理"
+	}
+
+	return result, nil
+}
+
+// CleanResult 清理结果结构
+type CleanResult struct {
+	LayerName    string `json:"layer_name"`    // 图层/表名
+	TotalCount   int    `json:"total_count"`   // 清理前总配置数
+	ValidCount   int    `json:"valid_count"`   // 有效配置数
+	DeletedCount int    `json:"deleted_count"` // 删除的配置数
+	Message      string `json:"message"`       // 结果消息
+}
 
 func (uc *UserController) GetColorSet(c *gin.Context) {
 	LayerName := c.Query("LayerName")

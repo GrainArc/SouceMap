@@ -356,8 +356,15 @@ func (uc *UserController) SchemaToExcel(c *gin.Context) {
 	db.Find(&result)
 	dataMap := make(map[string]models.MySchema)
 	for _, item := range result {
+
 		item.EN = strings.ToLower(item.EN)
 		dataMap[item.EN] = item
+		//清理数据
+		_, err := CleanColorMapForTable(db, item.EN)
+		if err != nil {
+			log.Println(err)
+		}
+
 	}
 	var data []WordGenerator.LayerSchema2
 	for _, value := range dataMap {
