@@ -9,7 +9,12 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 	"log"
+	"math"
 	"os"
+)
+
+const (
+	tolerance = 1e-6 // 浮点数比较容差
 )
 
 func GbkToUtf8(s string) string {
@@ -38,100 +43,118 @@ func Utf8ToGbk(input string) []byte {
 	return output.Bytes() // 返回转换后的GBK字节和nil错误
 }
 
+// 判断两个点是否相等（考虑浮点数误差）
+func pointsEqual(p1, p2 orb.Point) bool {
+	return math.Abs(p1[0]-p2[0]) < tolerance && math.Abs(p1[1]-p2[1]) < tolerance
+}
+
+// 判断线是否闭合（首尾节点相等）
+func isClosedLine(coords []orb.Point) bool {
+	if len(coords) < 2 {
+		return false
+	}
+	return pointsEqual(coords[0], coords[len(coords)-1])
+}
+
+// 根据坐标判断投影带
+func updateTransform(x float64, isTransform *string) {
+	if *isTransform != "" {
+		return // 已经设置过了
+	}
+	if x >= 33000000 && x < 34000000 {
+		*isTransform = "4521"
+	} else if x >= 34000000 && x < 35000000 {
+		*isTransform = "4522"
+	} else if x >= 35000000 && x < 36000000 {
+		*isTransform = "4523"
+	} else if x >= 36000000 && x < 37000000 {
+		*isTransform = "4524"
+	}
+}
+
+// 创建几何要素（自动判断是线还是面）
+func createFeature(coords []orb.Point, layerName string, forceClosed bool) *geojson.Feature {
+	if len(coords) < 2 {
+		return nil
+	}
+
+	// 判断是否应该创建面：1. 强制闭合 或 2. 首尾节点相等
+	shouldBePolygon := forceClosed || isClosedLine(coords)
+
+	if shouldBePolygon {
+		// 确保闭合（如果最后一点不等于第一点，添加第一点）
+		closedCoords := coords
+		if !pointsEqual(coords[0], coords[len(coords)-1]) {
+			closedCoords = append([]orb.Point{}, coords...)
+			closedCoords = append(closedCoords, coords[0])
+		}
+
+		// 面至少需要4个点（包括闭合点）
+		if len(closedCoords) >= 4 {
+			polygon := orb.Polygon{closedCoords}
+			feature := geojson.NewFeature(polygon)
+			feature.Properties["layername"] = GbkToUtf8(layerName)
+			return feature
+		}
+	}
+
+	// 创建线
+	line := orb.LineString(coords)
+	feature := geojson.NewFeature(line)
+	feature.Properties["layername"] = GbkToUtf8(layerName)
+	return feature
+}
+
 func ConvertDXFToGeoJSON2(dxfFilePath string) (*geojson.FeatureCollection, string) {
 	file, err := os.Open(dxfFilePath)
 	isTransform := ""
 	if err != nil {
 		log.Println(err)
 	}
+	defer file.Close()
+
 	doc, err := document.DxfDocumentFromStream(file)
 	if err != nil {
 		log.Println(err)
 	}
 	featureCollection := geojson.NewFeatureCollection()
+
+	// 处理实体
 	for _, entity := range doc.Entities.Entities {
 		if polyline, ok := entity.(*entities.Polyline); ok { //线文件
 			var coords []orb.Point
 			for _, vertex := range polyline.Vertices {
 				x := vertex.Location.X
-				if x >= 33000000 && x <= 34000000 {
-					isTransform = "4521"
-				} else if x >= 34000000 && x <= 35000000 {
-					isTransform = "4522"
-				} else if x >= 35000000 && x <= 36000000 {
-					isTransform = "4523"
-				} else if x >= 36000000 && x <= 37000000 {
-					isTransform = "4524"
-				}
+				updateTransform(x, &isTransform)
+
 				if x >= 33000000 && x <= 37000000 {
 					coords = append(coords, orb.Point{vertex.Location.X, vertex.Location.Y})
-
 				}
-
 			}
-			if len(coords) >= 2 {
-				line := orb.LineString(coords)
-				feature := geojson.NewFeature(line)
-				feature.Properties["layername"] = GbkToUtf8(polyline.LayerName)
+
+			// 使用新的创建函数，自动判断线/面
+			if feature := createFeature(coords, polyline.LayerName, false); feature != nil {
 				featureCollection.Append(feature)
 			}
+
 		} else if lwpolyline, ok := entity.(*entities.LWPolyline); ok { //面文件
+			var coords []orb.Point
+			for _, vertex := range lwpolyline.Points {
+				x := vertex.Point.X
+				updateTransform(x, &isTransform)
 
-			if lwpolyline.Closed == true {
-				var coords []orb.Point
-				for _, vertex := range lwpolyline.Points {
-					x := vertex.Point.X
-					if x >= 33000000 && x <= 34000000 {
-						isTransform = "4521"
-					} else if x >= 34000000 && x <= 35000000 {
-						isTransform = "4522"
-					} else if x >= 35000000 && x <= 36000000 {
-						isTransform = "4523"
-					} else if x >= 36000000 && x <= 37000000 {
-						isTransform = "4524"
-					}
-					if x >= 33000000 && x <= 37000000 {
-						coords = append(coords, orb.Point{vertex.Point.X, vertex.Point.Y})
-					}
-
+				if x >= 33000000 && x <= 37000000 {
+					coords = append(coords, orb.Point{vertex.Point.X, vertex.Point.Y})
 				}
-				if len(coords) >= 4 {
-					polygon := orb.Polygon{coords}
-					feature := geojson.NewFeature(polygon)
-					feature.Properties["layername"] = GbkToUtf8(lwpolyline.LayerName)
-					featureCollection.Append(feature)
-				}
-
-			} else {
-				var coords []orb.Point
-				for _, vertex := range lwpolyline.Points {
-					x := vertex.Point.X
-					if x >= 33000000 && x <= 34000000 {
-						isTransform = "4521"
-					} else if x >= 34000000 && x <= 35000000 {
-						isTransform = "4522"
-					} else if x >= 35000000 && x <= 36000000 {
-						isTransform = "4523"
-					} else if x >= 36000000 && x <= 37000000 {
-						isTransform = "4524"
-					}
-					if x >= 33000000 && x <= 37000000 {
-						coords = append(coords, orb.Point{vertex.Point.X, vertex.Point.Y})
-					}
-
-				}
-				if len(coords) >= 2 {
-					line := orb.LineString(coords)
-					feature := geojson.NewFeature(line)
-					feature.Properties["layername"] = GbkToUtf8(lwpolyline.LayerName)
-					featureCollection.Append(feature)
-				}
-
 			}
 
+			// 使用新的创建函数，传入Closed标志
+			if feature := createFeature(coords, lwpolyline.LayerName, lwpolyline.Closed); feature != nil {
+				featureCollection.Append(feature)
+			}
 		}
-
 	}
+
 	//如果是块文件
 	for _, block := range doc.Blocks {
 		for _, entity := range block.Entities {
@@ -139,81 +162,33 @@ func ConvertDXFToGeoJSON2(dxfFilePath string) (*geojson.FeatureCollection, strin
 				var coords []orb.Point
 				for _, vertex := range polyline.Vertices {
 					x := vertex.Location.X
-					if x >= 33000000 && x <= 34000000 {
-						isTransform = "4521"
-					} else if x >= 34000000 && x <= 35000000 {
-						isTransform = "4522"
-					} else if x >= 35000000 && x <= 36000000 {
-						isTransform = "4523"
-					} else if x >= 36000000 && x <= 37000000 {
-						isTransform = "4524"
-					}
+					updateTransform(x, &isTransform)
+
 					if x >= 33000000 && x <= 37000000 {
 						coords = append(coords, orb.Point{vertex.Location.X, vertex.Location.Y})
-
 					}
 				}
-				if len(coords) >= 2 {
-					line := orb.LineString(coords)
-					feature := geojson.NewFeature(line)
-					feature.Properties["layername"] = GbkToUtf8(polyline.LayerName)
+
+				// 使用新的创建函数，自动判断线/面
+				if feature := createFeature(coords, polyline.LayerName, false); feature != nil {
 					featureCollection.Append(feature)
 				}
 
 			} else if lwpolyline, ok := entity.(*entities.LWPolyline); ok {
-				if lwpolyline.Closed == true {
-					var coords []orb.Point
-					for _, vertex := range lwpolyline.Points {
-						x := vertex.Point.X
-						if x >= 33000000 && x <= 34000000 {
-							isTransform = "4521"
-						} else if x >= 34000000 && x <= 35000000 {
-							isTransform = "4522"
-						} else if x >= 35000000 && x <= 36000000 {
-							isTransform = "4523"
-						} else if x >= 36000000 && x <= 37000000 {
-							isTransform = "4524"
-						}
-						if x >= 33000000 && x <= 37000000 {
-							coords = append(coords, orb.Point{vertex.Point.X, vertex.Point.Y})
+				var coords []orb.Point
+				for _, vertex := range lwpolyline.Points {
+					x := vertex.Point.X
+					updateTransform(x, &isTransform)
 
-						}
+					if x >= 33000000 && x <= 37000000 {
+						coords = append(coords, orb.Point{vertex.Point.X, vertex.Point.Y})
 					}
-					if len(coords) >= 4 {
-						polygon := orb.Polygon{coords}
-						feature := geojson.NewFeature(polygon)
-						feature.Properties["layername"] = GbkToUtf8(lwpolyline.LayerName)
-						featureCollection.Append(feature)
-					}
-
-				} else {
-					var coords []orb.Point
-
-					for _, vertex := range lwpolyline.Points {
-						x := vertex.Point.X
-						if x >= 33000000 && x <= 34000000 {
-							isTransform = "4521"
-						} else if x >= 34000000 && x <= 35000000 {
-							isTransform = "4522"
-						} else if x >= 35000000 && x <= 36000000 {
-							isTransform = "4523"
-						} else if x >= 36000000 && x <= 37000000 {
-							isTransform = "4524"
-						}
-						if x >= 33000000 && x <= 37000000 {
-							coords = append(coords, orb.Point{vertex.Point.X, vertex.Point.Y})
-						}
-
-					}
-					if len(coords) >= 2 {
-						line := orb.LineString(coords)
-						feature := geojson.NewFeature(line)
-						feature.Properties["layername"] = GbkToUtf8(lwpolyline.LayerName)
-						featureCollection.Append(feature)
-					}
-
 				}
 
+				// 使用新的创建函数，传入Closed标志
+				if feature := createFeature(coords, lwpolyline.LayerName, lwpolyline.Closed); feature != nil {
+					featureCollection.Append(feature)
+				}
 			}
 		}
 	}

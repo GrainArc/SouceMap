@@ -11,6 +11,7 @@ import (
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/encoding/wkb"
 	"github.com/saintfish/chardet"
+
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"log"
@@ -36,7 +37,7 @@ func judgeSlice(validEN []string, ENs []string) (bool, string) {
 	}
 	return false, ""
 }
-func AddGeoDirectly(DB *gorm.DB, dirpath string, EN string, CN string, Main string, Color string, Opacity string, Userunits string, addType string) string {
+func AddGeoDirectly(DB *gorm.DB, dirpath string, EN string, CN string, Main string, Color string, Opacity string, Userunits string, addType string, LineWidth string) string {
 	shpfiles := Transformer.FindFiles(dirpath, "shp")
 
 	replacer := strings.NewReplacer(
@@ -89,7 +90,7 @@ func AddGeoDirectly(DB *gorm.DB, dirpath string, EN string, CN string, Main stri
 			for _, item := range shpfiles {
 				GEOTYPE := ConvertSHPDirectlyToPG(item, DB, EN)
 				// 处理schema记录
-				handleSchemaRecord(DB, EN, CN, Main, Color, Opacity, GEOTYPE, replacer, Userunits)
+				handleSchemaRecord(DB, EN, CN, Main, Color, Opacity, GEOTYPE, replacer, Userunits, LineWidth)
 			}
 
 			return EN
@@ -472,7 +473,7 @@ func cleanString(s string) string {
 }
 
 // 辅助函数：处理schema记录
-func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE string, replacer *strings.Replacer, Userunits string) {
+func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE string, replacer *strings.Replacer, Userunits string, LineWidth string) {
 	var count int64
 	DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", EN, CN).Count(&count)
 
@@ -487,6 +488,7 @@ func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE strin
 			Color:       Color,
 			Opacity:     Opacity,
 			Userunits:   Userunits,
+			LineWidth:   LineWidth,
 			Type:        output,
 			ID:          maxID + 1,
 			UpdatedDate: time.Now().Format("2006-01-02 15:04:05"),
@@ -667,7 +669,7 @@ func getTableColumns(DB *gorm.DB, tablename string) (map[string]bool, error) {
 
 // 使用Gdal实现
 // UpdateSHPDirectly 将SHP文件直接更新到数据库中
-func UpdateSHPDirectly(DB *gorm.DB, shpPath string, EN, CN, Main string, Color string, Opacity string, Userunits, AddType string) []string {
+func UpdateSHPDirectly(DB *gorm.DB, shpPath string, EN, CN, Main string, Color string, Opacity string, Userunits, AddType string, LineWidth string) []string {
 
 	// 读取SHP文件
 	shpLayer, err := Gogeo.SHPToPostGIS(shpPath)
@@ -739,7 +741,7 @@ func UpdateSHPDirectly(DB *gorm.DB, shpPath string, EN, CN, Main string, Color s
 
 		// 处理schema记录
 		geoType := mapGeoTypeToStandard(shpLayer.GeoType)
-		handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits)
+		handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
 		processedTables = append(processedTables, tableName)
 	}
 
@@ -958,7 +960,7 @@ func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 }
 
 // AddSHPDirectlyOptimized 优化版本：直接将SHP文件导入到PostGIS数据库
-func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, Color string, Opacity string, Userunits string) string {
+func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, Color string, Opacity string, Userunits string, LineWidth string) string {
 
 	shpLayer, err := Gogeo.SHPToPostGIS(shpPath)
 	if err != nil {
@@ -1025,7 +1027,7 @@ func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, C
 
 		// 处理schema记录
 		geoType := mapGeoTypeToStandard(shpLayer.GeoType)
-		handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits)
+		handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
 		processedTables = tableName
 	}
 

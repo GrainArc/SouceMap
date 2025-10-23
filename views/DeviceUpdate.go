@@ -522,7 +522,7 @@ func shpToLayer(tablename string, shp string, addType string) bool {
 	DB := models.DB
 	var Schema models.MySchema
 	DB.Where("en = ?", tablename).First(&Schema)
-	pgmvt.UpdateSHPDirectly(DB, shp, Schema.EN, Schema.CN, Schema.Main, Schema.Color, Schema.Opacity, Schema.Userunits, addType)
+	pgmvt.UpdateSHPDirectly(DB, shp, Schema.EN, Schema.CN, Schema.Main, Schema.Color, Schema.Opacity, Schema.Userunits, addType, Schema.LineWidth)
 	return true
 }
 
@@ -531,7 +531,7 @@ func GDBToLayer(tablename string, gdbs []string, addType string) bool {
 	var Schema models.MySchema
 	DB.Where("en = ?", tablename).First(&Schema)
 	for _, gdb := range gdbs {
-		pgmvt.UpdateGDBDirectly(DB, gdb, Schema.EN, Schema.CN, Schema.Main, Schema.Color, Schema.Opacity, Schema.Userunits, addType)
+		pgmvt.UpdateGDBDirectly(DB, gdb, Schema.EN, Schema.CN, Schema.Main, Schema.Color, Schema.Opacity, Schema.Userunits, addType, Schema.LineWidth)
 	}
 
 	return true

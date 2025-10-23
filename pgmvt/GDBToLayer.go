@@ -247,7 +247,7 @@ func mapGeoTypeToStandard(geoType string) string {
 }
 
 // AddGDBDirectlyOptimized 优化版本：直接将GDB文件导入到PostGIS数据库
-func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color string, Opacity string, Userunits string) []string {
+func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color string, Opacity string, Userunits string, LineWidth string) []string {
 
 	layers, err := Gogeo.GDBToPostGIS(gdbPath)
 	if err != nil {
@@ -315,7 +315,7 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 
 			// 处理schema记录
 			geoType := mapGeoTypeToStandard(layer.GeoType)
-			handleSchemaRecord(DB, tableName, layer.LayerName, Main, Color, Opacity, geoType, replacer, Userunits)
+			handleSchemaRecord(DB, tableName, layer.LayerName, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
 			processedTables = append(processedTables, tableName)
 		}
 	}
@@ -324,7 +324,7 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 }
 
 // 将gdb文件图层全部更新到数据库中
-func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color string, Opacity string, Userunits, AddType string) []string {
+func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color string, Opacity string, Userunits, AddType string, LineWidth string) []string {
 
 	layers, err := Gogeo.GDBToPostGIS(gdbPath)
 	if err != nil {
@@ -397,7 +397,7 @@ func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color s
 
 			// 处理schema记录
 			geoType := mapGeoTypeToStandard(layer.GeoType)
-			handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits)
+			handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
 			processedTables = append(processedTables, tableName)
 		}
 	}

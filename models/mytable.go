@@ -29,6 +29,7 @@ type MySchema struct {
 	Type        string `gorm:"type:varchar(255)"`
 	Opacity     string `gorm:"type:varchar(254)"`
 	Color       string `gorm:"type:varchar(255)"`
+	LineWidth   string `gorm:"type:varchar(55)"`
 	UpdatedDate string `gorm:"type:varchar(255)"`
 	Userunits   string `gorm:"type:varchar(255)"`
 }

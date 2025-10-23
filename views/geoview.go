@@ -13,6 +13,7 @@ import (
 	"github.com/GrainArc/SouceMap/pgmvt"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/mozillazg/go-pinyin"
 	"github.com/paulmach/orb/geojson"
 	"log"
 	"net/http"
@@ -168,15 +169,134 @@ func (uc *UserController) GeodesicArea(c *gin.Context) {
 
 // 表名获取
 type LayerSchema struct {
-	ID       int64
-	Main     string
-	CN       string
-	EN       string
-	Date     string
-	Type     string
-	Opacity  string
-	Color    string    `json:"Color"`
-	ColorSet ColorData `json:"ColorSet"`
+	ID        int64
+	Main      string
+	CN        string
+	EN        string
+	LineWidth string
+	Date      string
+	Type      string
+	Opacity   string
+	Color     string    `json:"Color"`
+	ColorSet  ColorData `json:"ColorSet"`
+}
+
+// 提取字符串中的数字
+func extractNumbers(s string) []int {
+	re := regexp.MustCompile(`\d+`)
+	matches := re.FindAllString(s, -1)
+	var numbers []int
+	for _, match := range matches {
+		if num, err := strconv.Atoi(match); err == nil {
+			numbers = append(numbers, num)
+		}
+	}
+	return numbers
+}
+
+// 将中文转换为拼音
+func chineseToPinyin(s string) string {
+	a := pinyin.NewArgs()
+	a.Style = pinyin.NORMAL
+	a.Heteronym = false
+	pinyinSlice := pinyin.Pinyin(s, a)
+
+	var result []string
+	for _, py := range pinyinSlice {
+		if len(py) > 0 {
+			result = append(result, py[0])
+		}
+	}
+	return strings.Join(result, "")
+}
+
+// 检查字符串是否包含数字
+func containsNumber(s string) bool {
+	re := regexp.MustCompile(`\d`)
+	return re.MatchString(s)
+}
+
+// CN字段比较函数
+func compareCN(cnI, cnJ string) bool {
+	// 检查是否包含数字
+	hasNumberI := containsNumber(cnI)
+	hasNumberJ := containsNumber(cnJ)
+
+	// 如果两个都包含数字，按数字排序
+	if hasNumberI && hasNumberJ {
+		numbersI := extractNumbers(cnI)
+		numbersJ := extractNumbers(cnJ)
+
+		// 比较第一个数字
+		if len(numbersI) > 0 && len(numbersJ) > 0 {
+			if numbersI[0] != numbersJ[0] {
+				return numbersI[0] < numbersJ[0]
+			}
+			// 如果第一个数字相同，继续比较后续数字
+			minLen := len(numbersI)
+			if len(numbersJ) < minLen {
+				minLen = len(numbersJ)
+			}
+			for k := 1; k < minLen; k++ {
+				if numbersI[k] != numbersJ[k] {
+					return numbersI[k] < numbersJ[k]
+				}
+			}
+			// 如果所有比较的数字都相同，数字少的排前面
+			if len(numbersI) != len(numbersJ) {
+				return len(numbersI) < len(numbersJ)
+			}
+		}
+	}
+
+	// 如果只有一个包含数字，包含数字的排前面
+	if hasNumberI && !hasNumberJ {
+		return true
+	}
+	if !hasNumberI && hasNumberJ {
+		return false
+	}
+
+	// 如果都不包含数字或者数字部分相同，按拼音排序
+	pinyinI := chineseToPinyin(cnI)
+	pinyinJ := chineseToPinyin(cnJ)
+
+	return strings.ToLower(pinyinI) < strings.ToLower(pinyinJ)
+}
+
+// 获取Main分组中最小的ID（用于组间排序）
+func getMinIDInGroup(data []LayerSchema, main string) int64 {
+	var minID int64 = int64(^uint64(0) >> 1) // 最大int64值
+	for _, item := range data {
+		if item.Main == main && item.ID < minID {
+			minID = item.ID
+		}
+	}
+	return minID
+}
+
+// 分组排序：Main分组内按CN排序，分组间按ID排序
+func sortByMainAndCN(data []LayerSchema) {
+	// 首先按Main分组，并获取每个分组的最小ID
+	mainGroups := make(map[string]int64)
+	for _, item := range data {
+		if minID, exists := mainGroups[item.Main]; !exists || item.ID < minID {
+			mainGroups[item.Main] = item.ID
+		}
+	}
+
+	sort.Slice(data, func(i, j int) bool {
+		mainI := data[i].Main
+		mainJ := data[j].Main
+
+		// 如果是不同的Main分组，按分组的最小ID排序
+		if mainI != mainJ {
+			return mainGroups[mainI] < mainGroups[mainJ]
+		}
+
+		// 如果是同一个Main分组，按CN字段排序
+		return compareCN(data[i].CN, data[j].CN)
+	})
 }
 
 func sortByID(data []LayerSchema) {
@@ -184,6 +304,7 @@ func sortByID(data []LayerSchema) {
 		return data[i].ID < data[j].ID
 	})
 }
+
 func (uc *UserController) GetSchema(c *gin.Context) {
 	db := models.DB
 	var result []models.MySchema
@@ -199,30 +320,32 @@ func (uc *UserController) GetSchema(c *gin.Context) {
 		C := GetColor(value.EN)
 		if len(C) > 0 {
 			data = append(data, LayerSchema{
-				ID:       value.ID,
-				Main:     value.Main,
-				CN:       value.CN,
-				EN:       value.EN,
-				Type:     value.Type,
-				Date:     value.UpdatedDate,
-				Opacity:  value.Opacity,
-				ColorSet: C[0],
+				ID:        value.ID,
+				Main:      value.Main,
+				CN:        value.CN,
+				EN:        value.EN,
+				LineWidth: value.LineWidth,
+				Type:      value.Type,
+				Date:      value.UpdatedDate,
+				Opacity:   value.Opacity,
+				ColorSet:  C[0],
 			})
 		} else {
 			data = append(data, LayerSchema{
-				ID:      value.ID,
-				Main:    value.Main,
-				CN:      value.CN,
-				EN:      value.EN,
-				Date:    value.UpdatedDate,
-				Type:    value.Type,
-				Opacity: value.Opacity,
-				Color:   value.Color,
+				ID:        value.ID,
+				Main:      value.Main,
+				CN:        value.CN,
+				EN:        value.EN,
+				LineWidth: value.LineWidth,
+				Date:      value.UpdatedDate,
+				Type:      value.Type,
+				Opacity:   value.Opacity,
+				Color:     value.Color,
 			})
 		}
 
 	}
-	sortByID(data)
+	sortByMainAndCN(data)
 
 	c.JSON(http.StatusOK, data)
 }
@@ -317,6 +440,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 
 	Color := c.PostForm("Color")
 	Opacity := c.PostForm("Opacity")
+	LineWidth := c.PostForm("LineWidth")
 	Userunits := c.PostForm("userunits")
 	file, err := c.FormFile("file")
 	if err != nil {
@@ -341,7 +465,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
 	if len(gdbfiles) != 0 {
 		for _, gdbfile := range gdbfiles {
-			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits)
+			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits, LineWidth)
 			for _, item := range ENS {
 				MakeGeoIndex(item)
 			}
@@ -350,7 +474,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	}
 	shpfiles := Transformer.FindFiles(dirpath, "shp")
 	if len(shpfiles) != 0 {
-		EN2 := pgmvt.AddSHPDirectlyOptimized(DB, shpfiles[0], EN, CN, Main, Color, Opacity, Userunits)
+		EN2 := pgmvt.AddSHPDirectlyOptimized(DB, shpfiles[0], EN, CN, Main, Color, Opacity, Userunits, LineWidth)
 		MakeGeoIndex(EN2)
 	}
 	c.String(http.StatusOK, "ok")
