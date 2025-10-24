@@ -772,7 +772,7 @@ func (sbm *SQLBackupManager) backupTableAsInserts(dataDir, tableName string) err
 	orderByColumn, err := sbm.getPrimaryKeyColumn(tableName)
 	if err != nil || orderByColumn == "" {
 		// 如果没有主键，尝试使用第一个列
-		orderByColumn = columnNames[0]
+		orderByColumn = "id"
 		log.Printf("表%s没有主键，使用列%s进行排序", tableName, orderByColumn)
 	}
 
