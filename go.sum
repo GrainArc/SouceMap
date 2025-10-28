@@ -4,6 +4,7 @@ gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93 h1:Aq5znH5v9quy6e
 gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93/go.mod h1:Y3q9DdGSKANzWBiCBwpKvDE2f2B59E667lsLiJaVNDg=
 github.com/GrainArc/Gogeo v1.2.7 h1:/JV64Lzvr6TpCMzCAKdLFlUg9N9bF9s2CrsxHun/wpo=
 github.com/GrainArc/Gogeo v1.2.7/go.mod h1:t1aRw/bRhG+ML84vtFR2FoI31DOxb2B+vcJZDJYi7o0=
+github.com/GrainArc/Gogeo v1.2.10/go.mod h1:t1aRw/bRhG+ML84vtFR2FoI31DOxb2B+vcJZDJYi7o0=
 github.com/adrg/strutil v0.1.0/go.mod h1:pXRr2+IyX5AEPAF5icj/EeTaiflPSD2hvGjnguilZgE=
 github.com/adrg/sysfont v0.1.1/go.mod h1:19nTHzfIn/HbngFMet+yNAvwSQYtOJYMI7vWexLWyNw=
 github.com/adrg/xdg v0.2.1/go.mod h1:ZuOshBmzV4Ta+s23hdfFZnBsdzmoR3US0d7ErpqSbTQ=
