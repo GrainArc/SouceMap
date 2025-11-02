@@ -289,9 +289,13 @@ func writeShapefileDataToDB(shape *shp.Reader, DB *gorm.DB, tablename string, fi
 				// 转换为小写进行比较
 				lowerFieldName := strings.ToLower(fieldName)
 
-				// 只处理数据库表中存在的字段，且不是id字段
-				if lowerFieldName != "id" && dbColumns[lowerFieldName] {
-					// 清理字符串
+				// 严格排除id字段（不区分大小写）
+				if lowerFieldName == "id" {
+					continue // 直接跳过id字段
+				}
+
+				// 只处理数据库表中存在的字段
+				if dbColumns[lowerFieldName] {
 					cleanValue := cleanString(fieldValue)
 					record[lowerFieldName] = Transformer.TrimTrailingZeros(cleanValue)
 				}
