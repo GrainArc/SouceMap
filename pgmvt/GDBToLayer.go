@@ -505,7 +505,10 @@ func createGDBTableDirect(DB *gorm.DB, tableName string, fields map[string]strin
 	// 添加属性字段
 
 	for fieldName, fieldType := range fields {
-
+		// 跳过id字段(不区分大小写)
+		if strings.EqualFold(fieldName, "id") {
+			continue
+		}
 		columns = append(columns, fmt.Sprintf("%s %s", fieldName, fieldType))
 	}
 
