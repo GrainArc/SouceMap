@@ -26,8 +26,31 @@ type ColorData struct {
 	ColorMap  []CMap
 }
 
-func isValidRGBColor(color string) bool {
-	// 使用正则表达式验证 RGB 格式（不区分大小写）
+func isValidColor(color string) bool {
+	// 移除所有空格
+	color = strings.ReplaceAll(color, " ", "")
+
+	// 尝试匹配 RGB 格式
+	if isValidRGB(color) {
+		return true
+	}
+
+	// 尝试匹配 RGBA 格式
+	if isValidRGBA(color) {
+		return true
+	}
+
+	// 尝试匹配 HEX 格式
+	if isValidHex(color) {
+		return true
+	}
+
+	return false
+}
+
+// isValidRGB 验证 RGB 格式
+func isValidRGB(color string) bool {
+	// 正则匹配 RGB(r,g,b) 格式（不区分大小写）
 	rgbPattern := `^(?i)RGB\((\d{1,3}),(\d{1,3}),(\d{1,3})\)$`
 	re := regexp.MustCompile(rgbPattern)
 
@@ -47,16 +70,166 @@ func isValidRGBColor(color string) bool {
 	return true
 }
 
+// isValidRGBA 验证 RGBA 格式
+func isValidRGBA(color string) bool {
+	// 正则匹配 RGBA(r,g,b,a) 格式（不区分大小写）
+	// alpha 值可以是 0-1 的小数或 0-255 的整数
+	rgbaPattern := `^(?i)RGBA\((\d{1,3}),(\d{1,3}),(\d{1,3}),([0-9]*\.?[0-9]+)\)$`
+	re := regexp.MustCompile(rgbaPattern)
+
+	matches := re.FindStringSubmatch(color)
+	if matches == nil {
+		return false
+	}
+
+	// 验证 RGB 值是否在 0-255 范围内
+	for i := 1; i <= 3; i++ {
+		val, err := strconv.Atoi(matches[i])
+		if err != nil || val < 0 || val > 255 {
+			return false
+		}
+	}
+
+	// 验证 Alpha 值
+	alpha, err := strconv.ParseFloat(matches[4], 64)
+	if err != nil {
+		return false
+	}
+
+	// Alpha 值可以是 0-1 或 0-255
+	if (alpha >= 0 && alpha <= 1) || (alpha >= 0 && alpha <= 255) {
+		return true
+	}
+
+	return false
+}
+
+// isValidHex 验证 HEX 格式
+func isValidHex(color string) bool {
+	// 移除可能的 # 前缀
+	color = strings.TrimPrefix(color, "#")
+
+	// HEX 格式可以是 3 位或 6 位或 8 位（包含 alpha）
+	hexPattern := `^(?i)[0-9A-F]{3}$|^(?i)[0-9A-F]{6}$|^(?i)[0-9A-F]{8}$`
+	re := regexp.MustCompile(hexPattern)
+
+	return re.MatchString(color)
+}
+
+// normalizeColor 将颜色格式标准化为统一格式（可选功能）
+// 将所有颜色转换为 RGB(r,g,b) 或 RGBA(r,g,b,a) 格式
+func normalizeColor(color string) (string, error) {
+	// 移除所有空格
+	color = strings.ReplaceAll(color, " ", "")
+
+	// 如果已经是 RGB 或 RGBA 格式，直接返回
+	if isValidRGB(color) || isValidRGBA(color) {
+		return strings.ToUpper(color[:4]) + color[4:], nil
+	}
+
+	// 如果是 HEX 格式，转换为 RGB
+	if isValidHex(color) {
+		return hexToRGB(color)
+	}
+
+	return "", fmt.Errorf("无效的颜色格式: %s", color)
+}
+
+// hexToRGB 将 HEX 格式转换为 RGB 格式
+// hexToRGB 将 HEX 格式转换为 RGB 格式
+func hexToRGB(hex string) (string, error) {
+	// 移除 # 前缀
+	hex = strings.TrimPrefix(hex, "#")
+	hex = strings.ToUpper(hex)
+
+	var r, g, b int
+	var a float64 = 1.0
+
+	switch len(hex) {
+	case 3:
+		// 3位HEX，如 F00 -> FF0000
+		rVal, _ := strconv.ParseInt(string(hex[0])+string(hex[0]), 16, 64)
+		gVal, _ := strconv.ParseInt(string(hex[1])+string(hex[1]), 16, 64)
+		bVal, _ := strconv.ParseInt(string(hex[2])+string(hex[2]), 16, 64)
+		r = int(rVal)
+		g = int(gVal)
+		b = int(bVal)
+	case 6:
+		// 6位HEX，如 FF0000
+		rVal, _ := strconv.ParseInt(hex[0:2], 16, 64)
+		gVal, _ := strconv.ParseInt(hex[2:4], 16, 64)
+		bVal, _ := strconv.ParseInt(hex[4:6], 16, 64)
+		r = int(rVal)
+		g = int(gVal)
+		b = int(bVal)
+	case 8:
+		// 8位HEX（包含alpha），如 FF0000FF
+		rVal, _ := strconv.ParseInt(hex[0:2], 16, 64)
+		gVal, _ := strconv.ParseInt(hex[2:4], 16, 64)
+		bVal, _ := strconv.ParseInt(hex[4:6], 16, 64)
+		alphaInt, _ := strconv.ParseInt(hex[6:8], 16, 64)
+		r = int(rVal)
+		g = int(gVal)
+		b = int(bVal)
+		a = float64(alphaInt) / 255.0
+		return fmt.Sprintf("RGBA(%d,%d,%d,%.2f)", r, g, b, a), nil
+	default:
+		return "", fmt.Errorf("无效的HEX长度: %d", len(hex))
+	}
+
+	return fmt.Sprintf("RGB(%d,%d,%d)", r, g, b), nil
+}
+
+// rgbToHex 将 RGB/RGBA 格式转换为 HEX 格式（可选功能）
+func rgbToHex(color string) (string, error) {
+	color = strings.ReplaceAll(color, " ", "")
+
+	// 匹配 RGB
+	rgbPattern := `^(?i)RGB\((\d{1,3}),(\d{1,3}),(\d{1,3})\)$`
+	re := regexp.MustCompile(rgbPattern)
+	matches := re.FindStringSubmatch(color)
+
+	if matches != nil {
+		r, _ := strconv.Atoi(matches[1])
+		g, _ := strconv.Atoi(matches[2])
+		b, _ := strconv.Atoi(matches[3])
+		return fmt.Sprintf("#%02X%02X%02X", r, g, b), nil
+	}
+
+	// 匹配 RGBA
+	rgbaPattern := `^(?i)RGBA\((\d{1,3}),(\d{1,3}),(\d{1,3}),([0-9]*\.?[0-9]+)\)$`
+	re = regexp.MustCompile(rgbaPattern)
+	matches = re.FindStringSubmatch(color)
+
+	if matches != nil {
+		r, _ := strconv.Atoi(matches[1])
+		g, _ := strconv.Atoi(matches[2])
+		b, _ := strconv.Atoi(matches[3])
+		alpha, _ := strconv.ParseFloat(matches[4], 64)
+
+		// 如果 alpha 在 0-1 之间，转换为 0-255
+		if alpha <= 1 {
+			alpha = alpha * 255
+		}
+
+		return fmt.Sprintf("#%02X%02X%02X%02X", r, g, b, int(alpha)), nil
+	}
+
+	return "", fmt.Errorf("无效的RGB/RGBA格式: %s", color)
+}
+
+// filterValidColors 过滤并返回颜色格式合法的 CMap
 // filterValidColors 过滤并返回颜色格式合法的 CMap
 func filterValidColors(colorMaps []CMap) ([]CMap, []string) {
 	validMaps := make([]CMap, 0, len(colorMaps))
 	invalidColors := make([]string, 0)
 
 	for _, cm := range colorMaps {
-		if isValidRGBColor(cm.Color) {
+		if isValidColor(cm.Color) { // 使用新的验证函数
 			validMaps = append(validMaps, cm)
 		} else {
-			invalidColors = append(invalidColors, fmt.Sprintf("Property: %s, Color: %s", cm.Property, cm.Color))
+			invalidColors = append(invalidColors,
+				fmt.Sprintf("Property: %s, Color: %s", cm.Property, cm.Color))
 		}
 	}
 
@@ -158,6 +331,7 @@ func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 	}
 
 	// 判断是否为默认配置
+	fmt.Println(validColorMaps)
 	isDefaultConfig := len(validColorMaps) == 1 && validColorMaps[0].Property == "默认"
 
 	var data []models.AttColor
