@@ -2,20 +2,22 @@ package ImgHandler
 
 import (
 	"bytes"
+	_ "embed"
+	"github.com/golang/freetype"
+	"github.com/golang/freetype/truetype"
+	"golang.org/x/image/font"
 	"image"
 	"image/color"
 	"image/draw"
 	"image/png"
-	"io/ioutil"
 	"log"
 	"math"
 	"strconv"
 	"strings"
-
-	"github.com/golang/freetype"
-	"github.com/golang/freetype/truetype"
-	"golang.org/x/image/font"
 )
+
+//go:embed fonts/simhei.ttf
+var defaultFontData []byte
 
 type LegendItem struct {
 	Property string `json:"Property"`
@@ -39,11 +41,8 @@ func parseRGB(colorStr string) (color.RGBA, error) {
 	return color.RGBA{uint8(r), uint8(g), uint8(b), 255}, nil
 }
 
-func loadFont(fontPath string) (*truetype.Font, error) {
-	fontBytes, err := ioutil.ReadFile(fontPath)
-	if err != nil {
-		return nil, err
-	}
+func loadFont() (*truetype.Font, error) {
+	fontBytes := defaultFontData
 
 	f, err := truetype.Parse(fontBytes)
 	if err != nil {
@@ -266,8 +265,7 @@ func drawSymbol(img *image.RGBA, xPos, yPos int, symbolWidth, symbolHeight int, 
 
 func CreateLegend(items []LegendItem) ([]byte, error) {
 	// 加载字体
-	fontPath := "simhei.ttf"
-	ttfFont, err := loadFont(fontPath)
+	ttfFont, err := loadFont()
 	if err != nil {
 		return nil, err
 	}
