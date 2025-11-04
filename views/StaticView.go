@@ -1,6 +1,7 @@
 package views
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"github.com/GrainArc/SouceMap/config"
@@ -15,6 +16,9 @@ import (
 	"strconv"
 	"strings"
 )
+
+//go:embed fonts/font.pbf
+var defaultFontData []byte
 
 func (uc *UserController) Raster(c *gin.Context) {
 	dbname := c.Param("dbname")
@@ -223,6 +227,7 @@ func (uc *UserController) TileSetGet(c *gin.Context) {
 
 // 字体接口
 func (uc *UserController) FontGet(c *gin.Context) {
-	c.File("font.pbf")
-
+	c.Header("Content-Type", "application/x-protobuf")
+	c.Header("Content-Disposition", "inline; filename=font.pbf")
+	c.Data(http.StatusOK, "application/x-protobuf", defaultFontData)
 }
