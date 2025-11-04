@@ -3,6 +3,7 @@ package WordGenerator
 import (
 	"fmt"
 	"gitee.com/gooffice/gooffice/color"
+	"gitee.com/gooffice/gooffice/common"
 	"gitee.com/gooffice/gooffice/document"
 	"gitee.com/gooffice/gooffice/measurement"
 	"gitee.com/gooffice/gooffice/schema/soo/wml"
@@ -244,4 +245,67 @@ func OutSchema(doc *document.Document, text []LayerSchema2) {
 
 	}
 
+}
+
+// 表格插入图片
+func InsertImageIntoTableCell(doc *document.Document, img []byte, tableIndex, rowIndex, colIndex int, width float64) error {
+	// 获取文档中的所有表格
+	tables := doc.Tables()
+	if tableIndex >= len(tables) {
+		return fmt.Errorf("表格索引 %d 超出范围,文档中共有 %d 个表格", tableIndex, len(tables))
+	}
+
+	table := tables[tableIndex]
+
+	// 获取指定行
+	rows := table.Rows()
+	if rowIndex >= len(rows) {
+		return fmt.Errorf("行索引 %d 超出范围,表格中共有 %d 行", rowIndex, len(rows))
+	}
+
+	row := rows[rowIndex]
+
+	// 获取指定单元格
+	cells := row.Cells()
+	if colIndex >= len(cells) {
+		return fmt.Errorf("列索引 %d 超出范围,该行中共有 %d 列", colIndex, len(cells))
+	}
+
+	cell := cells[colIndex]
+
+	// 获取单元格中的段落
+	para := cell.Paragraphs()
+
+	// 创建图片引用
+	img2, err := common.ImageFromBytes(img)
+	if err != nil {
+		return fmt.Errorf("解析图片失败: %v", err)
+	}
+
+	imgRef, err := doc.AddImage(img2)
+	if err != nil {
+		return fmt.Errorf("添加图片失败: %v", err)
+	}
+
+	origWidth := float64(img2.Size.X)
+	origHeight := float64(img2.Size.Y)
+
+	// 计算按比例缩放后的高度
+	aspectRatio := origHeight / origWidth
+	height := width * aspectRatio
+
+	// 在段落中插入图片
+	run := para[0].AddRun()
+	inlineImg, err := run.AddDrawingInline(imgRef)
+	if err != nil {
+		return fmt.Errorf("插入图片失败: %v", err)
+	}
+
+	// 设置图片大小（保持宽高比）
+	inlineImg.SetSize(
+		measurement.Distance(width)*measurement.Inch,
+		measurement.Distance(height)*measurement.Inch,
+	)
+
+	return nil
 }

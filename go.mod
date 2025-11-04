@@ -8,6 +8,7 @@ require (
 	github.com/GrainArc/Gogeo v1.2.10
 	github.com/chai2010/webp v1.4.0
 	github.com/gin-gonic/gin v1.10.1
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/mholt/archiver/v3 v3.5.1
@@ -16,6 +17,7 @@ require (
 	github.com/rpaloschi/dxf-go v0.0.0-20171012175419-946d856c548a
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d
 	github.com/yofu/dxf v0.0.0-20250806094206-f3988c7f0176
+	golang.org/x/image v0.0.0-20211028202545-6944b10bf410
 	golang.org/x/text v0.29.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
