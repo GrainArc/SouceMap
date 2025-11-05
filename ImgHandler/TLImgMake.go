@@ -5,15 +5,6 @@ import (
 	"github.com/GrainArc/SouceMap/views"
 )
 
-// TLImgMake 根据表名生成图例图片
-// 参数:
-//
-//	tableName: 数据表名称，用于获取颜色配置
-//
-// 返回:
-//
-//	[]byte: 生成的图例图片字节数据
-//	error: 错误信息，如果执行成功则为 nil
 func TLImgMake(tableName string) ([]byte, error) {
 	// 验证输入参数，确保表名不为空
 	if tableName == "" {
@@ -38,7 +29,11 @@ func TLImgMake(tableName string) ([]byte, error) {
 
 	// 预分配切片容量，避免动态扩容带来的性能损耗
 	items := make([]LegendItem, 0, len(colorMap))
-
+	items = append(items, LegendItem{
+		Property: "用地范围",         // 属性名称
+		Color:    "RGB(254,0,0)", // 对应的颜色值
+		GeoType:  "LineString",   // 几何类型，默认为多边形
+	})
 	// 遍历颜色映射，构建图例项列表
 	for _, item := range colorMap {
 		// 将每个颜色映射项转换为图例项并添加到列表中

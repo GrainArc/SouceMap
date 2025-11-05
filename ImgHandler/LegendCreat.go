@@ -3,6 +3,7 @@ package ImgHandler
 import (
 	"bytes"
 	_ "embed"
+	"fmt"
 	"github.com/golang/freetype"
 	"github.com/golang/freetype/truetype"
 	"golang.org/x/image/font"
@@ -25,20 +26,107 @@ type LegendItem struct {
 	GeoType  string `json:"GeoType"`
 }
 
-func parseRGB(colorStr string) (color.RGBA, error) {
+// parseColor 解析多种颜色格式
+// 支持格式:
+//   - RGB(255, 0, 0)
+//   - RGBA(255, 0, 0, 128)
+//   - #FF0000
+//   - #F00
+//   - FF0000 (无#前缀)
+func parseColor(colorStr string) (color.RGBA, error) {
+	colorStr = strings.TrimSpace(colorStr)
+
+	// 处理 RGB/RGBA 格式
+	if strings.HasPrefix(strings.ToUpper(colorStr), "RGB") {
+		return parseRGBFormat(colorStr)
+	}
+
+	// 处理 HEX 格式
+	return parseHexFormat(colorStr)
+}
+
+// parseRGBFormat 解析 RGB(r,g,b) 或 RGBA(r,g,b,a) 格式
+func parseRGBFormat(colorStr string) (color.RGBA, error) {
+	// 移除 RGB( 或 RGBA( 前缀和 ) 后缀
+	colorStr = strings.TrimPrefix(strings.ToUpper(colorStr), "RGBA(")
 	colorStr = strings.TrimPrefix(colorStr, "RGB(")
 	colorStr = strings.TrimSuffix(colorStr, ")")
 
 	parts := strings.Split(colorStr, ",")
-	if len(parts) != 3 {
-		return color.RGBA{}, nil
+	if len(parts) < 3 || len(parts) > 4 {
+		return color.RGBA{}, fmt.Errorf("invalid RGB format: expected 3 or 4 components, got %d", len(parts))
 	}
 
-	r, _ := strconv.Atoi(strings.TrimSpace(parts[0]))
-	g, _ := strconv.Atoi(strings.TrimSpace(parts[1]))
-	b, _ := strconv.Atoi(strings.TrimSpace(parts[2]))
+	// 解析 R, G, B
+	r, err := parseColorComponent(parts[0])
+	if err != nil {
+		return color.RGBA{}, fmt.Errorf("invalid R component: %w", err)
+	}
 
-	return color.RGBA{uint8(r), uint8(g), uint8(b), 255}, nil
+	g, err := parseColorComponent(parts[1])
+	if err != nil {
+		return color.RGBA{}, fmt.Errorf("invalid G component: %w", err)
+	}
+
+	b, err := parseColorComponent(parts[2])
+	if err != nil {
+		return color.RGBA{}, fmt.Errorf("invalid B component: %w", err)
+	}
+
+	// 解析 Alpha（如果存在）
+	a := uint8(255)
+
+	return color.RGBA{R: r, G: g, B: b, A: a}, nil
+}
+
+// parseHexFormat 解析十六进制颜色格式
+// 支持: #RRGGBB, #RGB, RRGGBB, RGB
+func parseHexFormat(colorStr string) (color.RGBA, error) {
+	// 移除 # 前缀
+	colorStr = strings.TrimPrefix(colorStr, "#")
+
+	// 验证是否为有效的十六进制字符
+	for _, ch := range colorStr {
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+			return color.RGBA{}, fmt.Errorf("invalid hex color: %s", colorStr)
+		}
+	}
+
+	var r, g, b uint8
+
+	switch len(colorStr) {
+	case 3: // #RGB 格式，扩展为 #RRGGBB
+		rVal, _ := strconv.ParseUint(string(colorStr[0])+string(colorStr[0]), 16, 8)
+		gVal, _ := strconv.ParseUint(string(colorStr[1])+string(colorStr[1]), 16, 8)
+		bVal, _ := strconv.ParseUint(string(colorStr[2])+string(colorStr[2]), 16, 8)
+		r, g, b = uint8(rVal), uint8(gVal), uint8(bVal)
+
+	case 6: // #RRGGBB 格式
+		rVal, _ := strconv.ParseUint(colorStr[0:2], 16, 8)
+		gVal, _ := strconv.ParseUint(colorStr[2:4], 16, 8)
+		bVal, _ := strconv.ParseUint(colorStr[4:6], 16, 8)
+		r, g, b = uint8(rVal), uint8(gVal), uint8(bVal)
+
+	default:
+		return color.RGBA{}, fmt.Errorf("invalid hex color length: expected 3 or 6, got %d", len(colorStr))
+	}
+
+	return color.RGBA{R: r, G: g, B: b, A: 255}, nil
+}
+
+// parseColorComponent 解析单个颜色分量（0-255）
+func parseColorComponent(s string) (uint8, error) {
+	s = strings.TrimSpace(s)
+	val, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, err
+	}
+
+	if val < 0 || val > 255 {
+		return 0, fmt.Errorf("color component out of range [0-255]: %d", val)
+	}
+
+	return uint8(val), nil
 }
 
 func loadFont() (*truetype.Font, error) {
@@ -319,7 +407,7 @@ func CreateLegend(items []LegendItem) ([]byte, error) {
 		yPos := padding + row*itemHeight
 
 		// 解析颜色
-		symbolColor, err := parseRGB(item.Color)
+		symbolColor, err := parseColor(item.Color)
 		if err != nil {
 			log.Printf("解析颜色失败: %v", err)
 			continue
@@ -373,7 +461,7 @@ func calculateOptimalColumns(numItems, itemWidth, itemHeight int) int {
 		return 1
 	}
 
-	optimalCols := int(math.Sqrt(float64(numItems) * float64(itemHeight) / float64(itemWidth)))
+	optimalCols := int(math.Sqrt(float64(numItems)*float64(itemHeight)/float64(itemWidth) + 1))
 
 	if optimalCols < 1 {
 		optimalCols = 1

@@ -17,6 +17,10 @@ const (
 	PositionTopRight
 	PositionBottomLeft
 	PositionBottomRight
+	PositionTop    // 正上（水平居中）
+	PositionBottom // 正下（水平居中）
+	PositionLeft   // 正左（垂直居中）
+	PositionRight  // 正右（垂直居中）
 )
 
 // EmbedEagleEye 将A图片镶嵌在B图片的指定位置作为鹰眼图
@@ -24,7 +28,7 @@ const (
 // imageB: 主图片数据
 // scale: A图片相对于B图片的缩放比例 (0-1之间，例如0.2表示A图片宽度为B图片宽度的20%)
 // padding: 鹰眼图距离边角的内边距（像素）
-// position: 鹰眼图的位置（左上、右上、左下、右下）
+// position: 鹰眼图的位置（左上、右上、左下、右下、正上、正下、正左、正右）
 // 返回合成后的图片数据
 func EmbedEagleEye(imageA, imageB []byte, scale float64, padding int, position Position) ([]byte, error) {
 	// 解码图片A
@@ -124,6 +128,22 @@ func calculatePosition(widthB, heightB, widthA, heightA, padding int, position P
 		// 右下角
 		posX = widthB - widthA - padding
 		posY = heightB - heightA - padding
+	case PositionTop:
+		// 正上（水平居中）
+		posX = (widthB - widthA) / 2
+		posY = padding
+	case PositionBottom:
+		// 正下（水平居中）
+		posX = (widthB - widthA) / 2
+		posY = heightB - heightA - padding
+	case PositionLeft:
+		// 正左（垂直居中）
+		posX = padding
+		posY = (heightB - heightA) / 2
+	case PositionRight:
+		// 正右（垂直居中）
+		posX = widthB - widthA - padding
+		posY = (heightB - heightA) / 2
 	default:
 		// 默认右下角
 		posX = widthB - widthA - padding
