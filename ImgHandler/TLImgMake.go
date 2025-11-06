@@ -40,7 +40,7 @@ func TLImgMake(tableName string) ([]byte, error) {
 	// 预分配切片容量，避免动态扩容带来的性能损耗
 	items := make([]LegendItem, 0, len(colorMap))
 	items = append(items, LegendItem{
-		Property: "用地范围",     // 属性名称
+		Property: "用地范围",         // 属性名称
 		Color:    "RGB(254,0,0)", // 对应的颜色值
 		GeoType:  "LineString",   // 几何类型，默认为多边形
 	})
@@ -139,7 +139,7 @@ func TLImgMakeFilter(tableName string, groupedResult []methods.Result) ([]byte, 
 	// 预分配切片容量，避免动态扩容带来的性能损耗
 	items := make([]LegendItem, 0, len(colorMap))
 	items = append(items, LegendItem{
-		Property: "用地范围",     // 属性名称
+		Property: "用地范围",         // 属性名称
 		Color:    "RGB(254,0,0)", // 对应的颜色值
 		GeoType:  "LineString",   // 几何类型，默认为多边形
 	})

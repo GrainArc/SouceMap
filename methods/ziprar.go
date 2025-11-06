@@ -231,3 +231,31 @@ func ZipFileOut(folderPath string) ([]byte, error) {
 	}
 	return buf.Bytes(), nil
 }
+
+func UnzipToDir(src string, destDir string) error {
+	// 检查源文件是否存在
+	if _, err := os.Stat(src); os.IsNotExist(err) {
+		return fmt.Errorf("source file does not exist: %s", src)
+	}
+
+	// 确保目标目录存在
+	if err := os.MkdirAll(destDir, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create destination directory: %w", err)
+	}
+
+	// 打开 zip 文件
+	reader, err := zip.OpenReader(src)
+	if err != nil {
+		return fmt.Errorf("failed to open zip file: %w", err)
+	}
+	defer reader.Close()
+
+	// 解压每个文件
+	for _, file := range reader.File {
+		if err := extractFile(file, destDir); err != nil {
+			return fmt.Errorf("failed to extract file %s: %w", file.Name, err)
+		}
+	}
+
+	return nil
+}
