@@ -9,6 +9,7 @@ import (
 	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 	"log"
 	"net/http"
 	"strconv"
@@ -318,8 +319,8 @@ func (uc *UserController) DelLayerMXD(c *gin.Context) {
 
 // 同步工程数据到其他数据库
 func (uc *UserController) SyncLayerMXD(c *gin.Context) {
-	IP := C.Query("IP")
-	MXDUid := C.Query("MXDUid")
+	IP := c.Query("IP")
+	MXDUid := c.Query("MXDUid")
 	DB := models.DB
 
 	// 连接目标数据库
@@ -352,6 +353,9 @@ func (uc *UserController) SyncLayerMXD(c *gin.Context) {
 func SyncLayerMXDToDB(MXDUid string, sourceDB *gorm.DB, targetDB *gorm.DB) bool {
 	// 1. 从源数据库查询 LayerHeader
 	var layerHeader models.LayerHeader
+	targetDB.NamingStrategy = schema.NamingStrategy{
+		SingularTable: true,
+	}
 	if err := sourceDB.Where("mxd_uid = ?", MXDUid).First(&layerHeader).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			log.Printf("未找到 MXDUid=%s 的 LayerHeader 记录", MXDUid)

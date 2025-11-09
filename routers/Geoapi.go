@@ -126,7 +126,7 @@ func GeoRouters(r *gin.Engine) {
 		mxd.GET("/GetLayerMXDHeaderList", UserController.GetLayerMXDHeaderList)
 
 		mxd.GET("/DelLayerMXD", UserController.DelLayerMXD)
-		mxd.POST("/SyncLayerMXD", UserController.SyncLayerMXD)
+		mxd.GET("/SyncLayerMXD", UserController.SyncLayerMXD)
 
 	}
 
