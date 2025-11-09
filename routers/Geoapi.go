@@ -115,11 +115,18 @@ func GeoRouters(r *gin.Engine) {
 		fields.POST("/ModifyField", UserController.ModifyField)              // 修改字段
 		fields.POST("/CalculateField", fieldCalcCtrl.CalculateField)         // 执行计算
 		fields.POST("/UpdateGeometryField", geomHandler.UpdateGeometryField) // 预览结果
+		fields.GET("/GetFieldInfo", UserController.GetFieldInfo)             // 获取单个字段信息
 
 	}
-	tables := r.Group("/tables")
+	mxd := r.Group("/mxd")
 	{
+		mxd.POST("/GetFieldInfo", UserController.AddLayerMXD)
+		mxd.GET("/GetLayerMXDList", UserController.GetLayerMXDList)
+		mxd.POST("/GetLayerMXDHeaderList", UserController.GetLayerMXDHeaderList)
+		mxd.POST("/UpdateLayerMXD", UserController.UpdateLayerMXD)
+		mxd.POST("/DelLayerMXD", UserController.DelLayerMXD)
+		mxd.POST("/SyncLayerMXD", UserController.SyncLayerMXD)
 
-		tables.GET("/GetFieldInfo", UserController.GetFieldInfo) // 获取单个字段信息
 	}
+
 }

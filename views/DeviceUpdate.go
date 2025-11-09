@@ -257,7 +257,6 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 	ip := jsonData.IP
 	TableName := jsonData.TableName
 	//获取更新对象的所有表
-
 	url := fmt.Sprintf("http://%s:8181/geo/GetSchema", ip)
 	resp, _ := http.Get(url)
 	defer resp.Body.Close()
@@ -404,6 +403,7 @@ WHERE table_name = '%s'`, TableName)
 	}
 	return true
 }
+
 func UpdateConfigSingle(jsonData UpdateData) bool {
 	ip := jsonData.IP
 	TableName := jsonData.TableName

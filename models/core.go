@@ -70,7 +70,8 @@ func InitDB() {
 
 	DB.AutoMigrate(&AttColor{})
 	DB.AutoMigrate(&ChineseProperty{})
-
+	DB.AutoMigrate(&LayerMXD{})
+	DB.AutoMigrate(&LayerHeader{})
 	DB.AutoMigrate(&GeoPic{})
 	DB.AutoMigrate(&TempLayerAttribute{})
 
