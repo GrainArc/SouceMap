@@ -1,6 +1,9 @@
 package models
 
-type JSONB map[string]interface{}
+import (
+	"gorm.io/datatypes"
+)
+
 type LoginUser struct {
 	ID        int64  `gorm:"primary_key"`
 	Username  string `gorm:"type:varchar(255)"`
@@ -31,6 +34,8 @@ type MySchema struct {
 	Opacity     string `gorm:"type:varchar(254)"`
 	Color       string `gorm:"type:varchar(255)"`
 	LineWidth   string `gorm:"type:varchar(55)"`
+	FillType    string `gorm:"type:varchar(255)"`
+	LineColor   string `gorm:"type:varchar(255)"`
 	UpdatedDate string `gorm:"type:varchar(255)"`
 	Userunits   string `gorm:"type:varchar(255)"`
 }
@@ -45,10 +50,10 @@ type LayerMXD struct {
 	MXDUid      string `gorm:"type:varchar(255)"`
 	LineWidth   string `gorm:"type:varchar(55)"`
 	LayerSortID int64
-	Opacity     string `gorm:"type:varchar(254)"`
-	FillType    string `gorm:"type:varchar(255)"`
-	LineColor   string `gorm:"type:varchar(255)"`
-	ColorSet    JSONB  `gorm:"type:jsonb"`
+	Opacity     string         `gorm:"type:varchar(254)"`
+	FillType    string         `gorm:"type:varchar(255)"`
+	LineColor   string         `gorm:"type:varchar(255)"`
+	ColorSet    datatypes.JSON `gorm:"type:jsonb"`
 }
 
 type LayerHeader struct {

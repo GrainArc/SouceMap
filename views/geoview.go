@@ -177,6 +177,8 @@ type LayerSchema struct {
 	Date      string
 	Type      string
 	Opacity   string
+	FillType  string
+	LineColor string
 	Color     string    `json:"Color"`
 	ColorSet  ColorData `json:"ColorSet"`
 }
@@ -325,6 +327,8 @@ func (uc *UserController) GetSchema(c *gin.Context) {
 				CN:        value.CN,
 				EN:        value.EN,
 				LineWidth: value.LineWidth,
+				FillType:  value.FillType,
+				LineColor: value.LineColor,
 				Type:      value.Type,
 				Date:      value.UpdatedDate,
 				Opacity:   value.Opacity,
@@ -338,6 +342,8 @@ func (uc *UserController) GetSchema(c *gin.Context) {
 				EN:        value.EN,
 				LineWidth: value.LineWidth,
 				Date:      value.UpdatedDate,
+				FillType:  value.FillType,
+				LineColor: value.LineColor,
 				Type:      value.Type,
 				Opacity:   value.Opacity,
 				Color:     value.Color,
@@ -346,7 +352,6 @@ func (uc *UserController) GetSchema(c *gin.Context) {
 
 	}
 	sortByMainAndCN(data)
-
 	c.JSON(http.StatusOK, data)
 }
 
@@ -559,26 +564,37 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 
 }
 
-// 修改图层信息
+// 修改图层路径
 func (uc *UserController) ChangeSchema(c *gin.Context) {
 	CN := c.PostForm("CN")
 	Main := c.PostForm("Main")
-	Color := c.PostForm("Color")
 	ID := c.PostForm("ID")
 	id, _ := strconv.Atoi(ID)
 	var Schemas models.MySchema
 	DB := models.DB
 	DB.Where("ID = ?", id).Find(&Schemas)
-
 	Schemas.CN = CN
-	if len(Color) >= 254 {
-		Schemas.Color = ""
-	} else {
-		Schemas.Color = Color
-	}
 	Schemas.Main = Main
 	DB.Save(&Schemas)
+	c.JSON(http.StatusOK, Schemas)
+}
 
+// 图层样式配置
+func (uc *UserController) ChangeLayerStyle(c *gin.Context) {
+	Opacity := c.PostForm("Opacity")
+	LineWidth := c.PostForm("LineWidth")
+	FillType := c.PostForm("FillType")
+	LineColor := c.PostForm("LineColor")
+	ID := c.PostForm("ID")
+	id, _ := strconv.Atoi(ID)
+	var Schemas models.MySchema
+	DB := models.DB
+	DB.Where("ID = ?", id).Find(&Schemas)
+	Schemas.Opacity = Opacity
+	Schemas.LineWidth = LineWidth
+	Schemas.FillType = FillType
+	Schemas.LineColor = LineColor
+	DB.Save(&Schemas)
 	c.JSON(http.StatusOK, Schemas)
 }
 

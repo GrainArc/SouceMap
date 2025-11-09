@@ -1,15 +1,17 @@
 package views
 
+import "C"
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
-
+	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"log"
 	"net/http"
 	"strconv"
-	"sync"
 )
 
 // 请求体结构
@@ -104,19 +106,12 @@ func (uc *UserController) AddUpdateLayerMXD(c *gin.Context) {
 
 		// 处理 ColorSet
 		if layerStyle.ColorSet != nil {
-			colorSetMap := make(models.JSONB)
-			colorSetMap["LayerName"] = layerStyle.ColorSet.LayerName
-			colorSetMap["AttName"] = layerStyle.ColorSet.AttName
-
-			colorMapList := make([]map[string]interface{}, 0, len(layerStyle.ColorSet.ColorMap))
-			for _, cm := range layerStyle.ColorSet.ColorMap {
-				colorMapList = append(colorMapList, map[string]interface{}{
-					"Property": cm.Property,
-					"Color":    cm.Color,
-				})
+			jsonData, err := json.Marshal(layerStyle.ColorSet)
+			if err != nil {
+				// 处理错误
+				return
 			}
-			colorSetMap["ColorMap"] = colorMapList
-			layerMXD.ColorSet = colorSetMap
+			layerMXD.ColorSet = datatypes.JSON(jsonData)
 		}
 
 		layerMXDs = append(layerMXDs, layerMXD)
@@ -168,7 +163,7 @@ func (uc *UserController) AddUpdateLayerMXD(c *gin.Context) {
 	})
 }
 
-//获取工程头文件列表
+// 获取工程头文件列表
 func (uc *UserController) GetLayerMXDHeaderList(c *gin.Context) {
 	DB := models.DB
 	// 获取工程列表（去重）
@@ -191,17 +186,6 @@ func (uc *UserController) GetLayerMXDHeaderList(c *gin.Context) {
 // 请求当前的工程列表
 func (uc *UserController) GetLayerMXDList(c *gin.Context) {
 	mxdUid := c.Query("MXDUid")
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
-
-	if page < 1 {
-		page = 1
-	}
-	if pageSize < 1 {
-		pageSize = 10
-	}
-
-	offset := (page - 1) * pageSize
 	DB := models.DB
 	// 构建查询
 	query := DB.Model(&models.LayerMXD{})
@@ -210,21 +194,9 @@ func (uc *UserController) GetLayerMXDList(c *gin.Context) {
 		query = query.Where("mxd_uid = ?", mxdUid)
 	}
 
-	// 获取总数
-	var total int64
-	if err := query.Count(&total).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "查询失败: " + err.Error(),
-		})
-		return
-	}
-
 	// 获取列表
 	var layerMXDs []models.LayerMXD
 	if err := query.Order("layer_sort_id ASC, id ASC").
-		Offset(offset).
-		Limit(pageSize).
 		Find(&layerMXDs).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -233,26 +205,10 @@ func (uc *UserController) GetLayerMXDList(c *gin.Context) {
 		return
 	}
 
-	// 获取工程列表（去重）
-	var headers []models.LayerHeader
-	if err := DB.Find(&headers).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "查询工程列表失败: " + err.Error(),
-		})
-		return
-	}
-
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "查询成功",
-		"data": gin.H{
-			"list":     layerMXDs,
-			"total":    total,
-			"page":     page,
-			"pageSize": pageSize,
-			"headers":  headers,
-		},
+		"data":    layerMXDs,
 	})
 }
 
@@ -362,28 +318,12 @@ func (uc *UserController) DelLayerMXD(c *gin.Context) {
 
 // 同步工程数据到其他数据库
 func (uc *UserController) SyncLayerMXD(c *gin.Context) {
-	var req UpdateData
+	IP := C.Query("IP")
+	MXDUid := C.Query("MXDUid")
 	DB := models.DB
-	// 绑定请求参数
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "参数错误: " + err.Error(),
-		})
-		return
-	}
-
-	// 验证参数
-	if req.IP == "" || req.TableName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "IP和TableName不能为空",
-		})
-		return
-	}
 
 	// 连接目标数据库
-	deviceDB, err := ConnectToDeviceDB(req.IP)
+	deviceDB, err := ConnectToDeviceDB(IP)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -393,7 +333,7 @@ func (uc *UserController) SyncLayerMXD(c *gin.Context) {
 	}
 
 	// 执行同步
-	success := SyncLayerMXDToDB(req.TableName, DB, deviceDB)
+	success := SyncLayerMXDToDB(MXDUid, DB, deviceDB)
 
 	if success {
 		c.JSON(http.StatusOK, gin.H{
@@ -408,142 +348,93 @@ func (uc *UserController) SyncLayerMXD(c *gin.Context) {
 	}
 }
 
-// 同步LayerMXD数据到目标数据库（存在则更新）
-func SyncLayerMXDToDB(tableName string, sourceDB *gorm.DB, targetDB *gorm.DB) bool {
-	// 查询源数据库的所有记录
-	var records []models.LayerMXD
-	if err := sourceDB.Table(tableName).Find(&records).Error; err != nil {
-		fmt.Printf("查询源数据失败: %v\n", err)
+// 同步工程数据到目标数据库（存在则删除后重新插入）
+func SyncLayerMXDToDB(MXDUid string, sourceDB *gorm.DB, targetDB *gorm.DB) bool {
+	// 1. 从源数据库查询 LayerHeader
+	var layerHeader models.LayerHeader
+	if err := sourceDB.Where("mxd_uid = ?", MXDUid).First(&layerHeader).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("未找到 MXDUid=%s 的 LayerHeader 记录", MXDUid)
+			return false
+		}
+		log.Printf("查询 LayerHeader 失败: %v", err)
 		return false
 	}
 
-	if len(records) == 0 {
-		fmt.Println("没有需要同步的数据")
-		return true
-	}
-
-	const batchSize = 2000
-	const maxConcurrency = 8
-	totalRecords := len(records)
-	numBatches := (totalRecords + batchSize - 1) / batchSize
-
-	var wg sync.WaitGroup
-	errChan := make(chan error, numBatches)
-	concurrencyLimiter := make(chan struct{}, maxConcurrency)
-	successCount := int64(0)
-	updateCount := int64(0)
-	insertCount := int64(0)
-	var countMutex sync.Mutex
-
-	for i := 0; i < numBatches; i++ {
-		start := i * batchSize
-		end := start + batchSize
-		if end > totalRecords {
-			end = totalRecords
-		}
-
-		wg.Add(1)
-		concurrencyLimiter <- struct{}{}
-
-		go func(batch []models.LayerMXD, batchIndex int) {
-			defer wg.Done()
-			defer func() { <-concurrencyLimiter }()
-
-			tx := targetDB.Begin()
-			defer func() {
-				if r := recover(); r != nil {
-					tx.Rollback()
-					errChan <- fmt.Errorf("批次 %d 发生panic: %v", batchIndex, r)
-				}
-			}()
-
-			batchSuccess := 0
-			batchUpdate := 0
-			batchInsert := 0
-
-			for _, record := range batch {
-				// 检查目标数据库中是否存在相同 MXDUid 的记录
-				var existingRecord models.LayerMXD
-				err := tx.Table(tableName).Where("mxd_uid = ? AND id = ?", record.MXDUid, record.ID).First(&existingRecord).Error
-
-				if err == gorm.ErrRecordNotFound {
-					// 不存在，执行插入
-					if err := tx.Table(tableName).Create(&record).Error; err != nil {
-						tx.Rollback()
-						errChan <- fmt.Errorf("批次 %d 插入数据失败 (ID: %d, MXDUid: %s): %v",
-							batchIndex, record.ID, record.MXDUid, err)
-						return
-					}
-					batchInsert++
-				} else if err != nil {
-					// 查询出错
-					tx.Rollback()
-					errChan <- fmt.Errorf("批次 %d 查询数据失败 (MXDUid: %s): %v",
-						batchIndex, record.MXDUid, err)
-					return
-				} else {
-					// 存在，执行更新
-					updateData := map[string]interface{}{
-						"EN":          record.EN,
-						"Main":        record.Main,
-						"CN":          record.CN,
-						"MXDName":     record.MXDName,
-						"LineWidth":   record.LineWidth,
-						"LayerSortID": record.LayerSortID,
-						"Opacity":     record.Opacity,
-						"FillType":    record.FillType,
-						"LineColor":   record.LineColor,
-						"ColorSet":    record.ColorSet,
-					}
-
-					if err := tx.Table(tableName).Where("id = ?", existingRecord.ID).Updates(updateData).Error; err != nil {
-						tx.Rollback()
-						errChan <- fmt.Errorf("批次 %d 更新数据失败 (ID: %d, MXDUid: %s): %v",
-							batchIndex, existingRecord.ID, record.MXDUid, err)
-						return
-					}
-					batchUpdate++
-				}
-				batchSuccess++
-			}
-
-			if err := tx.Commit().Error; err != nil {
-				errChan <- fmt.Errorf("批次 %d 提交事务失败: %v", batchIndex, err)
-				return
-			}
-
-			// 更新计数
-			countMutex.Lock()
-			successCount += int64(batchSuccess)
-			updateCount += int64(batchUpdate)
-			insertCount += int64(batchInsert)
-			countMutex.Unlock()
-
-			fmt.Printf("批次 %d 完成: 成功 %d 条 (插入 %d, 更新 %d)\n",
-				batchIndex, batchSuccess, batchInsert, batchUpdate)
-
-		}(records[start:end], i)
-	}
-
-	go func() {
-		wg.Wait()
-		close(errChan)
-	}()
-
-	hasError := false
-	for err := range errChan {
-		if err != nil {
-			fmt.Println(err.Error())
-			hasError = true
-		}
-	}
-
-	if hasError {
+	// 2. 从源数据库查询所有相关的 LayerMXD
+	var layerMXDs []models.LayerMXD
+	if err := sourceDB.Where("mxd_uid = ?", MXDUid).Find(&layerMXDs).Error; err != nil {
+		log.Printf("查询 LayerMXD 失败: %v", err)
 		return false
 	}
 
-	fmt.Printf("同步完成: 总计 %d 条记录, 插入 %d 条, 更新 %d 条\n",
-		successCount, insertCount, updateCount)
+	// 3. 开启事务进行同步
+	tx := targetDB.Begin()
+	if tx.Error != nil {
+		log.Printf("开启事务失败: %v", tx.Error)
+		return false
+	}
+
+	// 4. 删除目标数据库中已存在的 LayerHeader
+	if err := tx.Where("mxd_uid = ?", MXDUid).Delete(&models.LayerHeader{}).Error; err != nil {
+		tx.Rollback()
+		log.Printf("删除目标数据库 LayerHeader 失败: %v", err)
+		return false
+	}
+
+	// 5. 删除目标数据库中已存在的 LayerMXD
+	if err := tx.Where("mxd_uid = ?", MXDUid).Delete(&models.LayerMXD{}).Error; err != nil {
+		tx.Rollback()
+		log.Printf("删除目标数据库 LayerMXD 失败: %v", err)
+		return false
+	}
+
+	// 6. 插入新的 LayerHeader
+	newHeader := models.LayerHeader{
+		MXDName: layerHeader.MXDName,
+		MXDUid:  layerHeader.MXDUid,
+	}
+	if err := tx.Create(&newHeader).Error; err != nil {
+		tx.Rollback()
+		log.Printf("创建 LayerHeader 失败: %v", err)
+		return false
+	}
+
+	// 7. 批量插入新的 LayerMXD 数据
+	if len(layerMXDs) > 0 {
+		// 准备新数据（不包含ID，让数据库自动生成）
+		newMXDs := make([]models.LayerMXD, len(layerMXDs))
+		for i, mxd := range layerMXDs {
+			newMXDs[i] = models.LayerMXD{
+				EN:          mxd.EN,
+				Main:        mxd.Main,
+				CN:          mxd.CN,
+				MXDName:     mxd.MXDName,
+				MXDUid:      mxd.MXDUid,
+				LineWidth:   mxd.LineWidth,
+				LayerSortID: mxd.LayerSortID,
+				Opacity:     mxd.Opacity,
+				FillType:    mxd.FillType,
+				LineColor:   mxd.LineColor,
+				ColorSet:    mxd.ColorSet,
+			}
+		}
+
+		// 批量插入
+		if err := tx.Create(&newMXDs).Error; err != nil {
+			tx.Rollback()
+			log.Printf("批量创建 LayerMXD 失败: %v", err)
+			return false
+		}
+	}
+
+	// 8. 提交事务
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("提交事务失败: %v", err)
+		return false
+	}
+
+	log.Printf("成功同步 MXDUid=%s 的数据，共 %d 条 LayerMXD 记录", MXDUid, len(layerMXDs))
 	return true
 }
 

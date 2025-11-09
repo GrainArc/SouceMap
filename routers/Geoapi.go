@@ -57,6 +57,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/AddSchema", UserController.AddSchema)
 		mapRouter.GET("/DelSchema", UserController.DelSchema)
 		mapRouter.POST("/ChangeSchema", UserController.ChangeSchema)
+		mapRouter.POST("/ChangeLayerStyle", UserController.ChangeLayerStyle)
 		mapRouter.POST("/GetExcavationFillVolume", UserController.GetExcavationFillVolume)
 		mapRouter.POST("/GetHeightFromDEM", UserController.GetHeightFromDEM)
 		mapRouter.Static("/OutFile", "./OutFile")
@@ -120,11 +121,11 @@ func GeoRouters(r *gin.Engine) {
 	}
 	mxd := r.Group("/mxd")
 	{
-		mxd.POST("/GetFieldInfo", UserController.AddLayerMXD)
+		mxd.POST("/AddUpdateLayerMXD", UserController.AddUpdateLayerMXD)
 		mxd.GET("/GetLayerMXDList", UserController.GetLayerMXDList)
-		mxd.POST("/GetLayerMXDHeaderList", UserController.GetLayerMXDHeaderList)
-		mxd.POST("/UpdateLayerMXD", UserController.UpdateLayerMXD)
-		mxd.POST("/DelLayerMXD", UserController.DelLayerMXD)
+		mxd.GET("/GetLayerMXDHeaderList", UserController.GetLayerMXDHeaderList)
+
+		mxd.GET("/DelLayerMXD", UserController.DelLayerMXD)
 		mxd.POST("/SyncLayerMXD", UserController.SyncLayerMXD)
 
 	}
