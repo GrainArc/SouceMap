@@ -117,7 +117,8 @@ func GeoRouters(r *gin.Engine) {
 		fields.POST("/CalculateField", fieldCalcCtrl.CalculateField)         // 执行计算
 		fields.POST("/UpdateGeometryField", geomHandler.UpdateGeometryField) // 预览结果
 		fields.GET("/GetFieldInfo", UserController.GetFieldInfo)             // 获取单个字段信息
-
+		fields.POST("/LayerStatistics", UserController.LayerStatistics)
+		
 	}
 	mxd := r.Group("/mxd")
 	{
