@@ -143,19 +143,19 @@ func buildSelectFields(statField string, statTypes []string, groupBy []string) s
 		fields = append(fields, field)
 	}
 
-	// 构建字段表达式：尝试将字符串转换为数值，失败则为NULL
+	// 构建字段表达式：先转换为文本，再检查是否为数值格式
 	fieldExpr := fmt.Sprintf(`
 		CASE 
-			WHEN %s ~ '^-?[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$' 
+			WHEN %s IS NULL THEN NULL
+			WHEN %s::TEXT ~ '^-?[0-9]+\.?[0-9]*([eE][+-]?[0-9]+)?$' 
 			THEN CAST(%s AS DOUBLE PRECISION)
 			ELSE NULL 
-		END`, statField, statField)
+		END`, statField, statField, statField)
 
 	// 添加统计字段
 	for _, statType := range statTypes {
 		switch statType {
 		case "count":
-			// count统计可转换为数值的记录数
 			fields = append(fields, fmt.Sprintf("COUNT(%s) as count", fieldExpr))
 		case "min":
 			fields = append(fields, fmt.Sprintf("MIN(%s) as min", fieldExpr))
