@@ -308,3 +308,9 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, "ok")
 }
+
+//图层要素分割
+
+//图层要素合并
+
+//图层要素追踪整形

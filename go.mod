@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93
-	github.com/GrainArc/Gogeo v1.2.10
+	github.com/GrainArc/Gogeo v1.2.12
 	github.com/chai2010/webp v1.4.0
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
