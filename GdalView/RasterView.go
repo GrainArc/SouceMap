@@ -82,7 +82,6 @@ type StartRasterTileRequest struct {
 	TileSize    int               `json:"tile_size"`
 	MinZoom     int               `json:"min_zoom"`
 	MaxZoom     int               `json:"max_zoom"`
-	UseTMS      bool              `json:"use_tms"`
 	Concurrency int               `json:"concurrency"`
 	Metadata    map[string]string `json:"metadata"`
 }
@@ -116,7 +115,6 @@ func (uc *UserController) StartRasterTile(c *gin.Context) {
 		TileSize:    req.TileSize,
 		MinZoom:     req.MinZoom,
 		MaxZoom:     req.MaxZoom,
-		UseTMS:      req.UseTMS,
 		Concurrency: req.Concurrency,
 		Metadata:    req.Metadata,
 	}
@@ -309,6 +307,7 @@ func executeRasterTileTask(task *RasterTileTask, metadata map[string]string) {
 	task.Options.ProgressCallback = progressCallback
 
 	// 创建生成器
+
 	generator, err := Gogeo.NewMBTilesGenerator(task.InputPath, task.Options)
 	if err != nil {
 		endTime := time.Now()
@@ -333,7 +332,7 @@ func executeRasterTileTask(task *RasterTileTask, metadata map[string]string) {
 
 	// 执行生成
 	var generateErr error
-	if task.Options.Concurrency > 0 {
+	if task.Options.Concurrency > 1 {
 		generateErr = generator.GenerateWithConcurrency(task.OutputPath, metadata, task.Options.Concurrency)
 	} else {
 		generateErr = generator.Generate(task.OutputPath, metadata)
