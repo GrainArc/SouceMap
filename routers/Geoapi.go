@@ -12,6 +12,7 @@ func GeoRouters(r *gin.Engine) {
 	fieldCalcCtrl := views.NewFieldCalculatorController()
 	geomService := methods.NewGeometryService()
 	geomHandler := views.NewGeometryHandler(geomService)
+	trackHandler := views.NewTrackHandler()
 	mapRouter := r.Group("/geo")
 	{
 		mapRouter.GET(":tablename/:z/:x/:y.pbf", UserController.OutMVT)
@@ -27,7 +28,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/GetGeoFromSchema", UserController.GetGeoFromSchema)
 		mapRouter.POST("/AddGeoToSchema", UserController.AddGeoToSchema)
 		mapRouter.POST("/DelGeoToSchema", UserController.DelGeoToSchema)
-		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
+
 		mapRouter.POST("/SearchGeoFromSchema", UserController.SearchGeoFromSchema)
 
 		mapRouter.POST("/SaveTempGeo", UserController.InTempGeo)
@@ -70,6 +71,13 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.GET("/RestoreOfflineLayer", UserController.RestoreOfflineLayer)
 		mapRouter.GET("/GetReatoreFile", UserController.GetReatoreFile)
 		mapRouter.GET("/GetLayerExtent", UserController.GetLayerExtent)
+		mapRouter.POST("/SplitFeature", UserController.SplitFeature)
+		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
+		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
+		track := mapRouter.Group("/track")
+		{
+			track.POST("/init", trackHandler.InitTrack)
+		}
 
 	}
 	SurveyRouter := r.Group("/Survey")
@@ -118,7 +126,7 @@ func GeoRouters(r *gin.Engine) {
 		fields.POST("/UpdateGeometryField", geomHandler.UpdateGeometryField) // 预览结果
 		fields.GET("/GetFieldInfo", UserController.GetFieldInfo)             // 获取单个字段信息
 		fields.POST("/LayerStatistics", UserController.LayerStatistics)
-		
+
 	}
 	mxd := r.Group("/mxd")
 	{

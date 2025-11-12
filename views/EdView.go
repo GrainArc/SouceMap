@@ -3,6 +3,7 @@ package views
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/GrainArc/SouceMap/Transformer"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
@@ -309,8 +310,433 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 	c.JSON(http.StatusOK, "ok")
 }
 
-//图层要素分割
+// 图层要素分割
+type SplitData struct {
+	Line      geojson.FeatureCollection `json:"Line"`
+	LayerName string                    `json:"LayerName"`
+	ID        int32                     `json:"ID"`
+}
 
-//图层要素合并
+func (uc *UserController) SplitFeature(c *gin.Context) {
+	var jsonData SplitData
+	// 绑定JSON请求体到结构体,并检查绑定是否成功
+	if err := c.ShouldBindJSON(&jsonData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": err.Error(),
+			"data":    "",
+		})
+		return
+	}
 
-//图层要素追踪整形
+	DB := models.DB
+	line := Transformer.GetGeometryString(jsonData.Line.Features[0])
+	LayerName := jsonData.LayerName
+
+	// 查询schema信息
+	var schema models.MySchema
+	result := DB.Where("en = ?", LayerName).First(&schema)
+	if result.Error != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": result.Error.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 验证是否为面数据
+	if schema.Type != "Polygon" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": "只有面数据才能分割",
+			"data":    "",
+		})
+		return
+	}
+
+	// 开启事务
+	tx := DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "开启事务失败: " + tx.Error.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 1. 先获取原要素的所有属性（除了id和geom）
+	var originalFeature map[string]interface{}
+	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
+	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取原要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	if len(originalFeature) == 0 {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    404,
+			"message": "未找到指定ID的几何数据",
+			"data":    "",
+		})
+		return
+	}
+
+	// 2. 获取当前表的最大ID，用于生成新ID
+	var maxID int32
+	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取最大ID失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 3. 执行切割并插入新要素，删除原要素
+	// 构建属性字段列表（排除id和geom）
+	var columnNames []string
+	var columnPlaceholders []string
+	for key := range originalFeature {
+		if key != "id" && key != "geom" {
+			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
+			columnPlaceholders = append(columnPlaceholders, fmt.Sprintf("t.%s", key))
+		}
+	}
+
+	columnsStr := ""
+	placeholdersStr := ""
+	if len(columnNames) > 0 {
+		columnsStr = ", " + strings.Join(columnNames, ", ")
+		placeholdersStr = ", " + strings.Join(columnPlaceholders, ", ")
+	}
+
+	splitAndInsertSQL := fmt.Sprintf(`
+		WITH original AS (
+			-- 获取原要素
+			SELECT * FROM "%s" WHERE id = %d
+		),
+		split_geom AS (
+			-- 执行切割并分解为多个几何
+			SELECT 
+				ROW_NUMBER() OVER () as seq,
+				(ST_Dump(ST_Split(o.geom, ST_GeomFromGeoJSON('%s')))).geom AS geom
+				%s
+			FROM original o
+		)
+		-- 插入新要素
+		INSERT INTO "%s" (id, geom%s)
+		SELECT 
+			%d + seq AS id,
+			s.geom
+			%s
+		FROM split_geom s
+		RETURNING ST_AsGeoJSON(ST_Collect(geom)) AS geojson
+	`, LayerName, jsonData.ID, line,
+		func() string {
+			if len(columnNames) > 0 {
+				return ", o.*"
+			}
+			return ""
+		}(),
+		LayerName, columnsStr, maxID, placeholdersStr)
+
+	type SplitResult struct {
+		Geojson string
+	}
+	var splitResult SplitResult
+
+	if err := tx.Raw(splitAndInsertSQL).Scan(&splitResult).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "切割并插入新要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 4. 删除原要素
+	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
+	if err := tx.Exec(deleteSQL).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "删除原要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 5. 提交事务
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "提交事务失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+	//更新缓存库
+	GetPdata := getData{
+		TableName: LayerName,
+		ID:        jsonData.ID,
+	}
+	geom := GetGeo(GetPdata)
+	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+	// 返回成功结果
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "切割成功，已生成多个新要素",
+		"data":    splitResult.Geojson,
+	})
+}
+
+// 图层要素合并
+type DissolveData struct {
+	LayerName string  `json:"LayerName"`
+	IDs       []int32 `json:"ids"`
+}
+
+func (uc *UserController) DissolveFeature(c *gin.Context) {
+	var jsonData DissolveData
+	// 绑定JSON请求体到结构体，并检查绑定是否成功
+	if err := c.ShouldBindJSON(&jsonData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 验证参数
+	if len(jsonData.IDs) < 2 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "至少需要选择2个要素进行合并",
+			"data":    "",
+		})
+		return
+	}
+
+	DB := models.DB
+	LayerName := jsonData.LayerName
+
+	// 查询schema信息
+	var schema models.MySchema
+	result := DB.Where("en = ?", LayerName).First(&schema)
+	if result.Error != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": result.Error.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 验证是否为面数据
+	if schema.Type != "Polygon" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": "只有面数据才能合并",
+			"data":    "",
+		})
+		return
+	}
+
+	// 开启事务
+	tx := DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "开启事务失败: " + tx.Error.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 构建ID列表字符串
+	idList := make([]string, len(jsonData.IDs))
+	for i, id := range jsonData.IDs {
+		idList[i] = fmt.Sprintf("%d", id)
+	}
+	idsStr := strings.Join(idList, ",")
+
+	// 1. 验证所有ID是否存在
+	var count int64
+	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
+	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "验证要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	if int(count) != len(jsonData.IDs) {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    404,
+			"message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count),
+			"data":    "",
+		})
+		return
+	}
+
+	// 2. 获取第一个要素的所有属性（作为合并后要素的属性）
+	var originalFeature map[string]interface{}
+	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.IDs[0])
+	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取原要素属性失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 3. 获取当前表的最大ID，用于生成新ID
+	var maxID int32
+	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取最大ID失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 4. 构建属性字段列表（排除id和geom）
+	var columnNames []string
+	var columnValues []string
+	for key, value := range originalFeature {
+		if key != "id" && key != "geom" {
+			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
+
+			// 根据值类型构建SQL值
+			switch v := value.(type) {
+			case nil:
+				columnValues = append(columnValues, "NULL")
+			case string:
+				// 转义单引号
+				escapedValue := strings.ReplaceAll(v, "'", "''")
+				columnValues = append(columnValues, fmt.Sprintf("'%s'", escapedValue))
+			case int, int32, int64, float32, float64:
+				columnValues = append(columnValues, fmt.Sprintf("%v", v))
+			case bool:
+				columnValues = append(columnValues, fmt.Sprintf("%t", v))
+			default:
+				// 其他类型尝试转换为字符串
+				columnValues = append(columnValues, fmt.Sprintf("'%v'", v))
+			}
+		}
+	}
+
+	columnsStr := ""
+	valuesStr := ""
+	if len(columnNames) > 0 {
+		columnsStr = ", " + strings.Join(columnNames, ", ")
+		valuesStr = ", " + strings.Join(columnValues, ", ")
+	}
+
+	// 5. 执行合并并插入新要素
+	dissolveAndInsertSQL := fmt.Sprintf(`
+		WITH dissolved AS (
+			-- 合并所有选中的几何
+			SELECT 
+				ST_Multi(ST_Union(ST_SnapToGrid(geom, 0.0000001))) AS merged_geom
+			FROM "%s"
+			WHERE id IN (%s)
+		)
+		-- 插入合并后的新要素
+		INSERT INTO "%s" (id, geom%s)
+		SELECT 
+			%d AS id,
+			merged_geom
+			%s
+		FROM dissolved
+		RETURNING ST_AsGeoJSON(geom) AS geojson, id
+	`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
+
+	type DissolveResult struct {
+		Geojson string
+		ID      int32
+	}
+	var dissolveResult DissolveResult
+
+	if err := tx.Raw(dissolveAndInsertSQL).Scan(&dissolveResult).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "合并并插入新要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 检查是否成功插入
+	if dissolveResult.Geojson == "" {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "合并失败，未生成有效几何",
+			"data":    "",
+		})
+		return
+	}
+
+	// 6. 删除原要素
+	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
+	if err := tx.Exec(deleteSQL).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "删除原要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 7. 提交事务
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "提交事务失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+	for id := range jsonData.IDs {
+		GetPdata := getData{
+			TableName: LayerName,
+			ID:        int32(id),
+		}
+		geom := GetGeo(GetPdata)
+		pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+	}
+
+	// 返回成功结果
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": fmt.Sprintf("成功合并%d个要素为1个新要素", len(jsonData.IDs)),
+		"data": gin.H{
+			"geojson": dissolveResult.Geojson,
+			"new_id":  dissolveResult.ID,
+		},
+	})
+}
