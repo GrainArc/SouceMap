@@ -346,7 +346,7 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 	}
 
 	// 验证是否为面数据
-	if schema.Type != "Polygon" {
+	if schema.Type != "polygon" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
 			"message": "只有面数据才能分割",
@@ -389,73 +389,54 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
-	// 2. 获取当前表的最大ID，用于生成新ID
-	var maxID int32
-	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取最大ID失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 3. 执行切割并插入新要素，删除原要素
-	// 构建属性字段列表（排除id和geom）
-	var columnNames []string
-	var columnPlaceholders []string
+	// 2. 执行切割并插入新要素
+	// 获取所有附加列（排除id和geom）
+	var additionalColumns []string
 	for key := range originalFeature {
 		if key != "id" && key != "geom" {
-			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
-			columnPlaceholders = append(columnPlaceholders, fmt.Sprintf("t.%s", key))
+			additionalColumns = append(additionalColumns, key)
 		}
 	}
 
-	columnsStr := ""
-	placeholdersStr := ""
-	if len(columnNames) > 0 {
-		columnsStr = ", " + strings.Join(columnNames, ", ")
-		placeholdersStr = ", " + strings.Join(columnPlaceholders, ", ")
+	// 构建 split_geom CTE 的选择列
+	splitSelectCols := `(ST_Dump(ST_Split(o.geom, ST_GeomFromGeoJSON('%s')))).geom AS geom`
+	for _, col := range additionalColumns {
+		splitSelectCols += fmt.Sprintf(`, o."%s"`, col)
 	}
 
+	// 构建 INSERT 的列名（不包括id，让数据库自动生成）
+	insertCols := "geom"
+	for _, col := range additionalColumns {
+		insertCols += fmt.Sprintf(`, "%s"`, col)
+	}
+
+	// 构建 SELECT 的列名（不包括id）
+	selectCols := "geom"
+	for _, col := range additionalColumns {
+		selectCols += fmt.Sprintf(`, "%s"`, col)
+	}
+
+	// 方案1：如果id列有DEFAULT值（如SERIAL或使用nextval）
 	splitAndInsertSQL := fmt.Sprintf(`
 		WITH original AS (
-			-- 获取原要素
 			SELECT * FROM "%s" WHERE id = %d
 		),
 		split_geom AS (
-			-- 执行切割并分解为多个几何
-			SELECT 
-				ROW_NUMBER() OVER () as seq,
-				(ST_Dump(ST_Split(o.geom, ST_GeomFromGeoJSON('%s')))).geom AS geom
-				%s
+			SELECT `+splitSelectCols+`
 			FROM original o
 		)
-		-- 插入新要素
-		INSERT INTO "%s" (id, geom%s)
-		SELECT 
-			%d + seq AS id,
-			s.geom
-			%s
-		FROM split_geom s
-		RETURNING ST_AsGeoJSON(ST_Collect(geom)) AS geojson
-	`, LayerName, jsonData.ID, line,
-		func() string {
-			if len(columnNames) > 0 {
-				return ", o.*"
-			}
-			return ""
-		}(),
-		LayerName, columnsStr, maxID, placeholdersStr)
+		INSERT INTO "%s" (`+insertCols+`)
+		SELECT `+selectCols+`
+		FROM split_geom
+		RETURNING id
+	`, LayerName, jsonData.ID, line, LayerName)
 
-	type SplitResult struct {
-		Geojson string
+	type InsertedID struct {
+		ID int32
 	}
-	var splitResult SplitResult
+	var insertedIDs []InsertedID
 
-	if err := tx.Raw(splitAndInsertSQL).Scan(&splitResult).Error; err != nil {
+	if err := tx.Raw(splitAndInsertSQL).Scan(&insertedIDs).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -465,13 +446,60 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
-	// 4. 删除原要素
+	// 检查是否有插入的记录
+	if len(insertedIDs) == 0 {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "切割失败，未生成新要素",
+			"data":    "",
+		})
+		return
+	}
+
+	//更新缓存库
+	GetPdata := getData{
+		TableName: LayerName,
+		ID:        jsonData.ID,
+	}
+	geom := GetGeo(GetPdata)
+	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+
+	// 3. 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
 			"message": "删除原要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 4. 查询新插入的所有几何，生成GeoJSON
+	var idList []string
+	for _, id := range insertedIDs {
+		idList = append(idList, fmt.Sprintf("%d", id.ID))
+	}
+	idsStr := strings.Join(idList, ",")
+
+	getGeoJSONSQL := fmt.Sprintf(`
+		SELECT ST_AsGeoJSON(ST_Collect(geom)) AS geojson
+		FROM "%s"
+		WHERE id IN (%s)
+	`, LayerName, idsStr)
+
+	type SplitResult struct {
+		Geojson string
+	}
+	var splitResult SplitResult
+
+	if err := tx.Raw(getGeoJSONSQL).Scan(&splitResult).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询新要素失败: " + err.Error(),
 			"data":    "",
 		})
 		return
@@ -486,13 +514,7 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		})
 		return
 	}
-	//更新缓存库
-	GetPdata := getData{
-		TableName: LayerName,
-		ID:        jsonData.ID,
-	}
-	geom := GetGeo(GetPdata)
-	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
@@ -545,7 +567,7 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	}
 
 	// 验证是否为面数据
-	if schema.Type != "Polygon" {
+	if schema.Type != "polygon" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
 			"message": "只有面数据才能合并",
@@ -636,13 +658,31 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 				// 转义单引号
 				escapedValue := strings.ReplaceAll(v, "'", "''")
 				columnValues = append(columnValues, fmt.Sprintf("'%s'", escapedValue))
+			case time.Time:
+				// 处理时间类型
+				if v.IsZero() {
+					columnValues = append(columnValues, "NULL")
+				} else {
+					// 对于date类型，只需要日期部分
+					// 如果是timestamp类型，使用: v.Format("2006-01-02 15:04:05")
+					columnValues = append(columnValues, fmt.Sprintf("'%s'", v.Format("2006-01-02")))
+				}
 			case int, int32, int64, float32, float64:
 				columnValues = append(columnValues, fmt.Sprintf("%v", v))
 			case bool:
 				columnValues = append(columnValues, fmt.Sprintf("%t", v))
 			default:
-				// 其他类型尝试转换为字符串
-				columnValues = append(columnValues, fmt.Sprintf("'%v'", v))
+				// 检查是否是时间指针类型
+				if t, ok := value.(*time.Time); ok {
+					if t == nil || t.IsZero() {
+						columnValues = append(columnValues, "NULL")
+					} else {
+						columnValues = append(columnValues, fmt.Sprintf("'%s'", t.Format("2006-01-02")))
+					}
+				} else {
+					// 其他类型尝试转换为字符串
+					columnValues = append(columnValues, fmt.Sprintf("'%v'", v))
+				}
 			}
 		}
 	}
@@ -700,6 +740,16 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		return
 	}
 
+	// 删除MVT缓存
+	for _, id := range jsonData.IDs {
+		GetPdata := getData{
+			TableName: LayerName,
+			ID:        id,
+		}
+		geom := GetGeo(GetPdata)
+		pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+	}
+
 	// 6. 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
@@ -720,14 +770,6 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 			"data":    "",
 		})
 		return
-	}
-	for id := range jsonData.IDs {
-		GetPdata := getData{
-			TableName: LayerName,
-			ID:        int32(id),
-		}
-		geom := GetGeo(GetPdata)
-		pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
 	}
 
 	// 返回成功结果
