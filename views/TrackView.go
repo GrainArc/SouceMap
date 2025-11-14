@@ -26,10 +26,6 @@ var upgrader = websocket.Upgrader{
 	WriteBufferSize: 1024,
 }
 
-type TrackHandler struct {
-	trackService *services.TrackService
-}
-
 func NewTrackHandler() *TrackHandler {
 	return &TrackHandler{
 		trackService: services.NewTrackService(),
@@ -67,7 +63,7 @@ func (h *TrackHandler) InitTrack(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// 获取并打断几何为线段，返回 GeoJSON
+	// 获取并打断几何为线段
 	log.Printf("Getting geometries from layers: %v", trackData.LayerNames)
 	linesGeoJSON, err := h.trackService.GetAndBreakGeometries(
 		ctx,
@@ -86,6 +82,39 @@ func (h *TrackHandler) InitTrack(c *gin.Context) {
 
 	log.Printf("Found %d line segments", len(linesGeoJSON.Features))
 
+	// 生成会话ID
+	sessionID := fmt.Sprintf("%d", time.Now().UnixNano())
+
+	// 存储会话数据(可以用 Redis 或内存缓存)
+	h.storePendingSession(sessionID, &PendingSession{
+		LinesGeoJSON: linesGeoJSON,
+		StartPoint:   trackData.StartPoint,
+		CreatedAt:    time.Now(),
+	})
+
+	// 返回会话ID和线段数据
+	c.JSON(200, gin.H{
+		"session_id": sessionID,
+		"lines":      linesGeoJSON,
+		"message":    fmt.Sprintf("Tracking initialized with %d line segments", len(linesGeoJSON.Features)),
+	})
+}
+
+// ConnectWebSocket 连接 WebSocket(GET 请求)
+func (h *TrackHandler) ConnectWebSocket(c *gin.Context) {
+	sessionID := c.Query("session_id")
+	if sessionID == "" {
+		c.JSON(400, gin.H{"error": "session_id required"})
+		return
+	}
+
+	// 获取会话数据
+	pending := h.getPendingSession(sessionID)
+	if pending == nil {
+		c.JSON(404, gin.H{"error": "session not found or expired"})
+		return
+	}
+
 	// 升级到 WebSocket
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -97,18 +126,20 @@ func (h *TrackHandler) InitTrack(c *gin.Context) {
 	sessionCtx, cancel := context.WithCancel(context.Background())
 	session := &TrackSession{
 		conn:         conn,
-		linesGeoJSON: linesGeoJSON,
-		startPoint:   trackData.StartPoint,
+		linesGeoJSON: pending.LinesGeoJSON,
+		startPoint:   pending.StartPoint,
 		ctx:          sessionCtx,
 		cancel:       cancel,
 		completePath: geojson.NewFeatureCollection(),
 	}
 
-	// 发送初始化成功消息，包含打断后的线段
+	// 清理待处理会话
+	h.removePendingSession(sessionID)
+
+	// 发送连接成功消息
 	initResponse := models.TrackResponse{
-		Type:    "init",
-		Lines:   linesGeoJSON,
-		Message: fmt.Sprintf("Tracking initialized with %d line segments", len(linesGeoJSON.Features)),
+		Type:    "connected",
+		Message: "WebSocket connected successfully",
 	}
 	if err := conn.WriteJSON(initResponse); err != nil {
 		log.Printf("Failed to send init response: %v", err)
@@ -120,6 +151,37 @@ func (h *TrackHandler) InitTrack(c *gin.Context) {
 	h.handleSession(session)
 }
 
+// 添加会话管理
+type PendingSession struct {
+	LinesGeoJSON *geojson.FeatureCollection
+	StartPoint   []float64
+	CreatedAt    time.Time
+}
+type TrackHandler struct {
+	trackService    *services.TrackService
+	pendingSessions sync.Map // sessionID -> *PendingSession
+}
+
+func (h *TrackHandler) storePendingSession(id string, session *PendingSession) {
+	h.pendingSessions.Store(id, session)
+
+	// 设置过期清理(5分钟)
+	go func() {
+		time.Sleep(5 * time.Minute)
+		h.pendingSessions.Delete(id)
+	}()
+}
+
+func (h *TrackHandler) getPendingSession(id string) *PendingSession {
+	if val, ok := h.pendingSessions.Load(id); ok {
+		return val.(*PendingSession)
+	}
+	return nil
+}
+
+func (h *TrackHandler) removePendingSession(id string) {
+	h.pendingSessions.Delete(id)
+}
 func (h *TrackHandler) handleSession(session *TrackSession) {
 	defer func() {
 		session.cancel()
@@ -188,6 +250,7 @@ func (h *TrackHandler) handleSession(session *TrackSession) {
 
 func (h *TrackHandler) handleMouseMove(session *TrackSession, currentPoint []float64) {
 	// 计算最短路径，返回 GeoJSON
+
 	pathFC, err := h.trackService.CalculateShortestPath(
 		session.ctx,
 		session.linesGeoJSON,
@@ -207,12 +270,16 @@ func (h *TrackHandler) handleMouseMove(session *TrackSession, currentPoint []flo
 	// 发送路径更新
 	session.mu.Lock()
 	err = session.conn.WriteJSON(response)
-	session.mu.Unlock()
-
 	if err != nil {
+		session.mu.Unlock()
 		log.Printf("Failed to send path update: %v", err)
 		session.cancel()
+		return
 	}
+
+	// 更新起始点为当前结束点
+	session.startPoint = currentPoint
+	session.mu.Unlock()
 }
 
 func (h *TrackHandler) handleComplete(session *TrackSession) {

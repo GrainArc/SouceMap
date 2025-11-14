@@ -2,11 +2,13 @@ package routers
 
 import (
 	"github.com/GrainArc/SouceMap/GdalView"
+	"github.com/GrainArc/SouceMap/views"
 	"github.com/gin-gonic/gin"
 )
 
 func GDALRouters(r *gin.Engine) {
 	UserController := &GdalView.UserController{}
+	trackHandler := views.NewTrackHandler()
 	mapRouter := r.Group("/gdal")
 	{
 		// POST用于提交分析任务配置
@@ -62,5 +64,10 @@ func GDALRouters(r *gin.Engine) {
 		mapRouter.POST("/RasterTile/start", UserController.StartRasterTile)
 		mapRouter.GET("/RasterTile/ws/:taskId", UserController.RasterTileWebSocket)
 		mapRouter.GET("/RasterTile/status/:taskId", UserController.GetRasterTileTaskStatus)
+	}
+
+	{
+		mapRouter.POST("/track/init", trackHandler.InitTrack)     // 初始化
+		mapRouter.GET("/track/ws", trackHandler.ConnectWebSocket) // WebSocket 连接
 	}
 }

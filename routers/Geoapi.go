@@ -12,7 +12,7 @@ func GeoRouters(r *gin.Engine) {
 	fieldCalcCtrl := views.NewFieldCalculatorController()
 	geomService := methods.NewGeometryService()
 	geomHandler := views.NewGeometryHandler(geomService)
-	trackHandler := views.NewTrackHandler()
+
 	mapRouter := r.Group("/geo")
 	{
 		mapRouter.GET(":tablename/:z/:x/:y.pbf", UserController.OutMVT)
@@ -74,10 +74,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/SplitFeature", UserController.SplitFeature)
 		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
-		track := mapRouter.Group("/track")
-		{
-			track.POST("/init", trackHandler.InitTrack)
-		}
+
 
 	}
 	SurveyRouter := r.Group("/Survey")
