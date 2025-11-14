@@ -621,6 +621,28 @@ func findClosestPointOnLineString(ls orb.LineString, target orb.Point) orb.Point
 		return orb.Point{}
 	}
 
+	const intersectionThreshold = 0.5 // 0.2米阈值
+
+	// 第一步：查找最近的线段顶点（交点）
+	var nearestVertex orb.Point
+	minVertexDist := math.MaxFloat64
+	hasValidVertex := false
+
+	for _, vertex := range ls {
+		dist := haversineDistance(vertex, target)
+		if dist < minVertexDist {
+			minVertexDist = dist
+			nearestVertex = vertex
+			hasValidVertex = true
+		}
+	}
+
+	// 如果最近的顶点距离在阈值内，优先使用顶点
+	if hasValidVertex && minVertexDist <= intersectionThreshold {
+		return nearestVertex
+	}
+
+	// 第二步：如果没有合适的顶点，使用传统的垂足投影方法
 	var closestPoint orb.Point
 	minDist := math.MaxFloat64
 
@@ -833,4 +855,60 @@ func (s *TrackService) featureCollectionToWKT(fc geojson.FeatureCollection) stri
 	}
 
 	return ""
+}
+
+// 在 TrackService 中添加新方法
+func (s *TrackService) FindNearestPointOnLines(
+	ctx context.Context,
+	linesGeoJSON *geojson.FeatureCollection,
+	targetPoint []float64,
+) (snappedPoint []float64, distance float64, lineID int, err error) {
+	if linesGeoJSON == nil || len(linesGeoJSON.Features) == 0 {
+		return nil, 0, 0, fmt.Errorf("no line segments available")
+	}
+
+	if len(targetPoint) < 2 {
+		return nil, 0, 0, fmt.Errorf("invalid target point")
+	}
+
+	target := orb.Point{targetPoint[0], targetPoint[1]}
+	var nearestPoint orb.Point
+	minDistance := math.MaxFloat64
+	nearestLineID := -1
+
+	// 遍历所有线段找最近点
+	for _, feature := range linesGeoJSON.Features {
+		if feature.Geometry == nil {
+			continue
+		}
+
+		lineString, ok := feature.Geometry.(orb.LineString)
+		if !ok || len(lineString) < 2 {
+			continue
+		}
+
+		// 获取线段ID
+		var featureID int
+		if id, ok := feature.Properties["id"].(float64); ok {
+			featureID = int(id)
+		} else if id, ok := feature.Properties["id"].(int); ok {
+			featureID = id
+		}
+
+		// 找到线段上的最近点
+		closestPoint := findClosestPointOnLineString(lineString, target)
+		dist := haversineDistance(closestPoint, target)
+
+		if dist < minDistance {
+			minDistance = dist
+			nearestPoint = closestPoint
+			nearestLineID = featureID
+		}
+	}
+
+	if nearestLineID == -1 {
+		return nil, 0, 0, fmt.Errorf("no nearest point found")
+	}
+
+	return []float64{nearestPoint[0], nearestPoint[1]}, minDistance, nearestLineID, nil
 }

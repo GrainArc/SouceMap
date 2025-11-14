@@ -229,22 +229,88 @@ func (h *TrackHandler) handleSession(session *TrackSession) {
 			return
 		}
 
-		// 处理完成命令
-		if action, ok := msg["action"].(string); ok && action == "complete" {
-			h.handleComplete(session)
-			return
-		}
+		// 获取 action 和 point
+		action, hasAction := msg["action"].(string)
+		pointData, hasPoint := msg["point"].([]interface{})
 
-		// 处理鼠标点
-		if pointData, ok := msg["point"].([]interface{}); ok && len(pointData) == 2 {
+		// 验证 point 数据
+		var point []float64
+		if hasPoint && len(pointData) == 2 {
 			x, xOk := pointData[0].(float64)
 			y, yOk := pointData[1].(float64)
-			if !xOk || !yOk {
-				continue
+			if xOk && yOk {
+				point = []float64{x, y}
 			}
-			currentPoint := []float64{x, y}
-			h.handleMouseMove(session, currentPoint)
 		}
+
+		// 处理不同的 action
+		if hasAction {
+			switch action {
+			case "complete":
+				// 处理完成命令
+				h.handleComplete(session)
+				return
+
+			case "snap":
+				// 处理捕捉点请求
+				if len(point) == 2 {
+					h.handleSnapPoint(session, point)
+				} else {
+					log.Printf("Invalid point for snap action")
+				}
+
+			case "track":
+				// 处理追踪路径请求
+				if len(point) == 2 {
+					h.handleMouseMove(session, point)
+				} else {
+					log.Printf("Invalid point for track action")
+				}
+
+			default:
+				log.Printf("Unknown action: %s", action)
+			}
+		} else {
+			// 兼容旧版本：没有 action 字段时，默认为追踪
+			if len(point) == 2 {
+				h.handleMouseMove(session, point)
+			}
+		}
+	}
+}
+
+// 添加新的处理函数
+func (h *TrackHandler) handleSnapPoint(session *TrackSession, point []float64) {
+	snappedPoint, distance, lineID, err := h.trackService.FindNearestPointOnLines(
+		session.ctx,
+		session.linesGeoJSON,
+		point,
+	)
+
+	var response models.SnapPointResponse
+	if err != nil {
+		response = models.SnapPointResponse{
+			Type:    "snap_point",
+			Message: err.Error(),
+		}
+		log.Printf("Snap point error: %v", err)
+	} else {
+		response = models.SnapPointResponse{
+			Type:         "snap_point",
+			SnappedPoint: snappedPoint,
+			Distance:     distance,
+			LineID:       lineID,
+		}
+	}
+
+	// 发送捕捉结果
+	session.mu.Lock()
+	err = session.conn.WriteJSON(response)
+	session.mu.Unlock()
+
+	if err != nil {
+		log.Printf("Failed to send snap point response: %v", err)
+		session.cancel()
 	}
 }
 
