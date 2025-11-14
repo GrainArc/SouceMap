@@ -254,7 +254,12 @@ func (h *TrackHandler) handleSession(session *TrackSession) {
 			case "snap":
 				// 处理捕捉点请求
 				if len(point) == 2 {
-					h.handleSnapPoint(session, point)
+					// 获取 max_distance 参数
+					var maxDistance float64 = 0
+					if maxDist, ok := msg["max_distance"].(float64); ok {
+						maxDistance = maxDist
+					}
+					h.handleSnapPointWithDistance(session, point, maxDistance)
 				} else {
 					log.Printf("Invalid point for snap action")
 				}
@@ -281,10 +286,13 @@ func (h *TrackHandler) handleSession(session *TrackSession) {
 
 // 添加新的处理函数
 func (h *TrackHandler) handleSnapPoint(session *TrackSession, point []float64) {
+	// 从消息中获取 max_distance，如果没有则默认为 0(不限制)
+	var maxDistance float64 = 2
 	snappedPoint, distance, lineID, err := h.trackService.FindNearestPointOnLines(
 		session.ctx,
 		session.linesGeoJSON,
 		point,
+		maxDistance, // 传入阈值参数
 	)
 
 	var response models.SnapPointResponse
@@ -365,4 +373,38 @@ func (h *TrackHandler) handleComplete(session *TrackSession) {
 	session.mu.Unlock()
 
 	log.Printf("Tracking completed")
+}
+func (h *TrackHandler) handleSnapPointWithDistance(session *TrackSession, point []float64, maxDistance float64) {
+	snappedPoint, distance, lineID, err := h.trackService.FindNearestPointOnLines(
+		session.ctx,
+		session.linesGeoJSON,
+		point,
+		maxDistance,
+	)
+
+	var response models.SnapPointResponse
+	if err != nil {
+		response = models.SnapPointResponse{
+			Type:    "snap_point",
+			Message: err.Error(),
+		}
+		log.Printf("Snap point error: %v", err)
+	} else {
+		response = models.SnapPointResponse{
+			Type:         "snap_point",
+			SnappedPoint: snappedPoint,
+			Distance:     distance,
+			LineID:       lineID,
+		}
+	}
+
+	// 发送捕捉结果
+	session.mu.Lock()
+	err = session.conn.WriteJSON(response)
+	session.mu.Unlock()
+
+	if err != nil {
+		log.Printf("Failed to send snap point response: %v", err)
+		session.cancel()
+	}
 }

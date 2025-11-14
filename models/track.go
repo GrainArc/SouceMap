@@ -7,7 +7,8 @@ import (
 
 // 在 TrackResponse 后添加
 type SnapPointRequest struct {
-	Point []float64 `json:"point"` // 要捕捉的点 [x, y]
+	Point       []float64 `json:"point"`                  // 要捕捉的点 [x, y]
+	MaxDistance float64   `json:"max_distance,omitempty"` // 最大捕捉距离(米)，超过则返回原点
 }
 
 type SnapPointResponse struct {

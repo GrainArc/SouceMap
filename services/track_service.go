@@ -857,11 +857,12 @@ func (s *TrackService) featureCollectionToWKT(fc geojson.FeatureCollection) stri
 	return ""
 }
 
-// 在 TrackService 中添加新方法
+// FindNearestPointOnLines 修改签名，添加 maxDistance 参数
 func (s *TrackService) FindNearestPointOnLines(
 	ctx context.Context,
 	linesGeoJSON *geojson.FeatureCollection,
 	targetPoint []float64,
+	maxDistance float64, // 新增参数：最大捕捉距离(米)，0表示不限制
 ) (snappedPoint []float64, distance float64, lineID int, err error) {
 	if linesGeoJSON == nil || len(linesGeoJSON.Features) == 0 {
 		return nil, 0, 0, fmt.Errorf("no line segments available")
@@ -908,6 +909,12 @@ func (s *TrackService) FindNearestPointOnLines(
 
 	if nearestLineID == -1 {
 		return nil, 0, 0, fmt.Errorf("no nearest point found")
+	}
+
+	// 新增：检查距离阈值
+	if maxDistance > 0 && minDistance > maxDistance {
+		// 超过阈值，返回原始点
+		return targetPoint, minDistance, -1, nil
 	}
 
 	return []float64{nearestPoint[0], nearestPoint[1]}, minDistance, nearestLineID, nil
