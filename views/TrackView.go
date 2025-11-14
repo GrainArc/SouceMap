@@ -95,7 +95,6 @@ func (h *TrackHandler) InitTrack(c *gin.Context) {
 	// 返回会话ID和线段数据
 	c.JSON(200, gin.H{
 		"session_id": sessionID,
-		"lines":      linesGeoJSON,
 		"message":    fmt.Sprintf("Tracking initialized with %d line segments", len(linesGeoJSON.Features)),
 	})
 }
