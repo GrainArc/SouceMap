@@ -6,7 +6,6 @@ import (
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
-	"log"
 	"math"
 	"os"
 	"path/filepath"
@@ -141,307 +140,316 @@ func createIndexSlice(n int32) []int32 {
 }
 
 func ConvertSHPToGeoJSON2(shpfileFilePath string) (*geojson.FeatureCollection, string) {
+	// 打开 shapefile 文件
 	shape, err := shp.Open(shpfileFilePath)
-	var isTransform string
 	if err != nil {
-		log.Println(err)
+		// 返回错误而不是仅记录日志
+		return nil, ""
 	}
-	defer shape.Close()
+	defer shape.Close() // 确保文件关闭
+
+	// 初始化 GeoJSON FeatureCollection
 	featureCollection := geojson.NewFeatureCollection()
-	// fields from the attribute table (DBF)
+
+	// 从 DBF 文件获取字段定义
 	fields := shape.Fields()
 
-	dir := filepath.Dir(shpfileFilePath)
-	// 获取文件的基础名称部分（不含路径）
-	base := filepath.Base(shpfileFilePath)
-	// 将文件名的后缀改为 cpg
-	newBase := strings.TrimSuffix(base, filepath.Ext(base)) + ".cpg"
-	// 拼接新的文件路径
-	newPath := filepath.Join(dir, newBase)
-	// loop through all features in the shapefile
-	CPGg, err := os.ReadFile(newPath)
-	var CPG string
-	if err != nil {
-		CPG = "GBK"
-	} else {
-		CPG = string(CPGg)
-	}
+	// 读取字符编码配置(CPG 文件)，移到循环外避免重复读取
+	encoding := readCPGEncoding(shpfileFilePath)
 
+	// 用于存储检测到的坐标系，使用 map 去重
+	detectedCRS := make(map[string]bool)
+
+	// 遍历 shapefile 中的所有要素
 	for shape.Next() {
-		n, p := shape.Shape()
-		var geometry orb.Geometry
-		//fmt.Println(reflect.TypeOf(p))
+		n, p := shape.Shape() // 获取要素索引和几何对象
+
+		// 根据几何类型处理要素
 		switch s := p.(type) {
 		case *shp.Point:
-			x := s.X
-			if x >= 100000 && x <= 10000000 {
-				isTransform = "4544"
-			} else if x <= 1000 {
-				isTransform = "4326"
-			} else if x >= 33000000 && x <= 34000000 {
-				isTransform = "4521"
-			} else if x >= 34000000 && x <= 35000000 {
-				isTransform = "4522"
-			} else if x >= 35000000 && x <= 36000000 {
-				isTransform = "4523"
-			} else if x >= 36000000 && x <= 37000000 {
-				isTransform = "4524"
-			}
-			geometry = orb.Point{s.X, s.Y}
-			attrs := make(map[string]interface{})
-			for k, f := range fields {
-				if CPG == "GBK" {
-					att := GbkToUtf8(f.String())
-					realatt := GbkToUtf8(shape.ReadAttribute(n, k))
-					attrs[att] = trimTrailingZeros(realatt)
-				} else {
-					realatt := shape.ReadAttribute(n, k)
-					attrs[f.String()] = trimTrailingZeros(realatt)
-
-				}
-
-			}
-			// Create and append the Feature
-			feature := geojson.NewFeature(geometry)
-			feature.Properties = attrs
+			// 处理 Point 类型
+			feature := processPointGeometry(s.X, s.Y, n, shape, fields, encoding, detectedCRS)
 			featureCollection.Append(feature)
+
 		case *shp.PointZ:
-			x := s.X
-			if x >= 100000 && x <= 10000000 {
-				isTransform = "4544"
-			} else if x <= 1000 {
-				isTransform = "4326"
-			} else if x >= 33000000 && x <= 34000000 {
-				isTransform = "4521"
-			} else if x >= 34000000 && x <= 35000000 {
-				isTransform = "4522"
-			} else if x >= 35000000 && x <= 36000000 {
-				isTransform = "4523"
-			} else if x >= 36000000 && x <= 37000000 {
-				isTransform = "4524"
-			}
-			geometry = orb.Point{s.X, s.Y}
-			attrs := make(map[string]interface{})
-			for k, f := range fields {
-				if CPG == "GBK" {
-					att := GbkToUtf8(f.String())
-					realatt := GbkToUtf8(shape.ReadAttribute(n, k))
-					attrs[att] = trimTrailingZeros(realatt)
-				} else {
-					realatt := shape.ReadAttribute(n, k)
-					attrs[f.String()] = trimTrailingZeros(realatt)
-				}
-			}
-			// Create and append the Feature
-			feature := geojson.NewFeature(geometry)
-			feature.Properties = attrs
+			// 处理 PointZ 类型(带 Z 坐标)
+			feature := processPointGeometry(s.X, s.Y, n, shape, fields, encoding, detectedCRS)
 			featureCollection.Append(feature)
+
+		case *shp.PointM:
+			// 处理 PointM 类型(带 M 值)
+			feature := processPointGeometry(s.X, s.Y, n, shape, fields, encoding, detectedCRS)
+			featureCollection.Append(feature)
+
 		case *shp.PolyLine:
-			coords := make([]orb.Point, len(s.Points))
-			for i, vertex := range s.Points {
-				x := vertex.X
-				if x >= 100000 && x <= 10000000 {
-					isTransform = "4544"
-				} else if x <= 1000 {
-					isTransform = "4326"
-				} else if x >= 33000000 && x <= 34000000 {
-					isTransform = "4521"
-				} else if x >= 34000000 && x <= 35000000 {
-					isTransform = "4522"
-				} else if x >= 35000000 && x <= 36000000 {
-					isTransform = "4523"
-				} else if x >= 36000000 && x <= 37000000 {
-					isTransform = "4524"
-				}
-				coords[i] = orb.Point{vertex.X, vertex.Y}
-			}
-			line := orb.LineString(coords)
-			attrs := make(map[string]interface{})
-			for k, f := range fields {
-				if CPG == "GBK" {
-					att := GbkToUtf8(f.String())
-					realatt := GbkToUtf8(shape.ReadAttribute(n, k))
-					attrs[att] = trimTrailingZeros(realatt)
-				} else {
-					realatt := shape.ReadAttribute(n, k)
-					attrs[f.String()] = trimTrailingZeros(realatt)
-				}
-			}
-			feature := geojson.NewFeature(line)
-			feature.Properties = attrs
+			// 处理 PolyLine 类型
+			feature := processPolyLineGeometry(s.Points, n, shape, fields, encoding, detectedCRS)
 			featureCollection.Append(feature)
+
 		case *shp.PolyLineZ:
-			coords := make([]orb.Point, len(s.Points))
-			for i, vertex := range s.Points {
-				x := vertex.X
-				if x >= 100000 && x <= 10000000 {
-					isTransform = "4544"
-				} else if x <= 1000 {
-					isTransform = "4326"
-				} else if x >= 33000000 && x <= 34000000 {
-					isTransform = "4521"
-				} else if x >= 34000000 && x <= 35000000 {
-					isTransform = "4522"
-				} else if x >= 35000000 && x <= 36000000 {
-					isTransform = "4523"
-				} else if x >= 36000000 && x <= 37000000 {
-					isTransform = "4524"
-				}
-				coords[i] = orb.Point{vertex.X, vertex.Y}
-			}
-			line := orb.LineString(coords)
-			attrs := make(map[string]interface{})
-			for k, f := range fields {
-				if CPG == "GBK" {
-					att := GbkToUtf8(f.String())
-					realatt := GbkToUtf8(shape.ReadAttribute(n, k))
-					attrs[att] = trimTrailingZeros(realatt)
-				} else {
-					realatt := shape.ReadAttribute(n, k)
-					attrs[f.String()] = trimTrailingZeros(realatt)
-				}
-			}
-			feature := geojson.NewFeature(line)
-			feature.Properties = attrs
+			// 处理 PolyLineZ 类型(带 Z 坐标)
+			feature := processPolyLineGeometry(s.Points, n, shape, fields, encoding, detectedCRS)
 			featureCollection.Append(feature)
+
+		case *shp.PolyLineM:
+			// 处理 PolyLineM 类型(带 M 值)
+			feature := processPolyLineGeometry(s.Points, n, shape, fields, encoding, detectedCRS)
+			featureCollection.Append(feature)
+
 		case *shp.Polygon:
-			var MultiPolygons orb.MultiPolygon
-			polygons := SplitPoints(s.Points, s.Parts)
-			dounts := []bool{}
-			for _, part := range polygons {
-				var points []orb.Point
-				for _, point := range part {
-					points = append(points, orb.Point{point.X, point.Y}) //获取所有线
-
-				}
-				dount := IsClockwise(points) //判断内外环顺序
-				dounts = append(dounts, dount)
-
-			}
-			polygons_index := createIndexSlice(int32(len(polygons)))
-			newparts := splitParts(polygons_index, dounts)
-			attrs := make(map[string]interface{})
-			for _, item := range newparts {
-				var rings []orb.Ring
-				for _, i := range item {
-					coords := make([]orb.Point, len(polygons[i]))
-					for i, vertex := range polygons[i] {
-						//坐标转换
-						x := vertex.X
-						if x >= 100000 && x <= 10000000 {
-							isTransform = "4544"
-						} else if x <= 1000 {
-							isTransform = "4326"
-						} else if x >= 33000000 && x <= 34000000 {
-							isTransform = "4521"
-						} else if x >= 34000000 && x <= 35000000 {
-							isTransform = "4522"
-						} else if x >= 35000000 && x <= 36000000 {
-							isTransform = "4523"
-						} else if x >= 36000000 && x <= 37000000 {
-							isTransform = "4524"
-						}
-						coords[i] = orb.Point{vertex.X, vertex.Y}
-					}
-					rings = append(rings, orb.Ring(coords))
-
-				}
-				Polygon := orb.Polygon(rings)
-				MultiPolygons = append(MultiPolygons, Polygon)
-				// Create attributes (properties) map for the Feature
-
-			}
-
-			for k, f := range fields {
-				if CPG == "GBK" {
-					att := GbkToUtf8(f.String())
-					realatt := GbkToUtf8(shape.ReadAttribute(n, k))
-					attrs[att] = trimTrailingZeros(realatt)
-				} else {
-					realatt := shape.ReadAttribute(n, k)
-					attrs[f.String()] = trimTrailingZeros(realatt)
-
-				}
-			}
-			// Create and append the Feature
-			feature := geojson.NewFeature(MultiPolygons)
-			if len(fields) == 0 {
-				attrs["attribute"] = "null"
-			}
-			feature.Properties = attrs
-
+			// 处理 Polygon 类型
+			feature := processPolygonGeometry(s.Points, s.Parts, n, shape, fields, encoding, detectedCRS)
 			featureCollection.Append(feature)
+
 		case *shp.PolygonZ:
-			var MultiPolygons orb.MultiPolygon
-			polygons := SplitPoints(s.Points, s.Parts)
-			dounts := []bool{}
-			for _, part := range polygons {
-				var points []orb.Point
-				for _, point := range part {
-					points = append(points, orb.Point{point.X, point.Y}) //获取所有线
+			// 处理 PolygonZ 类型(带 Z 坐标)
+			feature := processPolygonGeometry(s.Points, s.Parts, n, shape, fields, encoding, detectedCRS)
+			featureCollection.Append(feature)
 
-				}
-				dount := IsClockwise(points) //判断内外环顺序
-				dounts = append(dounts, dount)
-
-			}
-			polygons_index := createIndexSlice(int32(len(polygons)))
-			newparts := splitParts(polygons_index, dounts)
-			attrs := make(map[string]interface{})
-			for _, item := range newparts {
-				var rings []orb.Ring
-				for _, i := range item {
-					coords := make([]orb.Point, len(polygons[i]))
-					for i, vertex := range polygons[i] {
-						//坐标转换
-						x := vertex.X
-						if x >= 100000 && x <= 10000000 {
-							isTransform = "4544"
-						} else if x <= 1000 {
-							isTransform = "4326"
-						} else if x >= 33000000 && x <= 34000000 {
-							isTransform = "4521"
-						} else if x >= 34000000 && x <= 35000000 {
-							isTransform = "4522"
-						} else if x >= 35000000 && x <= 36000000 {
-							isTransform = "4523"
-						} else if x >= 36000000 && x <= 37000000 {
-							isTransform = "4524"
-						}
-						coords[i] = orb.Point{vertex.X, vertex.Y}
-					}
-					rings = append(rings, orb.Ring(coords))
-
-				}
-				Polygon := orb.Polygon(rings)
-				MultiPolygons = append(MultiPolygons, Polygon)
-				// Create attributes (properties) map for the Feature
-
-			}
-
-			for k, f := range fields {
-				if CPG == "GBK" {
-					att := GbkToUtf8(f.String())
-					realatt := GbkToUtf8(shape.ReadAttribute(n, k))
-					attrs[att] = trimTrailingZeros(realatt)
-				} else {
-					realatt := shape.ReadAttribute(n, k)
-					attrs[f.String()] = trimTrailingZeros(realatt)
-				}
-			}
-			// Create and append the Feature
-			feature := geojson.NewFeature(MultiPolygons)
-			if len(fields) == 0 {
-				attrs["attribute"] = "null"
-			}
-			feature.Properties = attrs
-
+		case *shp.PolygonM:
+			// 处理 PolygonM 类型(带 M 值)
+			feature := processPolygonGeometry(s.Points, s.Parts, n, shape, fields, encoding, detectedCRS)
 			featureCollection.Append(feature)
 		}
-
 	}
-	return featureCollection, isTransform
+
+	// 从检测到的坐标系中选择一个返回(优先级排序)
+	crsResult := selectCRS(detectedCRS)
+
+	return featureCollection, crsResult
 }
+
+// readCPGEncoding 读取 CPG 文件获取字符编码
+// 参数: shpfilePath - shapefile 文件路径
+// 返回: 编码名称,默认为 "GBK"
+func readCPGEncoding(shpfilePath string) string {
+	// 获取文件所在目录
+	dir := filepath.Dir(shpfilePath)
+	// 获取文件基础名称(不含路径)
+	base := filepath.Base(shpfilePath)
+	// 将扩展名替换为 .cpg
+	newBase := strings.TrimSuffix(base, filepath.Ext(base)) + ".cpg"
+	// 拼接完整的 CPG 文件路径
+	cpgPath := filepath.Join(dir, newBase)
+
+	// 读取 CPG 文件内容
+	cpgContent, err := os.ReadFile(cpgPath)
+	if err != nil {
+		// 如果文件不存在或读取失败,默认使用 GBK 编码
+		return "GBK"
+	}
+	// 返回文件内容作为编码名称
+	return strings.TrimSpace(string(cpgContent))
+}
+
+// detectCRS 根据 X 坐标值判断坐标系
+// 参数: x - X 坐标值
+// 返回: 坐标系 EPSG 代码
+func detectCRS(x float64) string {
+	// 根据坐标范围判断坐标系类型
+	switch {
+	case x <= 1000:
+		return "4326" // WGS84 经纬度坐标系
+
+	case x >= 100000 && x <= 10000000:
+		return "4544" // CGCS2000 / 3-degree Gauss-Kruger zone
+
+	// CGCS2000 / Gauss-Kruger 6度分带投影坐标系
+	case x >= 33000000 && x <= 34000000:
+		return "4521" // CGCS2000 / Gauss-Kruger CM 75E (带号13)
+	case x >= 34000000 && x <= 35000000:
+		return "4522" // CGCS2000 / Gauss-Kruger CM 81E (带号14)
+	case x >= 35000000 && x <= 36000000:
+		return "4523" // CGCS2000 / Gauss-Kruger CM 87E (带号15)
+	case x >= 36000000 && x <= 37000000:
+		return "4524" // CGCS2000 / Gauss-Kruger CM 93E (带号16)
+	case x >= 37000000 && x <= 38000000:
+		return "4525" // CGCS2000 / Gauss-Kruger CM 99E (带号17)
+	case x >= 38000000 && x <= 39000000:
+		return "4526" // CGCS2000 / Gauss-Kruger CM 105E (带号18)
+	case x >= 39000000 && x <= 40000000:
+		return "4527" // CGCS2000 / Gauss-Kruger CM 111E (带号19)
+	case x >= 40000000 && x <= 41000000:
+		return "4528" // CGCS2000 / Gauss-Kruger CM 117E (带号20)
+	case x >= 41000000 && x <= 42000000:
+		return "4529" // CGCS2000 / Gauss-Kruger CM 123E (带号21)
+	case x >= 42000000 && x <= 43000000:
+		return "4530" // CGCS2000 / Gauss-Kruger CM 129E (带号22)
+	case x >= 43000000 && x <= 44000000:
+		return "4531" // CGCS2000 / Gauss-Kruger CM 135E (带号23)
+
+	default:
+		return "" // 未知坐标系
+	}
+}
+
+// buildAttributes 构建要素属性字典
+// 参数: n - 要素索引, shape - shapefile 读取器, fields - 字段定义, encoding - 字符编码
+// 返回: 属性字典
+func buildAttributes(n int, shape *shp.Reader, fields []shp.Field, encoding string) map[string]interface{} {
+	// 初始化属性字典
+	attrs := make(map[string]interface{})
+
+	// 遍历所有字段
+	for k, f := range fields {
+		// 读取属性值
+		attrValue := shape.ReadAttribute(n, k)
+
+		if encoding == "GBK" {
+			// GBK 编码需要转换为 UTF-8
+			fieldName := GbkToUtf8(f.String())                   // 转换字段名
+			convertedValue := GbkToUtf8(attrValue)               // 转换属性值
+			attrs[fieldName] = trimTrailingZeros(convertedValue) // 去除尾部零并存储
+		} else {
+			// 其他编码直接使用
+			attrs[f.String()] = trimTrailingZeros(attrValue) // 去除尾部零并存储
+		}
+	}
+
+	// 如果没有任何字段,添加一个默认属性
+	if len(fields) == 0 {
+		attrs["attribute"] = "null"
+	}
+
+	return attrs
+}
+
+// processPointGeometry 处理点类型几何对象
+// 参数: x, y - 坐标值, n - 要素索引, shape - shapefile 读取器, fields - 字段定义, encoding - 编码, detectedCRS - 坐标系集合
+// 返回: GeoJSON Feature 对象
+func processPointGeometry(x, y float64, n int, shape *shp.Reader, fields []shp.Field, encoding string, detectedCRS map[string]bool) *geojson.Feature {
+	// 检测并记录坐标系
+	if crs := detectCRS(x); crs != "" {
+		detectedCRS[crs] = true
+	}
+
+	// 创建点几何对象
+	geometry := orb.Point{x, y}
+
+	// 构建属性字典
+	attrs := buildAttributes(n, shape, fields, encoding)
+
+	// 创建 GeoJSON Feature 并设置属性
+	feature := geojson.NewFeature(geometry)
+	feature.Properties = attrs
+
+	return feature
+}
+
+// processPolyLineGeometry 处理线类型几何对象
+// 参数: points - 点集合, n - 要素索引, shape - shapefile 读取器, fields - 字段定义, encoding - 编码, detectedCRS - 坐标系集合
+// 返回: GeoJSON Feature 对象
+func processPolyLineGeometry(points []shp.Point, n int, shape *shp.Reader, fields []shp.Field, encoding string, detectedCRS map[string]bool) *geojson.Feature {
+	// 预分配坐标数组
+	coords := make([]orb.Point, len(points))
+
+	// 转换所有点坐标
+	for i, vertex := range points {
+		// 检测并记录坐标系
+		if crs := detectCRS(vertex.X); crs != "" {
+			detectedCRS[crs] = true
+		}
+		// 转换为 orb.Point 格式
+		coords[i] = orb.Point{vertex.X, vertex.Y}
+	}
+
+	// 创建线几何对象
+	line := orb.LineString(coords)
+
+	// 构建属性字典
+	attrs := buildAttributes(n, shape, fields, encoding)
+
+	// 创建 GeoJSON Feature 并设置属性
+	feature := geojson.NewFeature(line)
+	feature.Properties = attrs
+
+	return feature
+}
+
+// processPolygonGeometry 处理面类型几何对象
+// 参数: points - 点集合, parts - 部分索引, n - 要素索引, shape - shapefile 读取器, fields - 字段定义, encoding - 编码, detectedCRS - 坐标系集合
+// 返回: GeoJSON Feature 对象
+func processPolygonGeometry(points []shp.Point, parts []int32, n int, shape *shp.Reader, fields []shp.Field, encoding string, detectedCRS map[string]bool) *geojson.Feature {
+	// 初始化多面几何对象
+	var multiPolygons orb.MultiPolygon
+
+	// 将点集按 parts 分割成多个环
+	polygons := SplitPoints(points, parts)
+
+	// 判断每个环是外环还是内环(基于顺时针/逆时针)
+	dounts := make([]bool, len(polygons))
+	for i, part := range polygons {
+		// 转换为 orb.Point 格式用于判断
+		orbPoints := make([]orb.Point, len(part))
+		for j, point := range part {
+			orbPoints[j] = orb.Point{point.X, point.Y}
+		}
+		// 判断环的方向(顺时针为外环)
+		dounts[i] = IsClockwise(orbPoints)
+	}
+
+	// 创建索引切片
+	polygonsIndex := createIndexSlice(int32(len(polygons)))
+	// 根据环的方向将索引分组(外环+内环组成完整多边形)
+	newParts := splitParts(polygonsIndex, dounts)
+
+	// 遍历每个多边形组
+	for _, item := range newParts {
+		var rings []orb.Ring // 存储当前多边形的所有环
+
+		// 遍历当前组的所有环索引
+		for _, i := range item {
+			// 预分配坐标数组
+			coords := make([]orb.Point, len(polygons[i]))
+
+			// 转换环上的所有点
+			for j, vertex := range polygons[i] {
+				// 检测并记录坐标系
+				if crs := detectCRS(vertex.X); crs != "" {
+					detectedCRS[crs] = true
+				}
+				// 转换为 orb.Point 格式
+				coords[j] = orb.Point{vertex.X, vertex.Y}
+			}
+
+			// 将坐标数组转换为环并添加到环列表
+			rings = append(rings, orb.Ring(coords))
+		}
+
+		// 将所有环组合成一个多边形
+		polygon := orb.Polygon(rings)
+		// 添加到多面几何对象
+		multiPolygons = append(multiPolygons, polygon)
+	}
+
+	// 构建属性字典
+	attrs := buildAttributes(n, shape, fields, encoding)
+
+	// 创建 GeoJSON Feature 并设置属性
+	feature := geojson.NewFeature(multiPolygons)
+	feature.Properties = attrs
+
+	return feature
+}
+
+// selectCRS 从检测到的坐标系中选择一个返回
+// 参数: detectedCRS - 检测到的坐标系集合
+// 返回: 选中的坐标系代码
+func selectCRS(detectedCRS map[string]bool) string {
+	// 定义坐标系优先级顺序
+	priority := []string{"4326", "4544", "4521", "4522", "4523", "4524"}
+
+	// 按优先级查找
+	for _, crs := range priority {
+		if detectedCRS[crs] {
+			return crs // 返回找到的第一个坐标系
+		}
+	}
+
+	// 如果没有匹配的,返回空字符串
+	return ""
+}
+
 func createCpgFile(filename string) error {
 	// 创建一个.cpg文件
 	file, err := os.Create(filename)
