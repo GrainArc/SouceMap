@@ -23,15 +23,16 @@ type AddLayerMXDRequest struct {
 }
 
 type LayerStyle struct {
-	EN          string     `json:"EN"`
-	Main        string     `json:"Main"`
-	CN          string     `json:"CN"`
-	LineWidth   string     `json:"LineWidth"`
-	LayerSortID int64      `json:"LayerSortID"`
-	Opacity     string     `json:"Opacity"`
-	FillType    string     `json:"FillType"`
-	LineColor   string     `json:"LineColor"`
-	ColorSet    *ColorData `json:"ColorSet"`
+	EN            string     `json:"EN"`
+	Main          string     `json:"Main"`
+	CN            string     `json:"CN"`
+	LineWidth     string     `json:"LineWidth"`
+	LayerSortID   int64      `json:"LayerSortID"`
+	Opacity       string     `json:"Opacity"`
+	FillType      string     `json:"FillType"`
+	LineColor     string     `json:"LineColor"`
+	AnnotationAtt string     `json:"AnnotationAtt"`
+	ColorSet      *ColorData `json:"ColorSet"`
 }
 
 // 新增图层工程
@@ -93,16 +94,17 @@ func (uc *UserController) AddUpdateLayerMXD(c *gin.Context) {
 	layerMXDs := make([]models.LayerMXD, 0, len(req.LayerStyles))
 	for _, layerStyle := range req.LayerStyles {
 		layerMXD := models.LayerMXD{
-			EN:          layerStyle.EN,
-			Main:        layerStyle.Main,
-			CN:          layerStyle.CN,
-			MXDName:     req.MXDName,
-			MXDUid:      req.MXDUid,
-			LineWidth:   layerStyle.LineWidth,
-			LayerSortID: layerStyle.LayerSortID,
-			Opacity:     layerStyle.Opacity,
-			FillType:    layerStyle.FillType,
-			LineColor:   layerStyle.LineColor,
+			EN:            layerStyle.EN,
+			Main:          layerStyle.Main,
+			CN:            layerStyle.CN,
+			MXDName:       req.MXDName,
+			MXDUid:        req.MXDUid,
+			LineWidth:     layerStyle.LineWidth,
+			LayerSortID:   layerStyle.LayerSortID,
+			Opacity:       layerStyle.Opacity,
+			FillType:      layerStyle.FillType,
+			LineColor:     layerStyle.LineColor,
+			AnnotationAtt: layerStyle.AnnotationAtt,
 		}
 
 		// 处理 ColorSet

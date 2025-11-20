@@ -43,18 +43,19 @@ type MySchema struct {
 
 // 配置表
 type LayerMXD struct {
-	ID          int64  `gorm:"primary_key;autoIncrement"`
-	EN          string `gorm:"type:varchar(255)"`
-	Main        string `gorm:"type:varchar(255)"`
-	CN          string `gorm:"type:varchar(255)"`
-	MXDName     string `gorm:"type:varchar(255)"`
-	MXDUid      string `gorm:"type:varchar(255)"`
-	LineWidth   string `gorm:"type:varchar(55)"`
-	LayerSortID int64
-	Opacity     string         `gorm:"type:varchar(254)"`
-	FillType    string         `gorm:"type:varchar(255)"`
-	LineColor   string         `gorm:"type:varchar(255)"`
-	ColorSet    datatypes.JSON `gorm:"type:jsonb"`
+	ID            int64  `gorm:"primary_key;autoIncrement"`
+	EN            string `gorm:"type:varchar(255)"`
+	Main          string `gorm:"type:varchar(255)"`
+	CN            string `gorm:"type:varchar(255)"`
+	MXDName       string `gorm:"type:varchar(255)"`
+	MXDUid        string `gorm:"type:varchar(255)"`
+	LineWidth     string `gorm:"type:varchar(55)"`
+	LayerSortID   int64
+	Opacity       string         `gorm:"type:varchar(254)"`
+	FillType      string         `gorm:"type:varchar(255)"`
+	LineColor     string         `gorm:"type:varchar(255)"`
+	AnnotationAtt string         `gorm:"type:varchar(254)"`
+	ColorSet      datatypes.JSON `gorm:"type:jsonb"`
 }
 
 type LayerHeader struct {
