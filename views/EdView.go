@@ -3,6 +3,7 @@ package views
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/Transformer"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
@@ -12,6 +13,8 @@ import (
 	"gorm.io/gorm"
 	"log"
 	"net/http"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,6 +23,11 @@ import (
 type getData struct {
 	TableName string `json:"TableName"`
 	ID        int32
+}
+
+type getDatas struct {
+	TableName string  `json:"TableName"`
+	ID        []int32 `json:"ID"`
 }
 type outData struct {
 	GeoJson    []byte `gorm:"column:geojson"`
@@ -57,6 +65,77 @@ func GetGeo(jsonData getData) geojson.FeatureCollection {
 	return NewGeo
 }
 
+func GetGeos(jsonData getDatas) (geojson.FeatureCollection, error) {
+	if len(jsonData.ID) == 0 {
+		return geojson.FeatureCollection{}, fmt.Errorf("ID list cannot be empty")
+	}
+
+	DB := models.DB
+
+	// 构建 IN 查询的占位符
+	placeholders := make([]string, len(jsonData.ID))
+	args := make([]interface{}, len(jsonData.ID)+1)
+	args[0] = jsonData.TableName
+
+	for i, id := range jsonData.ID {
+		placeholders[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = id
+	}
+
+	// 使用参数化查询防止 SQL 注入
+	sql := fmt.Sprintf(`
+		SELECT 
+			ST_AsGeoJSON(geom) AS geojson,
+			to_jsonb(record) - 'geom' AS properties
+		FROM %s AS record
+		WHERE id IN (%s);
+	`, jsonData.TableName, strings.Join(placeholders, ", "))
+
+	var dataList []outData
+	if err := DB.Raw(sql, args[1:]...).Scan(&dataList).Error; err != nil {
+		return geojson.FeatureCollection{}, fmt.Errorf("database query error: %w", err)
+	}
+
+	newGeo := geojson.FeatureCollection{
+		Type:     "FeatureCollection",
+		Features: make([]*geojson.Feature, 0, len(dataList)),
+	}
+
+	for _, data := range dataList {
+		feature := struct {
+			Geometry   map[string]interface{} `json:"geometry"`
+			Properties map[string]interface{} `json:"properties"`
+			Type       string                 `json:"type"`
+		}{
+			Type: "Feature",
+		}
+
+		// 解析 GeoJSON 几何和属性
+		if err := json.Unmarshal(data.GeoJson, &feature.Geometry); err != nil {
+			return newGeo, fmt.Errorf("failed to unmarshal geometry: %w", err)
+		}
+
+		if err := json.Unmarshal(data.Properties, &feature.Properties); err != nil {
+			return newGeo, fmt.Errorf("failed to unmarshal properties: %w", err)
+		}
+
+		// 转换为 geojson.Feature
+		featureData, err := json.Marshal(feature)
+		if err != nil {
+			return newGeo, fmt.Errorf("failed to marshal feature: %w", err)
+		}
+
+		var myFeature *geojson.Feature
+		if err := json.Unmarshal(featureData, &myFeature); err != nil {
+			return newGeo, fmt.Errorf("failed to unmarshal to geojson.Feature: %w", err)
+		}
+
+		newGeo.Features = append(newGeo.Features, myFeature)
+	}
+
+	return newGeo, nil
+}
+
 func (uc *UserController) GetGeoFromSchema(c *gin.Context) {
 	var jsonData getData
 	if err := c.ShouldBindJSON(&jsonData); err != nil { // 使用ShouldBindJSON代替BindJSON，避免自动返回400错误
@@ -90,7 +169,7 @@ func (uc *UserController) AddGeoToSchema(c *gin.Context) {
 	DB.Raw(sql).Scan(&maxid)
 	jsonData.GeoJson.Features[0].Properties["id"] = maxid + 1
 	methods.SavaGeojsonToTable(DB, jsonData.GeoJson, jsonData.TableName)
-	NewGeojson, _ := json.MarshalIndent(jsonData.GeoJson, "", "  ")
+	NewGeojson, _ := json.Marshal(jsonData.GeoJson)
 	result := models.GeoRecord{TableName: jsonData.TableName, GeoID: int32(maxid + 1), Username: jsonData.Username, Type: "要素添加", Date: time.Now().Format("2006-01-02 15:04:05"), NewGeojson: NewGeojson, BZ: jsonData.BZ}
 	DB.Create(&result)
 	//删除MVT
@@ -108,13 +187,55 @@ type delData struct {
 	BZ        string
 }
 
+// 提取并转换 ObjectID 的辅助函数
+func extractObjectID(properties map[string]interface{}) (int64, error) {
+	// 尝试不同的字段名（不区分大小写）
+	possibleKeys := []string{"objectid", "OBJECTID", "ObjectID", "ObjectId", "objectId"}
+
+	var value interface{}
+	var found bool
+
+	for _, key := range possibleKeys {
+		if val, ok := properties[key]; ok {
+			value = val
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return 0, fmt.Errorf("objectid field not found")
+	}
+
+	// 转换为 int32
+	switch v := value.(type) {
+	case int:
+		return int64(v), nil
+	case int32:
+		return int64(v), nil
+	case float64:
+		return int64(v), nil
+	case float32:
+		return int64(v), nil
+	case string:
+		// 尝试将字符串转换为整数
+		parsed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("failed to parse objectid string '%s': %w", v, err)
+		}
+		return int64(parsed), nil
+	default:
+		return 0, fmt.Errorf("unsupported objectid type: %T", v)
+	}
+}
+
 func (uc *UserController) DelGeoToSchema(c *gin.Context) {
 	var jsonData delData
 	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
 	DB := models.DB
 	getData := getData{ID: jsonData.ID, TableName: jsonData.TableName}
 	geo := GetGeo(getData)
-	OldGeojson, _ := json.MarshalIndent(geo, "", "  ")
+	OldGeojson, _ := json.Marshal(geo)
 	sql := fmt.Sprintf(`DELETE FROM %s WHERE id = %d;`, jsonData.TableName, jsonData.ID)
 
 	aa := DB.Exec(sql)
@@ -128,11 +249,41 @@ func (uc *UserController) DelGeoToSchema(c *gin.Context) {
 			log.Printf("Deleted %d record(s).", rowsAffected)
 		}
 	}
-	result := models.GeoRecord{TableName: jsonData.TableName, GeoID: jsonData.ID, Username: jsonData.Username, Type: "要素删除", Date: time.Now().Format("2006-01-02 15:04:05"), OldGeojson: OldGeojson, BZ: jsonData.BZ}
+	var delObjectIDs []int64
+	// 提取所有 ObjectID
+	for _, feature := range geo.Features {
+		objID, _ := extractObjectID(feature.Properties)
+		delObjectIDs = append(delObjectIDs, objID)
+	}
+	// 序列化 ObjectIDs
+	delObjJSON, _ := json.Marshal(delObjectIDs)
+
+	// 构建记录
+	result := &models.GeoRecord{
+		TableName:    jsonData.TableName,
+		GeoID:        jsonData.ID,
+		Username:     jsonData.Username,
+		Type:         "要素删除",
+		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		DelObjectIDs: delObjJSON,
+		OldGeojson:   OldGeojson,
+		BZ:           jsonData.BZ,
+	}
 	DB.Create(&result)
 	geom := geo.Features[0].Geometry
 	pgmvt.DelMVT(DB, jsonData.TableName, geom)
 	c.JSON(http.StatusOK, "ok")
+}
+
+func DelIDGen(geom geojson.FeatureCollection) []byte {
+	var delObjectIDs []int64
+	for _, feature := range geom.Features {
+		objID, _ := extractObjectID(feature.Properties)
+		delObjectIDs = append(delObjectIDs, objID)
+	}
+	// 序列化 ObjectIDs
+	delObjJSON, _ := json.Marshal(delObjectIDs)
+	return delObjJSON
 }
 
 // 图层要素修改
@@ -146,7 +297,16 @@ func (uc *UserController) ChangeGeoToSchema(c *gin.Context) {
 	OldGeojson, _ := json.MarshalIndent(geo, "", "  ")
 	methods.UpdateGeojsonToTable(DB, jsonData.GeoJson, jsonData.TableName, jsonData.ID)
 	NewGeojson, _ := json.MarshalIndent(jsonData.GeoJson, "", "  ")
-	result := models.GeoRecord{TableName: jsonData.TableName, GeoID: jsonData.ID, Username: jsonData.Username, Type: "要素修改", Date: time.Now().Format("2006-01-02 15:04:05"), OldGeojson: OldGeojson, NewGeojson: NewGeojson, BZ: jsonData.BZ}
+	delObjJSON := DelIDGen(geo)
+	result := models.GeoRecord{TableName: jsonData.TableName,
+		GeoID:        jsonData.ID,
+		Username:     jsonData.Username,
+		Type:         "要素修改",
+		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		OldGeojson:   OldGeojson,
+		NewGeojson:   NewGeojson,
+		DelObjectIDs: delObjJSON,
+		BZ:           jsonData.BZ}
 	DB.Create(&result)
 	geom := geo.Features[0].Geometry
 	geom2 := jsonData.GeoJson.Features[0].Geometry
@@ -478,33 +638,15 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 	}
 
 	// 4. 查询新插入的所有几何，生成GeoJSON
-	var idList []string
+	var idList []int32
 	for _, id := range insertedIDs {
-		idList = append(idList, fmt.Sprintf("%d", id.ID))
+		idList = append(idList, id.ID)
 	}
-	idsStr := strings.Join(idList, ",")
-
-	getGeoJSONSQL := fmt.Sprintf(`
-		SELECT ST_AsGeoJSON(ST_Collect(geom)) AS geojson
-		FROM "%s"
-		WHERE id IN (%s)
-	`, LayerName, idsStr)
-
-	type SplitResult struct {
-		Geojson string
+	getdata2 := getDatas{
+		TableName: LayerName,
+		ID:        idList,
 	}
-	var splitResult SplitResult
-
-	if err := tx.Raw(getGeoJSONSQL).Scan(&splitResult).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "查询新要素失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
+	splitGeojson, _ := GetGeos(getdata2)
 	// 5. 提交事务
 	if err := tx.Commit().Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -514,12 +656,23 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		})
 		return
 	}
+	delObjJSON := DelIDGen(geom)
+	OldGeojson, _ := json.Marshal(geom)
+	NewGeojson, _ := json.Marshal(splitGeojson)
+	RecordResult := models.GeoRecord{TableName: jsonData.LayerName,
+		GeoID:        jsonData.ID,
+		Type:         "要素分割",
+		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		OldGeojson:   OldGeojson,
+		NewGeojson:   NewGeojson,
+		DelObjectIDs: delObjJSON}
 
+	DB.Create(&RecordResult)
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": "切割成功，已生成多个新要素",
-		"data":    splitResult.Geojson,
+		"data":    splitGeojson,
 	})
 }
 
@@ -527,6 +680,7 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 type DissolveData struct {
 	LayerName string  `json:"LayerName"`
 	IDs       []int32 `json:"ids"`
+	MainID    int32   `json:"mainId"`
 }
 
 func (uc *UserController) DissolveFeature(c *gin.Context) {
@@ -546,6 +700,23 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
 			"message": "至少需要选择2个要素进行合并",
+			"data":    "",
+		})
+		return
+	}
+
+	// 验证 MainID 是否在 IDs 列表中
+	mainIDExists := false
+	for _, id := range jsonData.IDs {
+		if id == jsonData.MainID {
+			mainIDExists = true
+			break
+		}
+	}
+	if !mainIDExists {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "MainID必须在选中的要素列表中",
 			"data":    "",
 		})
 		return
@@ -617,14 +788,25 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		return
 	}
 
-	// 2. 获取第一个要素的所有属性（作为合并后要素的属性）
+	// 2. 获取 MainID 对应要素的所有属性（作为合并后要素的属性）
 	var originalFeature map[string]interface{}
-	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.IDs[0])
+	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.MainID)
 	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
-			"message": "获取原要素属性失败: " + err.Error(),
+			"message": "获取主要素属性失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 验证 MainID 对应的要素是否存在
+	if len(originalFeature) == 0 {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    404,
+			"message": fmt.Sprintf("MainID(%d)对应的要素不存在", jsonData.MainID),
 			"data":    "",
 		})
 		return
@@ -741,15 +923,32 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	}
 
 	// 删除MVT缓存
-	for _, id := range jsonData.IDs {
-		GetPdata := getData{
-			TableName: LayerName,
-			ID:        id,
-		}
-		geom := GetGeo(GetPdata)
-		pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+	getdata2 := getDatas{
+		TableName: LayerName,
+		ID:        jsonData.IDs,
 	}
+	oldGeo, _ := GetGeos(getdata2)
+	oldGeojson, _ := json.Marshal(oldGeo)
 
+	GetPdata := getDatas{
+		TableName: LayerName,
+		ID:        jsonData.IDs,
+	}
+	newGeo, _ := GetGeos(GetPdata)
+	for _, feature := range oldGeo.Features {
+
+		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
+	}
+	newGeoJson, _ := json.Marshal(newGeo)
+	delObjJSON := DelIDGen(oldGeo)
+	RecordResult := models.GeoRecord{TableName: jsonData.LayerName,
+		Type:         "要素合并",
+		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		OldGeojson:   oldGeojson,
+		NewGeojson:   newGeoJson,
+		DelObjectIDs: delObjJSON}
+
+	DB.Create(&RecordResult)
 	// 6. 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
@@ -775,10 +974,262 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
-		"message": fmt.Sprintf("成功合并%d个要素为1个新要素", len(jsonData.IDs)),
+		"message": fmt.Sprintf("成功合并%d个要素为1个新要素，使用ID(%d)的属性", len(jsonData.IDs), jsonData.MainID),
 		"data": gin.H{
 			"geojson": dissolveResult.Geojson,
 			"new_id":  dissolveResult.ID,
+			"main_id": jsonData.MainID,
 		},
 	})
+}
+
+// 同步编辑到文件
+func (uc *UserController) SyncToFile(c *gin.Context) {
+	TableName := c.Query("TableName")
+
+	DB := models.DB
+	var Schema models.MySchema
+	if err := DB.Where("en = ?", TableName).First(&Schema).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": fmt.Sprintf("未找到图层配置: %v", err),
+		})
+		return
+	}
+
+	var sourceConfig pgmvt.SourceConfig
+	if err := json.Unmarshal(Schema.Source, &sourceConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": fmt.Sprintf("解析源配置失败: %v", err),
+		})
+		return
+	}
+
+	if sourceConfig.SourcePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": "该图层没有绑定源文件",
+		})
+		return
+	}
+
+	var GeoRecords []models.GeoRecord
+	DB.Where("table_name = ?", TableName).Find(&GeoRecords)
+	if len(GeoRecords) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": "没有修改记录",
+		})
+		return
+	}
+
+	// 判断源头文件是gdb还是shp
+	Soucepath := sourceConfig.SourcePath
+	SouceLayer := sourceConfig.SourceLayerName
+	AttMap := sourceConfig.AttMap
+
+	// 获取文件扩展名
+	ext := strings.ToLower(filepath.Ext(Soucepath))
+
+	// 判断是否为GDB(GDB通常是文件夹,扩展名为.gdb)
+	isGDB := ext == ".gdb" || strings.HasSuffix(strings.ToLower(Soucepath), ".gdb")
+	isSHP := ext == ".shp"
+
+	if !isGDB && !isSHP {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": "不支持的文件格式,仅支持GDB和SHP",
+		})
+		return
+	}
+
+	var totalDeleted int
+	var totalInserted int
+	var errors []string
+
+	// 处理每条记录
+	for _, record := range GeoRecords {
+		// 1. 处理删除操作
+		if len(record.DelObjectIDs) > 0 {
+			var delIDs []int32
+			if err := json.Unmarshal(record.DelObjectIDs, &delIDs); err != nil {
+				errors = append(errors, fmt.Sprintf("解析DelObjectIDs失败: %v", err))
+				continue
+			}
+
+			if len(delIDs) > 0 {
+				// 构建WHERE子句 - 使用源文件的关键字段
+				whereClause := buildWhereClause(sourceConfig.KeyAttribute, delIDs)
+
+				var deletedCount int
+				var err error
+
+				if isSHP {
+					// Shapefile删除
+					deletedCount, err = Gogeo.DeleteShapeFeaturesByFilter(Soucepath, whereClause)
+				} else if isGDB {
+					// GDB删除
+					deletedCount, err = Gogeo.DeleteFeaturesByFilter(Soucepath, SouceLayer, whereClause)
+				}
+
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("删除要素失败: %v", err))
+					continue
+				}
+				totalDeleted += deletedCount
+			}
+		}
+
+		// 2. 处理新增/更新操作
+		if len(record.NewGeojson) > 0 {
+			var fc geojson.FeatureCollection
+			if err := json.Unmarshal(record.NewGeojson, &fc); err != nil {
+				errors = append(errors, fmt.Sprintf("解析NewGeojson失败: %v", err))
+				continue
+			}
+
+			if len(fc.Features) > 0 {
+				// **关键步骤: 将GeoJSON字段名映射回源文件字段名**
+				mappedFC, err := mapFieldsToSource(&fc, AttMap)
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("字段映射失败: %v", err))
+					continue
+				}
+
+				// 转换GeoJSON为GDALLayer
+				gdalLayer, err := Gogeo.ConvertGeoJSONToGDALLayer(mappedFC, SouceLayer)
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("转换GeoJSON失败: %v", err))
+					continue
+				}
+
+				// 插入选项配置
+				options := &Gogeo.InsertOptions{
+					StrictMode:          false, // 非严格模式,允许部分失败
+					SyncInterval:        100,   // 每100条同步一次
+					SkipInvalidGeometry: true,  // 跳过无效几何
+					CreateMissingFields: false, // 不创建缺失字段(使用现有字段)
+				}
+
+				var insertErr error
+				if isSHP {
+					// 插入到Shapefile
+					insertErr = Gogeo.InsertLayerToShapefile(gdalLayer, Soucepath, options)
+				} else if isGDB {
+					// 插入到GDB
+					insertErr = Gogeo.InsertLayerToGDB(gdalLayer, Soucepath, SouceLayer, options)
+				}
+
+				if insertErr != nil {
+					errors = append(errors, fmt.Sprintf("插入要素失败: %v", insertErr))
+					continue
+				}
+				totalInserted += len(fc.Features)
+
+				// 清理资源
+				if gdalLayer != nil {
+					gdalLayer.Close() // 假设有Close方法
+				}
+			}
+		}
+	}
+
+	// 同步完成后,可选择清空GeoRecord记录
+	// DB.Where("table_name = ?", TableName).Delete(&models.GeoRecord{})
+
+	// 构建响应
+	response := gin.H{
+		"code":           200,
+		"message":        "同步完成",
+		"total_deleted":  totalDeleted,
+		"total_inserted": totalInserted,
+		"records_count":  len(GeoRecords),
+	}
+
+	if len(errors) > 0 {
+		response["code"] = 207 // 部分成功
+		response["message"] = "同步完成,但有部分错误"
+		response["errors"] = errors
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// buildWhereClause 构建WHERE子句
+// keyAttribute: 关键字段名(如 OBJECTID, FID等)
+// objectIDs: 要删除的ID列表
+func buildWhereClause(keyAttribute string, objectIDs []int32) string {
+	if len(objectIDs) == 0 {
+		return ""
+	}
+
+	// 如果没有指定关键字段,默认使用OBJECTID
+	if keyAttribute == "" {
+		keyAttribute = "OBJECTID"
+	}
+
+	if len(objectIDs) == 1 {
+		return fmt.Sprintf("%s = %d", keyAttribute, objectIDs[0])
+	}
+
+	// 构建 IN 子句
+	ids := make([]string, len(objectIDs))
+	for i, id := range objectIDs {
+		ids[i] = fmt.Sprintf("%d", id)
+	}
+
+	return fmt.Sprintf("%s IN (%s)", keyAttribute, strings.Join(ids, ", "))
+}
+
+// mapFieldsToSource 将GeoJSON中的处理后字段名映射回源文件的原始字段名
+// fc: 原始FeatureCollection (字段名是ProcessedName)
+// attMap: 字段映射关系
+// 返回: 字段名已替换为OriginalName的新FeatureCollection
+func mapFieldsToSource(fc *geojson.FeatureCollection, attMap []pgmvt.ProcessedFieldInfo) (*geojson.FeatureCollection, error) {
+	if fc == nil {
+		return nil, fmt.Errorf("FeatureCollection为空")
+	}
+
+	// 创建映射表: ProcessedName -> OriginalName
+	fieldMapping := make(map[string]string)
+	for _, field := range attMap {
+		fieldMapping[field.ProcessedName] = field.OriginalName
+	}
+
+	// 创建新的FeatureCollection
+	mappedFC := &geojson.FeatureCollection{
+		Type:     fc.Type,
+		Features: make([]*geojson.Feature, len(fc.Features)),
+	}
+
+	// 遍历每个Feature
+	for i, feature := range fc.Features {
+		if feature == nil {
+			continue
+		}
+
+		// 创建新Feature
+		mappedFeature := &geojson.Feature{
+			Type:       feature.Type,
+			Geometry:   feature.Geometry, // 几何保持不变
+			Properties: make(map[string]interface{}),
+			ID:         feature.ID,
+		}
+
+		// 映射属性字段
+		for processedName, value := range feature.Properties {
+			// 查找原始字段名
+			if originalName, exists := fieldMapping[processedName]; exists {
+				mappedFeature.Properties[originalName] = value
+			} else {
+				// 如果映射表中没有,保留原字段名(可能是未处理的字段)
+				mappedFeature.Properties[processedName] = value
+			}
+		}
+
+		mappedFC.Features[i] = mappedFeature
+	}
+
+	return mappedFC, nil
 }

@@ -2,6 +2,7 @@ package pgmvt
 
 import (
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"gitee.com/LJ_COOL/go-shp"
 	"github.com/GrainArc/Gogeo"
@@ -477,10 +478,10 @@ func cleanString(s string) string {
 }
 
 // 辅助函数：处理schema记录
-func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE string, replacer *strings.Replacer, Userunits string, LineWidth string) {
+func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE string, replacer *strings.Replacer, Userunits string, LineWidth string, SC ...SourceConfig) {
 	var count int64
 	DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", EN, CN).Count(&count)
-
+	sc, _ := json.Marshal(SC)
 	if count == 0 {
 		var maxID int64
 		DB.Model(&models.MySchema{}).Select("MAX(id)").Scan(&maxID)
@@ -495,6 +496,7 @@ func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE strin
 			LineWidth:   LineWidth,
 			Type:        output,
 			ID:          maxID + 1,
+			Source:      sc,
 			UpdatedDate: time.Now().Format("2006-01-02 15:04:05"),
 		}
 		DB.Create(&result)
@@ -504,6 +506,7 @@ func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE strin
 // 辅助函数：为预定义图层创建schema
 func createSchemaIfNotExists(DB *gorm.DB, newEN string) {
 	var count int64
+	count = 0
 	DB.Model(&models.MySchema{}).Where("en = ?", newEN).Count(&count)
 	if count == 0 {
 		switch newEN {
@@ -698,65 +701,43 @@ func UpdateSHPDirectly(DB *gorm.DB, shpPath string, EN, CN, Main string, Color s
 	// 处理表名，转换为合适的数据库表名
 	tableName := EN
 
-	// 检查是否为预定义图层
-	parts := strings.Split(tableName, "_")
-	validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
-	isPreDefined, newEN := judgeSlice(validEN, parts)
-
-	if isPreDefined {
-		// 预定义图层，清空现有数据
-		if AddType == "覆盖" {
-			DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN))
-			if isEndWithNumber(newEN) {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN+"_mvt"))
-			} else {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN+"mvt"))
-			}
-		}
-
-		// 直接转换并写入数据
-		ConvertSHPLayerToPGDirect(shpLayer, DB, newEN)
-		createSchemaIfNotExists(DB, newEN)
-		processedTables = append(processedTables, newEN)
-	} else {
-		// 普通图层，检查重名
-		var count int64
-		DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, CN).Count(&count)
-		if count > 0 {
-			tableName = tableName + "_1"
-		}
-
-		var count2 int64
-		DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, CN).Count(&count2)
-		if count2 > 0 {
-			// 清空现有数据
-			if AddType == "覆盖" {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
-				if isEndWithNumber(tableName) {
-					DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"_mvt"))
-				} else {
-					DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
-				}
-			}
-		}
-
-		// 直接转换并写入数据
-		ConvertSHPLayerToPGDirect(shpLayer, DB, tableName)
-
-		// 处理schema记录
-		geoType := mapGeoTypeToStandard(shpLayer.GeoType)
-		handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
-		processedTables = append(processedTables, tableName)
+	// 普通图层，检查重名
+	var count int64
+	DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, CN).Count(&count)
+	if count > 0 {
+		tableName = tableName + "_1"
 	}
+
+	var count2 int64
+	DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, CN).Count(&count2)
+	if count2 > 0 {
+		// 清空现有数据
+		if AddType == "覆盖" {
+			DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
+			if isEndWithNumber(tableName) {
+				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"_mvt"))
+			} else {
+				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
+			}
+		}
+	}
+
+	// 直接转换并写入数据
+	ConvertSHPLayerToPGDirect(shpLayer, DB, tableName)
+
+	// 处理schema记录
+	geoType := mapGeoTypeToStandard(shpLayer.GeoType)
+	handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
+	processedTables = append(processedTables, tableName)
 
 	return processedTables
 }
 
 // ConvertSHPLayerToPGDirect 直接将SHP图层数据写入PostgreSQL
-func ConvertSHPLayerToPGDirect(layer Gogeo.SHPLayerInfo, DB *gorm.DB, tableName string) {
+func ConvertSHPLayerToPGDirect(layer Gogeo.SHPLayerInfo, DB *gorm.DB, tableName string) []ProcessedFieldInfo {
 	if len(layer.FeatureData) == 0 {
 		log.Printf("SHP文件 %s 没有要素数据", layer.LayerName)
-		return
+		return nil
 	}
 
 	// 处理字段信息，转换字段名
@@ -785,6 +766,7 @@ func ConvertSHPLayerToPGDirect(layer Gogeo.SHPLayerInfo, DB *gorm.DB, tableName 
 
 	log.Printf("成功导入SHP文件 %s 到表 %s，共 %d 条记录",
 		layer.LayerName, tableName, len(layer.FeatureData))
+	return processedFields
 }
 
 // processSHPFieldInfos 处理SHP字段信息，转换字段名
@@ -968,13 +950,13 @@ func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 
 // AddSHPDirectlyOptimized 优化版本：直接将SHP文件导入到PostGIS数据库
 func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, Color string, Opacity string, Userunits string, LineWidth string) string {
-
+	//先将shp强制加入objid
+	Gogeo.EnsureObjectIDField(shpPath)
 	shpLayer, err := Gogeo.SHPToPostGIS(shpPath)
 	if err != nil {
 		log.Printf("读取SHP文件失败: %v", err)
 		return ""
 	}
-
 	var processedTables string
 	replacer := strings.NewReplacer(
 		"POINT", "point",
@@ -987,56 +969,39 @@ func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, C
 		"MultiLineString", "line",
 		"MultiPolygon", "polygon",
 	)
-
+	var SC SourceConfig
+	SC.SourcePath = shpPath
+	SC.SourceLayerName = shpLayer.LayerName
+	SC.KeyAttribute = "objectid"
 	// 处理表名，转换为合适的数据库表名
 	tableName := EN
 
-	// 检查是否为预定义图层
-	parts := strings.Split(tableName, "_")
-	validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
-	isPreDefined, newEN := judgeSlice(validEN, parts)
-
-	if isPreDefined {
-		// 预定义图层，清空现有数据
-		DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN))
-		if isEndWithNumber(newEN) {
-			DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN+"_mvt"))
-		} else {
-			DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN+"mvt"))
-		}
-
-		// 直接转换并写入数据
-		ConvertSHPLayerToPGDirect(shpLayer, DB, newEN)
-		createSchemaIfNotExists(DB, newEN)
-		processedTables = newEN
-	} else {
-		// 普通图层，检查重名
-		var count int64
-		DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, CN).Count(&count)
-		if count > 0 {
-			tableName = tableName + "_1"
-		}
-
-		var count2 int64
-		DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, CN).Count(&count2)
-		if count2 > 0 {
-			// 清空现有数据
-			DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
-			if isEndWithNumber(tableName) {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"_mvt"))
-			} else {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
-			}
-		}
-
-		// 直接转换并写入数据
-		ConvertSHPLayerToPGDirect(shpLayer, DB, tableName)
-
-		// 处理schema记录
-		geoType := mapGeoTypeToStandard(shpLayer.GeoType)
-		handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
-		processedTables = tableName
+	// 普通图层，检查重名
+	var count int64
+	DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, CN).Count(&count)
+	if count > 0 {
+		tableName = tableName + "_1"
 	}
+
+	var count2 int64
+	DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, CN).Count(&count2)
+	if count2 > 0 {
+		// 清空现有数据
+		DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
+		if isEndWithNumber(tableName) {
+			DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"_mvt"))
+		} else {
+			DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
+		}
+	}
+
+	// 直接转换并写入数据
+	attmap := ConvertSHPLayerToPGDirect(shpLayer, DB, tableName)
+	SC.AttMap = attmap
+	// 处理schema记录
+	geoType := mapGeoTypeToStandard(shpLayer.GeoType)
+	handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth, SC)
+	processedTables = tableName
 
 	return processedTables
 }

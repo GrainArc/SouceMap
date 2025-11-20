@@ -453,7 +453,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	Color := c.PostForm("Color")
 	Opacity := c.PostForm("Opacity")
 	Userunits := c.PostForm("userunits")
-
+	VectorPath := c.PostForm("VectorPath")
 	// 处理 LineWidth 参数，如果没有传入则默认为 1
 	LineWidth := c.PostForm("LineWidth")
 	if LineWidth == "" {
@@ -468,67 +468,85 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 
 	// 处理文件上传
 	file, err := c.FormFile("file")
-	if err != nil {
-		c.String(http.StatusBadRequest, "File upload failed: "+err.Error())
-		return
-	}
-
-	// 创建任务ID和文件路径
 	taskid := uuid.New().String()
-	path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
-	if err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create file path: "+err.Error())
-		return
-	}
+	DB := models.DB
+	if err == nil {
+		// 创建任务ID和文件路径
 
-	// 确保目录存在
-	dirpath := filepath.Dir(path)
-	if err := os.MkdirAll(dirpath, 0755); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to create directory: "+err.Error())
-		return
-	}
-
-	// 保存上传的文件
-	if err := c.SaveUploadedFile(file, path); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to save file: "+err.Error())
-		return
-	}
-
-	// 如果是压缩文件，则解压
-	ext := filepath.Ext(path)
-	if ext == ".zip" || ext == ".rar" {
-		if err := methods.Unzip(path); err != nil {
-			c.String(http.StatusInternalServerError, "Failed to unzip file: "+err.Error())
+		path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
+		if err != nil {
+			c.String(http.StatusInternalServerError, "Failed to create file path: "+err.Error())
 			return
 		}
-	}
 
-	DB := models.DB
-
-	// 处理 GDB 文件
-	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
-	for _, gdbfile := range gdbfiles {
-		ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits, LineWidth)
-		for _, item := range ENS {
-			MakeGeoIndex(item)
+		// 确保目录存在
+		dirpath := filepath.Dir(path)
+		if err := os.MkdirAll(dirpath, 0755); err != nil {
+			c.String(http.StatusInternalServerError, "Failed to create directory: "+err.Error())
+			return
 		}
-	}
 
-	// 处理 SHP 文件
-	shpfiles := Transformer.FindFiles(dirpath, "shp")
-	if len(shpfiles) > 0 {
-		EN2 := pgmvt.AddSHPDirectlyOptimized(DB, shpfiles[0], EN, CN, Main, Color, Opacity, Userunits, LineWidth)
-		MakeGeoIndex(EN2)
-	}
-
-	// 清理临时文件（可选）
-	defer func() {
-		if err := os.RemoveAll(filepath.Dir(dirpath)); err != nil {
-			log.Printf("Failed to cleanup temp directory: %v", err)
+		// 保存上传的文件
+		if err := c.SaveUploadedFile(file, path); err != nil {
+			c.String(http.StatusInternalServerError, "Failed to save file: "+err.Error())
+			return
 		}
-	}()
 
-	c.String(http.StatusOK, "Schema added successfully")
+		// 如果是压缩文件，则解压
+		ext := filepath.Ext(path)
+		if ext == ".zip" || ext == ".rar" {
+			if err := methods.Unzip(path); err != nil {
+				c.String(http.StatusInternalServerError, "Failed to unzip file: "+err.Error())
+				return
+			}
+		}
+
+		// 处理 GDB 文件
+		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
+		for _, gdbfile := range gdbfiles {
+			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits, LineWidth)
+			for _, item := range ENS {
+				MakeGeoIndex(item)
+			}
+		}
+
+		// 处理 SHP 文件
+		shpfiles := Transformer.FindFiles(dirpath, "shp")
+		if len(shpfiles) > 0 {
+			EN2 := pgmvt.AddSHPDirectlyOptimized(DB, shpfiles[0], EN, CN, Main, Color, Opacity, Userunits, LineWidth)
+			MakeGeoIndex(EN2)
+		}
+
+		// 清理临时文件（可选）
+		defer func() {
+			if err := os.RemoveAll(filepath.Dir(dirpath)); err != nil {
+				log.Printf("Failed to cleanup temp directory: %v", err)
+			}
+		}()
+		c.String(http.StatusOK, "Schema added successfully")
+		return
+	}
+	if VectorPath != "" {
+		ext := strings.ToLower(filepath.Ext(VectorPath))
+		if ext == ".gdb" {
+			ENS := pgmvt.AddGDBDirectlyOptimized(DB, VectorPath, Main, Color, Opacity, Userunits, LineWidth)
+			for _, item := range ENS {
+				MakeGeoIndex(item)
+			}
+		}
+
+		// 处理 SHP 文件
+		if ext == ".shp" {
+			EN2 := pgmvt.AddSHPDirectlyOptimized(DB, VectorPath, EN, CN, Main, Color, Opacity, Userunits, LineWidth)
+			MakeGeoIndex(EN2)
+		}
+
+		c.String(http.StatusOK, "Schema added successfully")
+		return
+	} else {
+		c.String(http.StatusBadRequest, "未加载文件")
+	}
+
 }
 
 // 删除图层

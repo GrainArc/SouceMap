@@ -406,7 +406,7 @@ func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 		tx.Rollback()
 		log.Printf("Failed to create AttColor records: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "保存颜色配置失败",
+			"error": fmt.Sprintf("保存颜色配置失败:%s", err.Error()),
 		})
 		return
 	}
@@ -415,7 +415,7 @@ func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 	if err := tx.Commit().Error; err != nil {
 		log.Printf("Failed to commit transaction: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "提交事务失败",
+			"error": fmt.Sprintf("提交事务失败:%s", err.Error()),
 		})
 		return
 	}

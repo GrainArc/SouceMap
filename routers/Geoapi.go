@@ -3,6 +3,7 @@ package routers
 import (
 	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/services"
 	"github.com/GrainArc/SouceMap/views"
 	"github.com/gin-gonic/gin"
 )
@@ -75,7 +76,6 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
 
-
 	}
 	SurveyRouter := r.Group("/Survey")
 	{
@@ -135,5 +135,16 @@ func GeoRouters(r *gin.Engine) {
 		mxd.GET("/SyncLayerMXD", UserController.SyncLayerMXD)
 
 	}
+	fileService := services.NewFileService(config.MainConfig.RootPath)
+	fileController := services.NewFileController(fileService)
 
+	// 文件相关路由组
+	fileGroup := r.Group("/api/files")
+	{
+		// 获取目录内容（懒加载）
+		fileGroup.GET("/list", fileController.GetDirectoryContent)
+
+		// 获取根目录路径
+		fileGroup.GET("/root", fileController.GetRootPath)
+	}
 }

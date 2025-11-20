@@ -32,11 +32,11 @@ type Config struct {
 	Loader        string   `xml:"loader"`
 	Raster        string   `xml:"raster"`
 	Dem           string   `xml:"dem"`
-
-	Tiles3d    string `xml:"tiles3d"`
-	DeviceName string `xml:"DeviceName"`
-	Download   string `xml:"download"`
-	UpdateIP   string `xml:"updateip"`
+	RootPath      string   `xml:"RootPath"`
+	Tiles3d       string   `xml:"tiles3d"`
+	DeviceName    string   `xml:"DeviceName"`
+	Download      string   `xml:"download"`
+	UpdateIP      string   `xml:"updateip"`
 }
 
 func init() {

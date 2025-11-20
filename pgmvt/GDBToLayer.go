@@ -246,6 +246,13 @@ func mapGeoTypeToStandard(geoType string) string {
 	}
 }
 
+type SourceConfig struct {
+	SourcePath      string               `json:"source_path"`
+	SourceLayerName string               `json:"source_layer_name"`
+	KeyAttribute    string               `json:"key_attribute"`
+	AttMap          []ProcessedFieldInfo `json:"att_map"`
+}
+
 // AddGDBDirectlyOptimized 优化版本：直接将GDB文件导入到PostGIS数据库
 func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color string, Opacity string, Userunits string, LineWidth string) []string {
 
@@ -270,54 +277,40 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 
 	for _, layer := range layers {
 		// 处理表名，转换为合适的数据库表名
+		var SC SourceConfig
+		SC.SourcePath = gdbPath
+		SC.SourceLayerName = layer.LayerName
+		SC.KeyAttribute = "objectid"
 		tableName := sanitizeTableName(Main + "_" + layer.LayerName)
 
 		// 检查是否为预定义图层
-		parts := strings.Split(tableName, "_")
-		validEN := []string{"lngd", "tdxz", "lnbzfw", "zxcqztgh", "xzpqgh", "sthx", "yjjbnt", "ldbhyzt", "czkfbj", "kzxxxgh"}
-		isPreDefined, newEN := judgeSlice(validEN, parts)
 
-		if isPreDefined {
-			// 预定义图层，清空现有数据
-			DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN))
-			if isEndWithNumber(newEN) {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN+"_mvt"))
-			} else {
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", newEN+"mvt"))
-			}
-
-			// 直接转换并写入数据
-			ConvertGDBLayerToPGDirect(layer, DB, newEN)
-			createSchemaIfNotExists(DB, newEN)
-			processedTables = append(processedTables, newEN)
-		} else {
-			// 普通图层，检查重名
-			var count int64
-			DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, layer.LayerName).Count(&count)
-			if count > 0 {
-				tableName = tableName + "_1"
-			}
-
-			var count2 int64
-			DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, layer.LayerName).Count(&count2)
-			if count2 > 0 {
-				// 清空现有数据
-				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
-				if isEndWithNumber(tableName) {
-					DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"_mvt"))
-				} else {
-					DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
-				}
-			}
-
-			// 直接转换并写入数据
-			ConvertGDBLayerToPGDirect(layer, DB, tableName)
-
-			// 处理schema记录
-			geoType := mapGeoTypeToStandard(layer.GeoType)
-			handleSchemaRecord(DB, tableName, layer.LayerName, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth)
-			processedTables = append(processedTables, tableName)
+		// 普通图层，检查重名
+		var count int64
+		DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, layer.LayerName).Count(&count)
+		if count > 0 {
+			tableName = tableName + "_1"
 		}
+
+		var count2 int64
+		DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, layer.LayerName).Count(&count2)
+		if count2 > 0 {
+			// 清空现有数据
+			DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
+			if isEndWithNumber(tableName) {
+				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"_mvt"))
+			} else {
+				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
+			}
+		}
+
+		// 直接转换并写入数据
+		AttMap := ConvertGDBLayerToPGDirect(layer, DB, tableName)
+		SC.AttMap = AttMap
+		// 处理schema记录
+		geoType := mapGeoTypeToStandard(layer.GeoType)
+		handleSchemaRecord(DB, tableName, layer.LayerName, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth, SC)
+		processedTables = append(processedTables, tableName)
 	}
 
 	return processedTables
@@ -405,11 +398,11 @@ func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color s
 	return processedTables
 }
 
-// ConvertGDBLayerToPGDirect 直接将GDB图层数据写入PostgreSQL
-func ConvertGDBLayerToPGDirect(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName string) {
+// 直接将GDB图层数据写入PostgreSQL
+func ConvertGDBLayerToPGDirect(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName string) []ProcessedFieldInfo {
 	if len(layer.FeatureData) == 0 {
 		log.Printf("图层 %s 没有要素数据", layer.LayerName)
-		return
+		return nil
 	}
 
 	// 处理字段信息，转换字段名
@@ -438,6 +431,7 @@ func ConvertGDBLayerToPGDirect(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName 
 
 	log.Printf("成功导入图层 %s 到表 %s，共 %d 条记录",
 		layer.LayerName, tableName, len(layer.FeatureData))
+	return processedFields
 }
 
 // ProcessedFieldInfo 处理后的字段信息
@@ -447,7 +441,7 @@ type ProcessedFieldInfo struct {
 	DBType        string
 }
 
-// processFieldInfos 处理字段信息，转换字段名
+// 处理字段信息，转换字段名
 func processFieldInfos(fieldInfos []Gogeo.FieldInfo, tableName string) []ProcessedFieldInfo {
 	var processedFields []ProcessedFieldInfo
 

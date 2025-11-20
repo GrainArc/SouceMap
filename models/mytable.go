@@ -26,18 +26,19 @@ type LoginUser struct {
 }
 
 type MySchema struct {
-	ID          int64  `gorm:"primary_key;autoIncrement"`
-	Main        string `gorm:"type:varchar(255)"`
-	CN          string `gorm:"type:varchar(255)"`
-	EN          string `gorm:"type:varchar(255)"`
-	Type        string `gorm:"type:varchar(255)"`
-	Opacity     string `gorm:"type:varchar(254)"`
-	Color       string `gorm:"type:varchar(255)"`
-	LineWidth   string `gorm:"type:varchar(55)"`
-	FillType    string `gorm:"type:varchar(255)"`
-	LineColor   string `gorm:"type:varchar(255)"`
-	UpdatedDate string `gorm:"type:varchar(255)"`
-	Userunits   string `gorm:"type:varchar(255)"`
+	ID          int64          `gorm:"primary_key;autoIncrement"`
+	Main        string         `gorm:"type:varchar(255)"`
+	CN          string         `gorm:"type:varchar(255)"`
+	EN          string         `gorm:"type:varchar(255)"`
+	Type        string         `gorm:"type:varchar(255)"`
+	Opacity     string         `gorm:"type:varchar(254)"`
+	Color       string         `gorm:"type:varchar(255)"`
+	LineWidth   string         `gorm:"type:varchar(55)"`
+	FillType    string         `gorm:"type:varchar(255)"`
+	LineColor   string         `gorm:"type:varchar(255)"`
+	UpdatedDate string         `gorm:"type:varchar(255)"`
+	Source      datatypes.JSON `gorm:"type:jsonb"`
+	Userunits   string         `gorm:"type:varchar(255)"`
 }
 
 // 配置表
