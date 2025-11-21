@@ -280,7 +280,7 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 		var SC SourceConfig
 		SC.SourcePath = gdbPath
 		SC.SourceLayerName = layer.LayerName
-		SC.KeyAttribute = "objectid"
+		SC.KeyAttribute = "fid"
 		tableName := sanitizeTableName(Main + "_" + layer.LayerName)
 
 		// 检查是否为预定义图层

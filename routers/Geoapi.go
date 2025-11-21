@@ -75,6 +75,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/SplitFeature", UserController.SplitFeature)
 		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
+		mapRouter.GET("/SyncToFile", UserController.SyncToFile)
 
 	}
 	SurveyRouter := r.Group("/Survey")
