@@ -459,7 +459,7 @@ func ConnectToDeviceDB(ip string) (*gorm.DB, error) {
 }
 
 func (uc *UserController) GetTLImg(c *gin.Context) {
-	TableName := c.Param("TableName")
+	TableName := c.Query("TableName")
 	iMG, err := ImgHandler.TLImgMake(TableName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

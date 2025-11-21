@@ -134,6 +134,7 @@ func GeoRouters(r *gin.Engine) {
 
 		mxd.GET("/DelLayerMXD", UserController.DelLayerMXD)
 		mxd.GET("/SyncLayerMXD", UserController.SyncLayerMXD)
+		mxd.GET("/GetTLImg", UserController.GetTLImg)
 
 	}
 	fileService := services.NewFileService(config.MainConfig.RootPath)
