@@ -36,7 +36,6 @@ type Config struct {
 	Tiles3d       string   `xml:"tiles3d"`
 	DeviceName    string   `xml:"DeviceName"`
 	Download      string   `xml:"download"`
-	UpdateIP      string   `xml:"updateip"`
 }
 
 func init() {
@@ -56,7 +55,6 @@ func init() {
 	}
 	MainOutRouter = MainConfig.MainOutRouter
 	MainRouter = MainConfig.MainRouter
-	UpdateIP = MainConfig.UpdateIP
 	Raster = MainConfig.Raster
 	Dem = MainConfig.Dem
 	Dbname = MainConfig.Dbname

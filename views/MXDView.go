@@ -4,6 +4,8 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/GrainArc/SouceMap/ImgHandler"
+
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
 	"gorm.io/datatypes"
@@ -454,4 +456,22 @@ func ConnectToDeviceDB(ip string) (*gorm.DB, error) {
 		return nil, err
 	}
 	return db, nil
+}
+
+func (uc *UserController) GetTLImg(c *gin.Context) {
+	TableName := c.Param("TableName")
+	iMG, err := ImgHandler.TLImgMake(TableName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "图例初始化失败: " + err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "图例请求成功",
+		"data":    iMG,
+	})
 }

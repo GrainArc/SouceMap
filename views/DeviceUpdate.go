@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"runtime"
 
 	"fmt"
 	"github.com/GrainArc/Gogeo"
@@ -30,6 +31,104 @@ import (
 	"time"
 )
 
+// isValidInterface 判断接口名称是否为 WiFi 或以太网
+func isValidInterface(name string) bool {
+	name = strings.ToLower(name)
+
+	switch runtime.GOOS {
+	case "windows":
+		// Windows 接口名称通常包含这些关键字
+		validPrefixes := []string{
+			"ethernet",
+			"eth", // 以太网
+			"以太网",
+			"wi-fi",                 // WiFi
+			"wlan",                  // 无线网卡
+			"local area connection", // 本地连接
+		}
+		for _, prefix := range validPrefixes {
+			if strings.Contains(name, prefix) {
+				return true
+			}
+		}
+
+	case "linux":
+		// Linux 接口名称通常是这些
+		validPrefixes := []string{
+			"eth",  // 以太网
+			"ens",  // 新版以太网命名
+			"enp",  // PCI 以太网
+			"eno",  // 板载以太网
+			"wlan", // 无线网卡
+			"wlp",  // PCI 无线网卡
+			"wlo",  // 板载无线网卡
+			"以太网",
+		}
+		for _, prefix := range validPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+
+	case "darwin": // macOS
+		validPrefixes := []string{
+			"en", // 以太网和 WiFi 都是 en 开头
+		}
+		for _, prefix := range validPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// GetAllLocalIPv4 获取所有符合条件的 IPv4 地址
+func GetAllLocalIPv4() ([]string, error) {
+	var ips []string
+
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("获取网络接口失败: %v", err)
+	}
+
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		fmt.Println(iface.Name)
+		if !isValidInterface(iface.Name) {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			if ip != nil && ip.To4() != nil {
+				ips = append(ips, ip.String())
+			}
+		}
+	}
+
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("未找到有效的 IPv4 地址")
+	}
+
+	return ips, nil
+}
+
 // 获取当前能更新的设备
 type DeviceData struct {
 	IP         string
@@ -38,7 +137,12 @@ type DeviceData struct {
 
 func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 	// 获取所有IP地址列表
-	ips := methods.GetIP(config.UpdateIP)
+	Mainips, _ := GetAllLocalIPv4()
+	var ips []string
+	for _, Mainip := range Mainips {
+		ipsa := methods.GetIP(Mainip)
+		ips = append(ips, ipsa...)
+	}
 
 	// 输入验证：检查IP列表是否为空
 	if len(ips) == 0 {
