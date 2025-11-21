@@ -86,7 +86,8 @@ func isValidInterface(name string) bool {
 
 // GetAllLocalIPv4 获取所有符合条件的 IPv4 地址
 func GetAllLocalIPv4() ([]string, error) {
-	var ips []string
+	var ipPrefixes []string
+	seenPrefixes := make(map[string]bool) // 用于去重
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -97,7 +98,7 @@ func GetAllLocalIPv4() ([]string, error) {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
-		fmt.Println(iface.Name)
+
 		if !isValidInterface(iface.Name) {
 			continue
 		}
@@ -117,16 +118,27 @@ func GetAllLocalIPv4() ([]string, error) {
 			}
 
 			if ip != nil && ip.To4() != nil {
-				ips = append(ips, ip.String())
+				// 提取前三个节点
+				ipStr := ip.String()
+				parts := strings.Split(ipStr, ".")
+				if len(parts) == 4 {
+					prefix := strings.Join(parts[:3], ".")
+
+					// 去重
+					if !seenPrefixes[prefix] {
+						seenPrefixes[prefix] = true
+						ipPrefixes = append(ipPrefixes, prefix)
+					}
+				}
 			}
 		}
 	}
 
-	if len(ips) == 0 {
+	if len(ipPrefixes) == 0 {
 		return nil, fmt.Errorf("未找到有效的 IPv4 地址")
 	}
 
-	return ips, nil
+	return ipPrefixes, nil
 }
 
 // 获取当前能更新的设备
@@ -172,7 +184,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 			continue // 跳过当前循环，处理下一个IP
 		}
 
-		wg.Add(1)            // 增加等待组计数
+		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
 
