@@ -8,7 +8,7 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	
+
 	"gorm.io/gorm/logger"
 	"gorm.io/gorm/schema"
 )
@@ -75,6 +75,7 @@ func InitDB() {
 	DB.AutoMigrate(&LayerHeader{})
 	DB.AutoMigrate(&GeoPic{})
 	DB.AutoMigrate(&TempLayerAttribute{})
+	DB.AutoMigrate(&FieldRecord{})
 
 	//新增
 

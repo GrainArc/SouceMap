@@ -655,64 +655,108 @@ func GDBToLayer(tablename string, gdbs []string, addType string) bool {
 func (uc *UserController) UpdateLayer(c *gin.Context) {
 	tablename := c.PostForm("tablename")
 	file, err := c.FormFile("file")
-	if err != nil {
-		c.String(400, "Bad request")
-		return
-	}
-	taskid := uuid.New().String()
-	path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
-	dirpath := filepath.Dir(path)
-	err = c.SaveUploadedFile(file, path)
-	if err != nil {
-		c.String(500, "Internal server error")
-		return
-	}
-	if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
-		methods.Unzip(path)
-	}
-	shpfiles := Transformer.FindFiles(dirpath, "shp")
+	VectorPath := c.PostForm("VectorPath")
+	if err == nil {
+		taskid := uuid.New().String()
+		path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
+		dirpath := filepath.Dir(path)
+		err = c.SaveUploadedFile(file, path)
+		if err != nil {
+			c.String(500, "Internal server error")
+			return
+		}
+		if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
+			methods.Unzip(path)
+		}
+		shpfiles := Transformer.FindFiles(dirpath, "shp")
 
-	if len(shpfiles) != 0 {
-		aa := shpToLayer(tablename, shpfiles[0], "覆盖")
-		//更新数据库的更新时间
-		DB := models.DB
-		var layerSchema models.MySchema
-		DB.Where("en = ?", tablename).First(&layerSchema)
-		layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
-		//创建消息
-		var MSG models.UpdateMessage
-		MSG.LayerNameEN = layerSchema.EN
-		MSG.LayerNameCN = layerSchema.CN
-		MSG.Date = time.Now().Format("2006-01-02 15:04:05")
-		MSG.UpdatedUser = c.PostForm("username")
-		MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，更新了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
-		DB.Create(&MSG)
-		if aa == true {
-			c.String(http.StatusOK, "ok")
-		} else {
-			c.String(http.StatusBadRequest, "矢量更新失败")
+		if len(shpfiles) != 0 {
+			aa := shpToLayer(tablename, shpfiles[0], "覆盖")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，更新了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量更新失败")
+			}
+		}
+		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
+		if len(gdbfiles) != 0 {
+			aa := GDBToLayer(tablename, gdbfiles, "覆盖")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，更新了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量更新失败")
+			}
 		}
 	}
-	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
-	if len(gdbfiles) != 0 {
-		aa := GDBToLayer(tablename, gdbfiles, "覆盖")
-		//更新数据库的更新时间
-		DB := models.DB
-		var layerSchema models.MySchema
-		DB.Where("en = ?", tablename).First(&layerSchema)
-		layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
-		//创建消息
-		var MSG models.UpdateMessage
-		MSG.LayerNameEN = layerSchema.EN
-		MSG.LayerNameCN = layerSchema.CN
-		MSG.Date = time.Now().Format("2006-01-02 15:04:05")
-		MSG.UpdatedUser = c.PostForm("username")
-		MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，更新了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
-		DB.Create(&MSG)
-		if aa == true {
-			c.String(http.StatusOK, "ok")
-		} else {
-			c.String(http.StatusBadRequest, "矢量更新失败")
+	if VectorPath != "" {
+		ext := strings.ToLower(filepath.Ext(VectorPath))
+		if ext == ".shp" {
+			aa := shpToLayer(tablename, VectorPath, "覆盖")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，更新了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量更新失败")
+			}
+		}
+		if ext == ".gdb" {
+			aa := GDBToLayer(tablename, []string{VectorPath}, "覆盖")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，更新了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量更新失败")
+			}
 		}
 	}
 
@@ -721,64 +765,108 @@ func (uc *UserController) UpdateLayer(c *gin.Context) {
 func (uc *UserController) AppendLayer(c *gin.Context) {
 	tablename := c.PostForm("tablename")
 	file, err := c.FormFile("file")
-	if err != nil {
-		c.String(400, "Bad request")
-		return
-	}
-	taskid := uuid.New().String()
-	path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
-	dirpath := filepath.Dir(path)
-	err = c.SaveUploadedFile(file, path)
-	if err != nil {
-		c.String(500, "Internal server error")
-		return
-	}
-	if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
-		methods.Unzip(path)
-	}
-	shpfiles := Transformer.FindFiles(dirpath, "shp")
+	VectorPath := c.PostForm("VectorPath")
+	if err == nil {
+		taskid := uuid.New().String()
+		path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
+		dirpath := filepath.Dir(path)
+		err = c.SaveUploadedFile(file, path)
+		if err != nil {
+			c.String(500, "Internal server error")
+			return
+		}
+		if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
+			methods.Unzip(path)
+		}
+		shpfiles := Transformer.FindFiles(dirpath, "shp")
 
-	if len(shpfiles) != 0 {
-		aa := shpToLayer(tablename, shpfiles[0], "追加")
-		//更新数据库的更新时间
-		DB := models.DB
-		var layerSchema models.MySchema
-		DB.Where("en = ?", tablename).First(&layerSchema)
-		layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
-		//创建消息
-		var MSG models.UpdateMessage
-		MSG.LayerNameEN = layerSchema.EN
-		MSG.LayerNameCN = layerSchema.CN
-		MSG.Date = time.Now().Format("2006-01-02 15:04:05")
-		MSG.UpdatedUser = c.PostForm("username")
-		MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，追加了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
-		DB.Create(&MSG)
-		if aa == true {
-			c.String(http.StatusOK, "ok")
-		} else {
-			c.String(http.StatusBadRequest, "矢量添加失败")
+		if len(shpfiles) != 0 {
+			aa := shpToLayer(tablename, shpfiles[0], "追加")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，追加了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量添加失败")
+			}
+		}
+		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
+		if len(gdbfiles) != 0 {
+			aa := GDBToLayer(tablename, gdbfiles, "追加")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，添加了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量添加失败")
+			}
 		}
 	}
-	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
-	if len(gdbfiles) != 0 {
-		aa := GDBToLayer(tablename, gdbfiles, "覆盖")
-		//更新数据库的更新时间
-		DB := models.DB
-		var layerSchema models.MySchema
-		DB.Where("en = ?", tablename).First(&layerSchema)
-		layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
-		//创建消息
-		var MSG models.UpdateMessage
-		MSG.LayerNameEN = layerSchema.EN
-		MSG.LayerNameCN = layerSchema.CN
-		MSG.Date = time.Now().Format("2006-01-02 15:04:05")
-		MSG.UpdatedUser = c.PostForm("username")
-		MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，添加了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
-		DB.Create(&MSG)
-		if aa == true {
-			c.String(http.StatusOK, "ok")
-		} else {
-			c.String(http.StatusBadRequest, "矢量添加失败")
+	if VectorPath != "" {
+		ext := strings.ToLower(filepath.Ext(VectorPath))
+		if ext == ".shp" {
+			aa := shpToLayer(tablename, VectorPath, "追加")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，追加了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量添加失败")
+			}
+		}
+		if ext == ".gdb" {
+			aa := GDBToLayer(tablename, []string{VectorPath}, "追加")
+			//更新数据库的更新时间
+			DB := models.DB
+			var layerSchema models.MySchema
+			DB.Where("en = ?", tablename).First(&layerSchema)
+			layerSchema.UpdatedDate = time.Now().Format("2006-01-02 15:04:05")
+			//创建消息
+			var MSG models.UpdateMessage
+			MSG.LayerNameEN = layerSchema.EN
+			MSG.LayerNameCN = layerSchema.CN
+			MSG.Date = time.Now().Format("2006-01-02 15:04:05")
+			MSG.UpdatedUser = c.PostForm("username")
+			MSG.MSG = fmt.Sprintf(`%s 在 %s 时间，添加了数据: %s,请及时完成移动端的数据同步`, MSG.UpdatedUser, MSG.Date, MSG.LayerNameCN)
+			DB.Create(&MSG)
+			if aa == true {
+				c.String(http.StatusOK, "ok")
+			} else {
+				c.String(http.StatusBadRequest, "矢量添加失败")
+			}
 		}
 	}
 

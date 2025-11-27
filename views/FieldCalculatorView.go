@@ -2,25 +2,14 @@ package views
 
 import (
 	"fmt"
-	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"strings"
 )
 
-type FieldCalculatorController struct {
-	calculatorService *methods.FieldCalculatorService
-}
-
-func NewFieldCalculatorController() *FieldCalculatorController {
-	return &FieldCalculatorController{
-		calculatorService: methods.NewFieldCalculatorService(),
-	}
-}
-
 // CalculateField 执行字段计算
-func (fc *FieldCalculatorController) CalculateField(c *gin.Context) {
+func (uc *UserController) CalculateField(c *gin.Context) {
 	var req models.FieldCalculatorRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.Response{
@@ -30,13 +19,23 @@ func (fc *FieldCalculatorController) CalculateField(c *gin.Context) {
 		return
 	}
 
-	result, err := fc.calculatorService.CalculateField(req)
+	result, err := uc.calculatorService.CalculateField(req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, models.Response{
 			Code:    400,
 			Message: "计算失败: " + err.Error(),
 		})
 		return
+	}
+	record := &models.FieldRecord{
+		TableName:    req.TableName,
+		Type:         "value", // 操作类型：删除
+		OldFieldName: req.TargetField,
+	}
+
+	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
+		// 记录保存失败，只记录日志，不影响主流程
+		fmt.Printf("保存字段操作记录失败: %v\n", err)
 	}
 
 	c.JSON(http.StatusOK, models.Response{
@@ -46,17 +45,9 @@ func (fc *FieldCalculatorController) CalculateField(c *gin.Context) {
 	})
 }
 
-type GeometryHandler struct {
-	service *methods.GeometryService
-}
-
-func NewGeometryHandler(service *methods.GeometryService) *GeometryHandler {
-	return &GeometryHandler{service: service}
-}
-
 // UpdateGeometryField 批量更新几何计算字段
 // POST /api/geometry/update-field
-func (h *GeometryHandler) UpdateGeometryField(c *gin.Context) {
+func (uc *UserController) UpdateGeometryField(c *gin.Context) {
 
 	var req models.GeometryUpdateRequest
 	DB := models.DB
@@ -73,10 +64,21 @@ func (h *GeometryHandler) UpdateGeometryField(c *gin.Context) {
 		return
 	}
 
-	result, err := h.service.UpdateGeometryField(DB, c.Request.Context(), &req)
+	result, err := uc.service.UpdateGeometryField(DB, c.Request.Context(), &req)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+	// 保存字段操作记录
+	record := &models.FieldRecord{
+		TableName:    req.TableName,
+		Type:         "value", // 操作类型：删除
+		OldFieldName: req.TargetField,
+	}
+
+	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
+		// 记录保存失败，只记录日志，不影响主流程
+		fmt.Printf("保存字段操作记录失败: %v\n", err)
 	}
 
 	c.JSON(http.StatusOK, result)
@@ -142,7 +144,7 @@ func (uc *UserController) AddField(c *gin.Context) {
 	if rowCount > 0 && !req.IsNullable && req.DefaultValue == "" {
 		c.JSON(http.StatusBadRequest, models.Response{
 			Code:    400,
-			Message: "表中已有数据，添加非空字段时必须提供默认值",
+			Message: "表中已有数据,添加非空字段时必须提供默认值",
 		})
 		return
 	}
@@ -156,6 +158,27 @@ func (uc *UserController) AddField(c *gin.Context) {
 			Message: "添加字段失败: " + err.Error(),
 		})
 		return
+	}
+
+	// 保存字段操作记录
+	fieldTypeWithLength := req.FieldType
+	if req.Length > 0 {
+		fieldTypeWithLength = fmt.Sprintf("%s(%d)", req.FieldType, req.Length)
+	}
+
+	record := &models.FieldRecord{
+		TableName:    req.TableName,
+		Type:         "add", // 操作类型：添加
+		BZ:           req.Comment,
+		OldFieldName: "",
+		OldFieldType: "",
+		NewFieldName: req.FieldName,
+		NewFieldType: fieldTypeWithLength,
+	}
+
+	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
+		// 记录保存失败，只记录日志，不影响主流程
+		fmt.Printf("保存字段操作记录失败: %v\n", err)
 	}
 
 	c.JSON(http.StatusOK, models.Response{
@@ -228,8 +251,24 @@ func (uc *UserController) ModifyField(c *gin.Context) {
 		}
 	}
 
+	// 获取修改前的字段信息
+	oldFieldInfo, err := uc.fieldService.GetSingleFieldInfo(req.TableName, req.FieldName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "获取原字段信息失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 构建旧字段类型字符串
+	oldFieldTypeStr := oldFieldInfo.FieldType
+	if oldFieldInfo.Length > 0 {
+		oldFieldTypeStr = fmt.Sprintf("%s(%d)", oldFieldInfo.FieldType, oldFieldInfo.Length)
+	}
+
 	// 修改字段
-	err := uc.fieldService.ModifyField(req.TableName, req.FieldName, req.NewFieldName,
+	err = uc.fieldService.ModifyField(req.TableName, req.FieldName, req.NewFieldName,
 		req.FieldType, req.Length, req.DefaultValue, req.Comment, req.IsNullable)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
@@ -242,6 +281,27 @@ func (uc *UserController) ModifyField(c *gin.Context) {
 	finalFieldName := req.NewFieldName
 	if finalFieldName == "" {
 		finalFieldName = req.FieldName
+	}
+
+	// 保存字段操作记录
+	newFieldTypeStr := req.FieldType
+	if req.Length > 0 {
+		newFieldTypeStr = fmt.Sprintf("%s(%d)", req.FieldType, req.Length)
+	}
+
+	record := &models.FieldRecord{
+		TableName:    req.TableName,
+		Type:         "modify", // 操作类型：修改
+		BZ:           req.Comment,
+		OldFieldName: req.FieldName,
+		OldFieldType: oldFieldTypeStr,
+		NewFieldName: finalFieldName,
+		NewFieldType: newFieldTypeStr,
+	}
+
+	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
+		// 记录保存失败，只记录日志，不影响主流程
+		fmt.Printf("保存字段操作记录失败: %v\n", err)
 	}
 
 	c.JSON(http.StatusOK, models.Response{
@@ -286,14 +346,46 @@ func (uc *UserController) DeleteField(c *gin.Context) {
 		return
 	}
 
+	// 获取删除前的字段信息
+	oldFieldInfo, err := uc.fieldService.GetSingleFieldInfo(req.TableName, req.FieldName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Code:    500,
+			Message: "获取字段信息失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 构建字段类型字符串
+	oldFieldTypeStr := oldFieldInfo.FieldType
+	if oldFieldInfo.Length > 0 {
+		oldFieldTypeStr = fmt.Sprintf("%s(%d)", oldFieldInfo.FieldType, oldFieldInfo.Length)
+	}
+
 	// 删除字段
-	err := uc.fieldService.DeleteField(req.TableName, req.FieldName)
+	err = uc.fieldService.DeleteField(req.TableName, req.FieldName)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Code:    500,
 			Message: "删除字段失败: " + err.Error(),
 		})
 		return
+	}
+
+	// 保存字段操作记录
+	record := &models.FieldRecord{
+		TableName:    req.TableName,
+		Type:         "delete", // 操作类型：删除
+		BZ:           oldFieldInfo.Comment,
+		OldFieldName: req.FieldName,
+		OldFieldType: oldFieldTypeStr,
+		NewFieldName: "",
+		NewFieldType: "",
+	}
+
+	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
+		// 记录保存失败，只记录日志，不影响主流程
+		fmt.Printf("保存字段操作记录失败: %v\n", err)
 	}
 
 	c.JSON(http.StatusOK, models.Response{

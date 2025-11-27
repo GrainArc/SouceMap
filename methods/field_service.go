@@ -467,3 +467,34 @@ func (fs *FieldService) GetTableList() ([]string, error) {
 	err := models.DB.Raw(sql).Pluck("table_name", &tables).Error
 	return tables, err
 }
+
+// SaveFieldRecord 保存字段操作记录
+func (fs *FieldService) SaveFieldRecord(record *models.FieldRecord) error {
+	return models.DB.Create(record).Error
+}
+
+// getFieldTypeInfo 获取字段的完整类型信息
+func (fs *FieldService) getFieldTypeInfo(tableName, fieldName string) (string, error) {
+	var columnType string
+	sql := `
+		SELECT 
+			CASE 
+				WHEN character_maximum_length IS NOT NULL THEN
+					data_type || '(' || character_maximum_length || ')'
+				WHEN numeric_precision IS NOT NULL AND numeric_scale IS NOT NULL THEN
+					data_type || '(' || numeric_precision || ',' || numeric_scale || ')'
+				WHEN numeric_precision IS NOT NULL THEN
+					data_type || '(' || numeric_precision || ')'
+				ELSE data_type
+			END as column_type
+		FROM information_schema.columns
+		WHERE table_schema = CURRENT_SCHEMA()
+		AND table_name = ?
+		AND column_name = ?
+	`
+	err := models.DB.Raw(sql, tableName, fieldName).Scan(&columnType).Error
+	if err != nil {
+		return "", err
+	}
+	return columnType, nil
+}

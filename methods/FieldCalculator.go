@@ -268,10 +268,6 @@ func (s *FieldCalculatorService) validateField(tableName, fieldName string) erro
 type GeometryService struct {
 }
 
-func NewGeometryService() *GeometryService {
-	return &GeometryService{}
-}
-
 // UpdateGeometryField 批量更新几何计算字段
 func (s *GeometryService) UpdateGeometryField(DB *gorm.DB, ctx context.Context, req *models.GeometryUpdateRequest) (*models.GeometryUpdateResponse, error) {
 	// 设置默认几何字段名

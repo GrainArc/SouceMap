@@ -156,9 +156,11 @@ func ZDTable(word *document.Document, MSG *models.TempLayerAttribute, ZDPIC *str
 	}
 
 }
+
 func isOdd(n int) bool {
 	return n%2 != 0
 }
+
 func PICTable(word *document.Document, PICS []models.GeoPic) {
 	Tables := word.Tables()
 	ZTable := Tables[2]

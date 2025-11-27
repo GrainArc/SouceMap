@@ -13,7 +13,9 @@ type TempLayerGeo struct {
 	Geojson geojson.Feature
 }
 type UserController struct {
-	fieldService *methods.FieldService
+	fieldService      *methods.FieldService
+	service           *methods.GeometryService
+	calculatorService *methods.FieldCalculatorService
 }
 
 func GetAtt(TableName string, QZ string) []string {

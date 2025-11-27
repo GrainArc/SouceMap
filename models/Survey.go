@@ -12,7 +12,7 @@ type TempGeo struct {
 }
 
 type TempLayer struct {
-	ID        int64  `gorm:"primary_key"`
+	ID        int64  `gorm:"primary_key;autoIncrement"`
 	TBID      string `gorm:"type:varchar(255)"`
 	Layername string `gorm:"type:varchar(255)"`
 	BSM       string `gorm:"type:varchar(255)"`

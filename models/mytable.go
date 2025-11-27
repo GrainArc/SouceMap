@@ -5,7 +5,7 @@ import (
 )
 
 type LoginUser struct {
-	ID        int64  `gorm:"primary_key"`
+	ID        int64  `gorm:"primary_key;autoIncrement"`
 	Username  string `gorm:"type:varchar(255)"`
 	Password  string `gorm:"type:varchar(255)"`
 	Name      string `gorm:"type:varchar(255)"`

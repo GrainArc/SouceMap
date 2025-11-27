@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/Transformer"
+	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
@@ -65,7 +66,7 @@ func GetGeo(jsonData getData) geojson.FeatureCollection {
 	return NewGeo
 }
 
-func GetGeos(jsonData getDatas) geojson.FeatureCollection 	{
+func GetGeos(jsonData getDatas) geojson.FeatureCollection {
 	DB := models.DB
 	var NewGeo geojson.FeatureCollection
 
@@ -160,7 +161,7 @@ type delData struct {
 // 提取并转换 ObjectID 的辅助函数
 func extractObjectID(properties map[string]interface{}) (int64, error) {
 	// 尝试不同的字段名（不区分大小写）
-	possibleKeys := []string{"fid", "Fid", "FID","objectid","Objectid","ObjectId","OBJECTID"}
+	possibleKeys := []string{"fid", "Fid", "FID", "objectid", "Objectid", "ObjectId", "OBJECTID"}
 
 	var value interface{}
 	var found bool
@@ -448,7 +449,7 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		json.Unmarshal(aa.NewGeojson, &featureCollection)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 		for _, feature := range featureCollection2.Features {
-			DB.Table(aa.TableName).Where("id = ?",feature.Properties["id"].(int32)).Delete(nil)
+			DB.Table(aa.TableName).Where("id = ?", feature.Properties["id"].(int32)).Delete(nil)
 		}
 		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
 	case "要素合并":
@@ -458,7 +459,7 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		json.Unmarshal(aa.NewGeojson, &featureCollection)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 		for _, feature := range featureCollection2.Features {
-			DB.Table(aa.TableName).Where("id = ?",feature.Properties["id"].(int32)).Delete(nil)
+			DB.Table(aa.TableName).Where("id = ?", feature.Properties["id"].(int32)).Delete(nil)
 		}
 		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
 	}
@@ -554,7 +555,12 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 			additionalColumns = append(additionalColumns, key)
 		}
 	}
+	// ========== 新增：查询 objectid 的最大值 ==========
+	var maxObjectID int32
+	getMaxSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxSQL).Scan(&maxObjectID).Error; err != nil {
 
+	}
 	// 构建 split_geom CTE 的选择列
 	splitSelectCols := `(ST_Dump(ST_Split(o.geom, ST_GeomFromGeoJSON('%s')))).geom AS geom`
 	for _, col := range additionalColumns {
@@ -570,7 +576,12 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 	// 构建 SELECT 的列名（不包括id）
 	selectCols := "geom"
 	for _, col := range additionalColumns {
-		selectCols += fmt.Sprintf(`, "%s"`, col)
+		if col == "objectid" {
+			// 使用 ROW_NUMBER() 生成递增的 objectid
+			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxObjectID, col)
+		} else {
+			selectCols += fmt.Sprintf(`, "%s"`, col)
+		}
 	}
 
 	// 方案1：如果id列有DEFAULT值（如SERIAL或使用nextval）
@@ -644,10 +655,6 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		TableName: LayerName,
 		ID:        idList,
 	}
-
-
-
-
 
 	// 5. 提交事务
 	if err := tx.Commit().Error; err != nil {
@@ -827,14 +834,22 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		})
 		return
 	}
+	// ========== 新增：查询 objectid 的最大值 ==========
+	var maxObjectID int32
+	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
 
+	}
 	// 4. 构建属性字段列表（排除id和geom）
 	var columnNames []string
 	var columnValues []string
 	for key, value := range originalFeature {
 		if key != "id" && key != "geom" {
 			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
-
+			if key == "objectid" {
+				columnValues = append(columnValues, fmt.Sprintf("%d", maxObjectID+1))
+				continue
+			}
 			// 根据值类型构建SQL值
 			switch v := value.(type) {
 			case nil:
@@ -932,7 +947,6 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	}
 	oldGeo := GetGeos(getdata2)
 	oldGeojson, _ := json.Marshal(oldGeo)
-
 
 	for _, feature := range oldGeo.Features {
 
@@ -1140,10 +1154,94 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 			}
 		}
 	}
+	//同步字段操作
+	var FieldRecord []models.FieldRecord
+	DB.Where("table_name = ?", TableName).Find(&FieldRecord)
+	postGISConfig := &Gogeo.PostGISConfig{
+		Host:     config.MainConfig.Host,
+		Port:     config.MainConfig.Port,
+		Database: config.MainConfig.Dbname,
+		User:     config.MainConfig.Username,
+		Password: config.MainConfig.Password,
+		Schema:   "public",
+		Table:    TableName,
+	}
+	if isGDB {
+		for _, record := range FieldRecord {
+			if record.Type == "value" {
+				options := &Gogeo.SyncFieldOptions{
+					SourceField:      record.OldFieldName,                   // PostGIS中的字段名
+					TargetField:      mapField(record.OldFieldName, AttMap), // GDB中的字段名（可选，默认同名）
+					SourceIDField:    "objectid",                            // PostGIS的ID字段（小写）
+					TargetIDField:    "FID",
+					BatchSize:        1000,
+					UseTransaction:   true,
+					UpdateNullValues: false,
+				}
+				_, err := Gogeo.SyncFieldFromPostGIS(
+					postGISConfig,
+					sourceConfig.SourcePath,
+					SouceLayer,
+					options,
+				)
+				if err != nil {
+					fmt.Printf("同步失败: %v\n", err)
+				}
+			}
+			if record.Type == "add" {
+				gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
+				fieldDef := Gogeo.FieldDefinition{
+					Name:      record.NewFieldName,
+					Type:      gdbFieldType,
+					Width:     width,
+					Precision: precision,
+					Nullable:  true,
+					Default:   nil,
+				}
+				err := Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
+				if err != nil {
+					log.Fatal(err)
+				}
+			}
+			if record.Type == "modify" {
+				// 1. 删除旧字段
+				oldFieldName := mapField(record.OldFieldName, AttMap)
+				err := Gogeo.DeleteField(Soucepath, SouceLayer, oldFieldName)
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("删除旧字段 %s 失败: %v", oldFieldName, err))
+					continue
+				}
+
+				// 2. 创建新字段
+				gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
+
+				fieldDef := Gogeo.FieldDefinition{
+					Name:      record.NewFieldName,
+					Type:      gdbFieldType,
+					Width:     width,
+					Precision: precision,
+					Nullable:  true,
+					Default:   nil,
+				}
+
+				err = Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
+				if err != nil {
+					errors = append(errors, fmt.Sprintf("创建新字段 %s 失败: %v", record.NewFieldName, err))
+				} else {
+					fmt.Printf("成功修改字段: %s -> %s\n", oldFieldName, record.NewFieldName)
+				}
+			}
+			if record.Type == "delete" {
+				Gogeo.DeleteField(Soucepath, SouceLayer, mapField(record.OldFieldName, AttMap))
+			}
+
+		}
+
+	}
 
 	// 同步完成后,可选择清空GeoRecord记录
 	DB.Where("table_name = ?", TableName).Delete(&models.GeoRecord{})
-
+	DB.Where("table_name = ?", TableName).Delete(&models.FieldRecord{})
 	// 构建响应
 	response := gin.H{
 		"code":           200,
@@ -1238,4 +1336,95 @@ func mapFieldsToSource(fc *geojson.FeatureCollection, attMap []pgmvt.ProcessedFi
 	}
 
 	return mappedFC, nil
+}
+
+func mapField(fc string, attMap []pgmvt.ProcessedFieldInfo) string {
+	for _, field := range attMap {
+		if field.ProcessedName == fc {
+			return field.OriginalName
+		}
+	}
+
+	// 如果没有找到映射，返回原字段名
+	return fc
+
+}
+
+// mapPostGISTypeToGDB 将PostgreSQL字段类型映射为GDB字段类型
+// 返回: FieldType, Width, Precision
+func mapPostGISTypeToGDB(pgType string) (Gogeo.FieldType, int, int) {
+	// 转换为小写便于匹配
+	pgType = strings.ToLower(strings.TrimSpace(pgType))
+
+	// 处理带长度的类型，如 varchar(255)
+	var baseType string
+	var width int
+	var precision int
+
+	// 解析类型定义
+	if strings.Contains(pgType, "(") {
+		parts := strings.Split(pgType, "(")
+		baseType = parts[0]
+
+		// 提取宽度和精度
+		if len(parts) > 1 {
+			params := strings.TrimSuffix(parts[1], ")")
+			paramParts := strings.Split(params, ",")
+
+			if len(paramParts) > 0 {
+				fmt.Sscanf(paramParts[0], "%d", &width)
+			}
+			if len(paramParts) > 1 {
+				fmt.Sscanf(paramParts[1], "%d", &precision)
+			}
+		}
+	} else {
+		baseType = pgType
+	}
+
+	// 类型映射
+	switch baseType {
+	case "smallint", "int2":
+		return Gogeo.FieldTypeInteger, 0, 0
+
+	case "integer", "int", "int4":
+		return Gogeo.FieldTypeInteger, 0, 0
+
+	case "bigint", "int8":
+		return Gogeo.FieldTypeInteger64, 0, 0
+
+	case "real", "float4":
+		return Gogeo.FieldTypeReal, 0, 0
+
+	case "double precision", "float8", "numeric", "decimal":
+		if precision == 0 {
+			precision = 2 // 默认精度
+		}
+		return Gogeo.FieldTypeReal, 0, precision
+
+	case "character varying", "varchar", "character", "char", "text":
+		if width == 0 {
+			width = 254 // GDB字符串默认长度
+		}
+		return Gogeo.FieldTypeString, width, 0
+
+	case "date":
+		return Gogeo.FieldTypeDate, 0, 0
+
+	case "time", "time without time zone":
+		return Gogeo.FieldTypeTime, 0, 0
+
+	case "timestamp", "timestamp without time zone", "timestamp with time zone":
+		return Gogeo.FieldTypeDateTime, 0, 0
+
+	case "bytea":
+		return Gogeo.FieldTypeBinary, 0, 0
+
+	default:
+		// 默认作为字符串处理
+		if width == 0 {
+			width = 254
+		}
+		return Gogeo.FieldTypeString, width, 0
+	}
 }

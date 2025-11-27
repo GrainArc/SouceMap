@@ -32,30 +32,286 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 	MAC := c.PostForm("mac")
 	//离线模式导入
 	DB := models.DB
-
+	VectorPath := c.PostForm("VectorPath")
 	taskid := uuid.New().String()
 	file, err := c.FormFile("file")
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
-	if err != nil {
-		c.String(400, "Bad request")
-		return
-	}
-	path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
-	dirpath := filepath.Dir(path)
-	err = c.SaveUploadedFile(file, path)
-	if err != nil {
-		c.String(500, "Internal server error")
-		return
-	}
-	if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
-		methods.Unzip(path)
-	}
-	//判断是是否存在dxf文件
-	dxffiles := Transformer.FindFiles(dirpath, "dxf")
-	if len(dxffiles) != 0 {
-		for _, item := range dxffiles {
-			data, isTransform := Transformer.ConvertDXFToGeoJSON2(item)
+	if err == nil {
+		path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
+		dirpath := filepath.Dir(path)
+		err = c.SaveUploadedFile(file, path)
+		if err != nil {
+			c.String(500, "Internal server error")
+			return
+		}
+		if filepath.Ext(path) == ".zip" || filepath.Ext(path) == ".rar" {
+			methods.Unzip(path)
+		}
+		//判断是是否存在dxf文件
+		dxffiles := Transformer.FindFiles(dirpath, "dxf")
+		if len(dxffiles) != 0 {
+			for _, item := range dxffiles {
+				data, isTransform := Transformer.ConvertDXFToGeoJSON2(item)
 
+				if isTransform != "" {
+					data, err = Transformer.GeoJsonTransformTo4326(data, isTransform)
+					if err != nil {
+						fmt.Println(err.Error())
+					}
+
+				}
+				for _, feature := range data.Features {
+					tbid := uuid.New().String()
+					featureCollection := geojson.NewFeatureCollection()
+					feature.ID = tbid
+					featureCollection.Append(feature)
+					geoJSONData, err := json.MarshalIndent(featureCollection, "", "  ")
+					if err == nil {
+						result := models.TempLayer{Layername: Layername, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+						result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+						DB.Create(&result_att)
+						DB.Create(&result)
+					}
+				}
+			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+		//判断是否为shp文件
+		shpfiles := Transformer.FindFiles(dirpath, "shp")
+		if len(shpfiles) != 0 {
+			for _, item := range shpfiles {
+				data, isTransform := Transformer.ConvertSHPToGeoJSON2(item)
+
+				if isTransform != "4326" {
+					data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
+				}
+				for index, feature := range data.Features {
+					tbid := uuid.New().String()
+					feature.ID = tbid
+					var name string
+					if _, exists := feature.Properties["name"]; exists {
+						rawName := feature.Properties["name"].(string)
+
+						// 清理空字符和其他非法字符
+						cleanedName := strings.Map(func(r rune) rune {
+							if r == 0x00 || !utf8.ValidRune(r) {
+								return -1 // 移除非法字符
+							}
+							return r
+						}, rawName)
+
+						// 检查并修复 UTF-8 编码
+						if !utf8.ValidString(cleanedName) {
+							validName := string([]rune(cleanedName)) // 强制转换为 UTF-8
+							log.Printf("检测到非 UTF-8 编码字符串，已修复: %s -> %s", cleanedName, validName)
+							cleanedName = validName
+						}
+
+						name = cleanedName
+
+					} else {
+						feature.Properties["name"] = strconv.Itoa(index)
+						name = strconv.Itoa(index)
+					}
+
+					featureCollection := geojson.NewFeatureCollection()
+					featureCollection.Append(feature)
+					geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
+
+					result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+
+					result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+					if err := DB.Create(&result_att).Error; err != nil {
+						fmt.Println(err.Error())
+					}
+					if err := DB.Create(&result).Error; err != nil {
+						fmt.Println(err.Error())
+					}
+
+				}
+			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+		//判断是否为kml文件
+		kmlfiles := Transformer.FindFiles(dirpath, "kml")
+		if len(kmlfiles) != 0 {
+			for _, item := range kmlfiles {
+				data, isTransform := Transformer.KmlToGeojson(item)
+				if isTransform != "4326" {
+					data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
+				}
+				for index, feature := range data.Features {
+					tbid := uuid.New().String()
+					var name string
+					if _, exists := feature.Properties["name"]; exists {
+						name = feature.Properties["name"].(string)
+					} else {
+						feature.Properties["name"] = strconv.Itoa(index)
+						name = strconv.Itoa(index)
+					}
+					feature.ID = tbid
+					featureCollection := geojson.NewFeatureCollection()
+					featureCollection.Append(feature)
+					geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
+					result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+					result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+					DB.Create(&result_att)
+					DB.Create(&result)
+				}
+			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+		//判断是否为ovkml文件
+		ovkmlfiles := Transformer.FindFiles(dirpath, "ovkml")
+		if len(ovkmlfiles) != 0 {
+			for _, item := range ovkmlfiles {
+				data, isTransform := Transformer.KmlToGeojson(item)
+				if isTransform != "4326" {
+					data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
+				}
+				for index, feature := range data.Features {
+					tbid := uuid.New().String()
+					var name string
+					if _, exists := feature.Properties["name"]; exists {
+						name = feature.Properties["name"].(string)
+					} else {
+						feature.Properties["name"] = strconv.Itoa(index)
+						name = strconv.Itoa(index)
+					}
+					feature.ID = tbid
+					featureCollection := geojson.NewFeatureCollection()
+					featureCollection.Append(feature)
+					geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
+					result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+					result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+					DB.Create(&result_att)
+					DB.Create(&result)
+				}
+			}
+			//
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+
+		//判断是否存在gdb文件
+		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
+		if len(gdbfiles) != 0 {
+			for _, item := range gdbfiles {
+
+				Layers, _ := Gogeo.GDBToGeoJSON(item)
+
+				for _, layer := range Layers {
+					for index, feature := range layer.Layer.Features {
+
+						tbid := uuid.New().String()
+						var name string
+						if _, exists := feature.Properties["name"]; exists {
+							name = feature.Properties["name"].(string)
+						} else {
+							feature.Properties["name"] = strconv.Itoa(index)
+							name = strconv.Itoa(index)
+						}
+						feature.ID = tbid
+						featureCollection := geojson.NewFeatureCollection()
+						featureCollection.Append(feature)
+						geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
+						result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+						result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+						DB.Create(&result_att)
+						DB.Create(&result)
+					}
+				}
+
+			}
+
+			//
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+		//判断是否存在dat文件
+		datfiles := Transformer.FindFiles(dirpath, "dat")
+		if len(datfiles) != 0 {
+			for _, item := range datfiles {
+				data, isTransform := Transformer.DatToGeojson(item)
+				if isTransform != "4326" {
+					data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
+				}
+				for index, feature := range data.Features {
+					tbid := uuid.New().String()
+					var name string
+					if _, exists := feature.Properties["name"]; exists {
+						name = feature.Properties["name"].(string)
+					} else {
+						feature.Properties["name"] = strconv.Itoa(index)
+						name = strconv.Itoa(index)
+					}
+					feature.ID = tbid
+					featureCollection := geojson.NewFeatureCollection()
+					featureCollection.Append(feature)
+					geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
+					result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+					result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+					DB.Create(&result_att)
+					DB.Create(&result)
+				}
+			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+		//判断是否存在TXT文件
+		txtfiles := Transformer.FindFiles(dirpath, "txt")
+		if len(txtfiles) != 0 {
+			for _, item := range txtfiles {
+				data, isTransform := Transformer.TxtToGeojson(item)
+				if isTransform != "4326" {
+					data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
+				}
+				for index, feature := range data.Features {
+					tbid := uuid.New().String()
+					var name string
+					if _, exists := feature.Properties["name"]; exists {
+						name = feature.Properties["name"].(string)
+					} else {
+						feature.Properties["name"] = strconv.Itoa(index)
+						name = strconv.Itoa(index)
+					}
+					feature.ID = tbid
+					featureCollection := geojson.NewFeatureCollection()
+					featureCollection.Append(feature)
+					geoJSONData, _ := json.MarshalIndent(featureCollection, "", "  ")
+					result := models.TempLayer{Layername: Layername, Name: name, MAC: MAC, BSM: taskid, TBID: tbid, Geojson: geoJSONData}
+					result_att := models.TempLayerAttribute{TBID: tbid, Layername: Layername}
+					DB.Create(&result_att)
+					DB.Create(&result)
+				}
+			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
+		}
+
+	}
+	if VectorPath != "" {
+		ext := strings.ToLower(filepath.Ext(VectorPath))
+		if ext == ".dxf" {
+			data, isTransform := Transformer.ConvertDXFToGeoJSON2(VectorPath)
 			if isTransform != "" {
 				data, err = Transformer.GeoJsonTransformTo4326(data, isTransform)
 				if err != nil {
@@ -64,7 +320,6 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 
 			}
 			for _, feature := range data.Features {
-				fmt.Println(feature)
 				tbid := uuid.New().String()
 				featureCollection := geojson.NewFeatureCollection()
 				feature.ID = tbid
@@ -77,17 +332,13 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 					DB.Create(&result)
 				}
 			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
 		}
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
-	//判断是否为shp文件
-	shpfiles := Transformer.FindFiles(dirpath, "shp")
-	if len(shpfiles) != 0 {
-		for _, item := range shpfiles {
-			data, isTransform := Transformer.ConvertSHPToGeoJSON2(item)
+		if ext == ".shp" {
+			data, isTransform := Transformer.ConvertSHPToGeoJSON2(VectorPath)
 
 			if isTransform != "4326" {
 				data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
@@ -134,20 +385,14 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 				if err := DB.Create(&result).Error; err != nil {
 					fmt.Println(err.Error())
 				}
-
+				header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+				DB.Create(&header)
+				c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+				return
 			}
 		}
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
-	//判断是否为kml文件
-	kmlfiles := Transformer.FindFiles(dirpath, "kml")
-	if len(kmlfiles) != 0 {
-		for _, item := range kmlfiles {
-			data, isTransform := Transformer.KmlToGeojson(item)
+		if ext == ".kml" {
+			data, isTransform := Transformer.KmlToGeojson(VectorPath)
 			if isTransform != "4326" {
 				data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
 			}
@@ -169,17 +414,13 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 				DB.Create(&result_att)
 				DB.Create(&result)
 			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
 		}
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
-	//判断是否为ovkml文件
-	ovkmlfiles := Transformer.FindFiles(dirpath, "ovkml")
-	if len(ovkmlfiles) != 0 {
-		for _, item := range ovkmlfiles {
-			data, isTransform := Transformer.KmlToGeojson(item)
+		if ext == ".ovkml" {
+			data, isTransform := Transformer.KmlToGeojson(VectorPath)
 			if isTransform != "4326" {
 				data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
 			}
@@ -201,24 +442,15 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 				DB.Create(&result_att)
 				DB.Create(&result)
 			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
 		}
-		//
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
-
-	//判断是否存在gdb文件
-	gdbfiles := Transformer.FindFiles(dirpath, "gdb")
-	if len(gdbfiles) != 0 {
-		for _, item := range gdbfiles {
-			fmt.Println(item)
-			Layers, _ := Gogeo.GDBToGeoJSON(item)
-
+		if ext == ".gdb" {
+			Layers, _ := Gogeo.GDBToGeoJSON(VectorPath)
 			for _, layer := range Layers {
 				for index, feature := range layer.Layer.Features {
-
 					tbid := uuid.New().String()
 					var name string
 					if _, exists := feature.Properties["name"]; exists {
@@ -237,20 +469,13 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 					DB.Create(&result)
 				}
 			}
-
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
 		}
-
-		//
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
-	//判断是否存在dat文件
-	datfiles := Transformer.FindFiles(dirpath, "dat")
-	if len(datfiles) != 0 {
-		for _, item := range datfiles {
-			data, isTransform := Transformer.DatToGeojson(item)
+		if ext == ".dat" {
+			data, isTransform := Transformer.DatToGeojson(VectorPath)
 			if isTransform != "4326" {
 				data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
 			}
@@ -272,17 +497,13 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 				DB.Create(&result_att)
 				DB.Create(&result)
 			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
 		}
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
-	}
-	//判断是否存在TXT文件
-	txtfiles := Transformer.FindFiles(dirpath, "txt")
-	if len(txtfiles) != 0 {
-		for _, item := range txtfiles {
-			data, isTransform := Transformer.TxtToGeojson(item)
+		if ext == ".txt" {
+			data, isTransform := Transformer.TxtToGeojson(VectorPath)
 			if isTransform != "4326" {
 				data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
 			}
@@ -304,14 +525,13 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 				DB.Create(&result_att)
 				DB.Create(&result)
 			}
+			header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
+			DB.Create(&header)
+			c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
+			return
 		}
-		header := models.TempLayHeader{Layername: Layername, MAC: MAC, Date: currentTime, BSM: taskid}
-		DB.Create(&header)
-		c.JSON(http.StatusOK, map[string]string{"bsm": taskid})
-		return
 	}
-	c.String(http.StatusOK, "err")
-
+	c.JSON(http.StatusBadRequest, gin.H{"error": "请上传文件"})
 }
 
 // 临时数据获取
@@ -511,6 +731,7 @@ func (uc *UserController) ShowTempLayerHeader(c *gin.Context) {
 // 举证照片上传
 func (uc *UserController) PicUpload(c *gin.Context) {
 	TBID := c.PostForm("TBID")
+
 	x := c.PostForm("X")
 	y := c.PostForm("Y")
 	angel := c.PostForm("Angel")
