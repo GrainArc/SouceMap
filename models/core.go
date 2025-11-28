@@ -85,7 +85,8 @@ func InitDB() {
 
 	DB.AutoMigrate(&ZDTPic{})
 	DB.AutoMigrate(&GeoRecord{})
-
+	DB.AutoMigrate(&Report{})
+	
 	user := LoginUser{}
 	user.Token = "0"
 	user.Name = "本地"
