@@ -16,7 +16,7 @@ var Tiles3d string
 var Dbname string
 var Download string
 var Loader string
-var UpdateIP string
+
 var DeviceName string
 var MainConfig Config
 
