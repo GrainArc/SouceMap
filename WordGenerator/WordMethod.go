@@ -60,6 +60,7 @@ func AddText(doc *document.Document, text string, iscenter bool) {
 
 	run.AddText(text)
 }
+
 func AddTextBlod(doc *document.Document, text string, iscenter bool) {
 	para := doc.AddParagraph()
 	if iscenter {

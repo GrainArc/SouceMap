@@ -1036,13 +1036,6 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 
 	var GeoRecords []models.GeoRecord
 	DB.Where("table_name = ?", TableName).Find(&GeoRecords)
-	if len(GeoRecords) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "没有修改记录",
-		})
-		return
-	}
 
 	// 判断源头文件是gdb还是shp
 	Soucepath := sourceConfig.SourcePath
@@ -1069,91 +1062,94 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 	var errors []string
 
 	// 处理每条记录
-	for _, record := range GeoRecords {
-		// 1. 处理删除操作
-		if len(record.DelObjectIDs) > 0 {
-			var delIDs []int32
-			if err := json.Unmarshal(record.DelObjectIDs, &delIDs); err != nil {
-				errors = append(errors, fmt.Sprintf("解析DelObjectIDs失败: %v", err))
-				continue
+	if len(GeoRecords) >= 1 {
+		for _, record := range GeoRecords {
+			// 1. 处理删除操作
+			if len(record.DelObjectIDs) > 0 {
+				var delIDs []int32
+				if err := json.Unmarshal(record.DelObjectIDs, &delIDs); err != nil {
+					errors = append(errors, fmt.Sprintf("解析DelObjectIDs失败: %v", err))
+					continue
+				}
+
+				if len(delIDs) > 0 {
+					// 构建WHERE子句 - 使用源文件的关键字段
+					whereClause := buildWhereClause(sourceConfig.KeyAttribute, delIDs)
+
+					var deletedCount int
+					var err error
+
+					if isSHP {
+						// Shapefile删除
+						deletedCount, err = Gogeo.DeleteShapeFeaturesByFilter(Soucepath, whereClause)
+					} else if isGDB {
+						// GDB删除
+						deletedCount, err = Gogeo.DeleteFeaturesByFilter(Soucepath, SouceLayer, whereClause)
+					}
+
+					if err != nil {
+						errors = append(errors, fmt.Sprintf("删除要素失败: %v", err))
+						continue
+					}
+					totalDeleted += deletedCount
+				}
 			}
 
-			if len(delIDs) > 0 {
-				// 构建WHERE子句 - 使用源文件的关键字段
-				whereClause := buildWhereClause(sourceConfig.KeyAttribute, delIDs)
-
-				var deletedCount int
-				var err error
-
-				if isSHP {
-					// Shapefile删除
-					deletedCount, err = Gogeo.DeleteShapeFeaturesByFilter(Soucepath, whereClause)
-				} else if isGDB {
-					// GDB删除
-					deletedCount, err = Gogeo.DeleteFeaturesByFilter(Soucepath, SouceLayer, whereClause)
-				}
-
-				if err != nil {
-					errors = append(errors, fmt.Sprintf("删除要素失败: %v", err))
-					continue
-				}
-				totalDeleted += deletedCount
-			}
-		}
-
-		// 2. 处理新增/更新操作
-		if len(record.NewGeojson) > 0 {
-			var fc geojson.FeatureCollection
-			if err := json.Unmarshal(record.NewGeojson, &fc); err != nil {
-				errors = append(errors, fmt.Sprintf("解析NewGeojson失败: %v", err))
-				continue
-			}
-
-			if len(fc.Features) > 0 {
-				// **关键步骤: 将GeoJSON字段名映射回源文件字段名**
-				mappedFC, err := mapFieldsToSource(&fc, AttMap)
-				if err != nil {
-					errors = append(errors, fmt.Sprintf("字段映射失败: %v", err))
+			// 2. 处理新增/更新操作
+			if len(record.NewGeojson) > 0 {
+				var fc geojson.FeatureCollection
+				if err := json.Unmarshal(record.NewGeojson, &fc); err != nil {
+					errors = append(errors, fmt.Sprintf("解析NewGeojson失败: %v", err))
 					continue
 				}
 
-				// 转换GeoJSON为GDALLayer
-				gdalLayer, err := Gogeo.ConvertGeoJSONToGDALLayer(mappedFC, SouceLayer)
-				if err != nil {
-					errors = append(errors, fmt.Sprintf("转换GeoJSON失败: %v", err))
-					continue
-				}
+				if len(fc.Features) > 0 {
+					// **关键步骤: 将GeoJSON字段名映射回源文件字段名**
+					mappedFC, err := mapFieldsToSource(&fc, AttMap)
+					if err != nil {
+						errors = append(errors, fmt.Sprintf("字段映射失败: %v", err))
+						continue
+					}
 
-				// 插入选项配置
-				options := &Gogeo.InsertOptions{
-					StrictMode:          false, // 非严格模式,允许部分失败
-					SyncInterval:        100,   // 每100条同步一次
-					SkipInvalidGeometry: true,  // 跳过无效几何
-					CreateMissingFields: false, // 不创建缺失字段(使用现有字段)
-				}
+					// 转换GeoJSON为GDALLayer
+					gdalLayer, err := Gogeo.ConvertGeoJSONToGDALLayer(mappedFC, SouceLayer)
+					if err != nil {
+						errors = append(errors, fmt.Sprintf("转换GeoJSON失败: %v", err))
+						continue
+					}
 
-				var insertErr error
-				if isSHP {
-					// 插入到Shapefile
-					insertErr = Gogeo.InsertLayerToShapefile(gdalLayer, Soucepath, options)
-				} else if isGDB {
-					// 插入到GDB
-					insertErr = Gogeo.InsertLayerToGDB(gdalLayer, Soucepath, SouceLayer, options)
-				}
+					// 插入选项配置
+					options := &Gogeo.InsertOptions{
+						StrictMode:          false, // 非严格模式,允许部分失败
+						SyncInterval:        100,   // 每100条同步一次
+						SkipInvalidGeometry: true,  // 跳过无效几何
+						CreateMissingFields: false, // 不创建缺失字段(使用现有字段)
+					}
 
-				if insertErr != nil {
-					errors = append(errors, fmt.Sprintf("插入要素失败: %v", insertErr))
-					continue
-				}
-				totalInserted += len(fc.Features)
+					var insertErr error
+					if isSHP {
+						// 插入到Shapefile
+						insertErr = Gogeo.InsertLayerToShapefile(gdalLayer, Soucepath, options)
+					} else if isGDB {
+						// 插入到GDB
+						insertErr = Gogeo.InsertLayerToGDB(gdalLayer, Soucepath, SouceLayer, options)
+					}
 
-				// 清理资源
-				if gdalLayer != nil {
-					gdalLayer.Close() // 假设有Close方法
+					if insertErr != nil {
+						errors = append(errors, fmt.Sprintf("插入要素失败: %v", insertErr))
+						continue
+					}
+					totalInserted += len(fc.Features)
+
+					// 清理资源
+					if gdalLayer != nil {
+						gdalLayer.Close() // 假设有Close方法
+					}
 				}
 			}
 		}
 	}
+
 	//同步字段操作
 	var FieldRecord []models.FieldRecord
 	DB.Where("table_name = ?", TableName).Find(&FieldRecord)
@@ -1166,73 +1162,76 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 		Schema:   "public",
 		Table:    TableName,
 	}
-	if isGDB {
-		for _, record := range FieldRecord {
-			if record.Type == "value" {
-				options := &Gogeo.SyncFieldOptions{
-					SourceField:      record.OldFieldName,                   // PostGIS中的字段名
-					TargetField:      mapField(record.OldFieldName, AttMap), // GDB中的字段名（可选，默认同名）
-					SourceIDField:    "objectid",                            // PostGIS的ID字段（小写）
-					TargetIDField:    "FID",
-					BatchSize:        1000,
-					UseTransaction:   true,
-					UpdateNullValues: false,
+	if len(FieldRecord) >= 1 {
+		if isGDB {
+			for _, record := range FieldRecord {
+				if record.Type == "value" {
+					options := &Gogeo.SyncFieldOptions{
+						SourceField:      record.OldFieldName,                   // PostGIS中的字段名
+						TargetField:      mapField(record.OldFieldName, AttMap), // GDB中的字段名（可选，默认同名）
+						SourceIDField:    "fid",                                 // PostGIS的ID字段（小写）
+						TargetIDField:    "FID",
+						BatchSize:        1000,
+						UseTransaction:   true,
+						UpdateNullValues: false,
+					}
+					_, err := Gogeo.SyncFieldFromPostGIS(
+						postGISConfig,
+						sourceConfig.SourcePath,
+						SouceLayer,
+						options,
+					)
+					if err != nil {
+						fmt.Printf("同步失败: %v\n", err)
+					}
 				}
-				_, err := Gogeo.SyncFieldFromPostGIS(
-					postGISConfig,
-					sourceConfig.SourcePath,
-					SouceLayer,
-					options,
-				)
-				if err != nil {
-					fmt.Printf("同步失败: %v\n", err)
+				if record.Type == "add" {
+					gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
+					fieldDef := Gogeo.FieldDefinition{
+						Name:      record.NewFieldName,
+						Type:      gdbFieldType,
+						Width:     width,
+						Precision: precision,
+						Nullable:  true,
+						Default:   nil,
+					}
+					err := Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
+					if err != nil {
+						log.Fatal(err)
+					}
 				}
-			}
-			if record.Type == "add" {
-				gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
-				fieldDef := Gogeo.FieldDefinition{
-					Name:      record.NewFieldName,
-					Type:      gdbFieldType,
-					Width:     width,
-					Precision: precision,
-					Nullable:  true,
-					Default:   nil,
+				if record.Type == "modify" {
+					// 1. 删除旧字段
+					oldFieldName := mapField(record.OldFieldName, AttMap)
+					err := Gogeo.DeleteField(Soucepath, SouceLayer, oldFieldName)
+					if err != nil {
+						errors = append(errors, fmt.Sprintf("删除旧字段 %s 失败: %v", oldFieldName, err))
+						continue
+					}
+
+					// 2. 创建新字段
+					gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
+
+					fieldDef := Gogeo.FieldDefinition{
+						Name:      record.NewFieldName,
+						Type:      gdbFieldType,
+						Width:     width,
+						Precision: precision,
+						Nullable:  true,
+						Default:   nil,
+					}
+
+					err = Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
+					if err != nil {
+						errors = append(errors, fmt.Sprintf("创建新字段 %s 失败: %v", record.NewFieldName, err))
+					} else {
+						fmt.Printf("成功修改字段: %s -> %s\n", oldFieldName, record.NewFieldName)
+					}
 				}
-				err := Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
-				if err != nil {
-					log.Fatal(err)
-				}
-			}
-			if record.Type == "modify" {
-				// 1. 删除旧字段
-				oldFieldName := mapField(record.OldFieldName, AttMap)
-				err := Gogeo.DeleteField(Soucepath, SouceLayer, oldFieldName)
-				if err != nil {
-					errors = append(errors, fmt.Sprintf("删除旧字段 %s 失败: %v", oldFieldName, err))
-					continue
+				if record.Type == "delete" {
+					Gogeo.DeleteField(Soucepath, SouceLayer, mapField(record.OldFieldName, AttMap))
 				}
 
-				// 2. 创建新字段
-				gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
-
-				fieldDef := Gogeo.FieldDefinition{
-					Name:      record.NewFieldName,
-					Type:      gdbFieldType,
-					Width:     width,
-					Precision: precision,
-					Nullable:  true,
-					Default:   nil,
-				}
-
-				err = Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
-				if err != nil {
-					errors = append(errors, fmt.Sprintf("创建新字段 %s 失败: %v", record.NewFieldName, err))
-				} else {
-					fmt.Printf("成功修改字段: %s -> %s\n", oldFieldName, record.NewFieldName)
-				}
-			}
-			if record.Type == "delete" {
-				Gogeo.DeleteField(Soucepath, SouceLayer, mapField(record.OldFieldName, AttMap))
 			}
 
 		}

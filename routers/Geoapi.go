@@ -121,6 +121,16 @@ func GeoRouters(r *gin.Engine) {
 		fields.POST("/LayerStatistics", UserController.LayerStatistics)
 
 	}
+	report := r.Group("/report")
+	{
+		report.POST("/SaveReportConfig", UserController.SaveReportConfig)     // 新增报告
+		report.POST("/UpdateReportConfig", UserController.UpdateReportConfig) // 更新报告
+		report.POST("/GenerateReport", UserController.GenerateReport)         // 制作报告
+		report.GET("/GetReportConfig", UserController.GetReportConfig)        // 获取报告配置
+		report.POST("/ListReportConfigs", UserController.ListReportConfigs)   // 查询报告类型
+		report.GET("/DeleteReportConfig", UserController.DeleteReportConfig)
+
+	}
 	mxd := r.Group("/mxd")
 	{
 		mxd.POST("/AddUpdateLayerMXD", UserController.AddUpdateLayerMXD)
