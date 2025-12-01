@@ -322,10 +322,18 @@ func queryTable(db *gorm.DB, data searchData) (*PaginatedResult, error) {
 	var results []map[string]interface{}
 	var total int64
 
-	query := db.Table(data.TableName)
+	// 创建基础查询
+	baseQuery := db.Table(data.TableName)
 
 	// 处理查询条件
-	query = buildQueryConditions(query, data.Rule, data.TableName)
+	baseQuery = buildQueryConditions(baseQuery, data.Rule, data.TableName)
+
+	// 获取总数 - 使用 Count 前需要先克隆查询
+	countQuery := baseQuery.Session(&gorm.Session{})
+	if err := countQuery.Count(&total).Error; err != nil {
+		fmt.Println("获取总数出错:", err.Error())
+		return nil, err
+	}
 
 	// 添加排序条件
 	if data.SortAttribute != "" {
@@ -334,23 +342,17 @@ func queryTable(db *gorm.DB, data searchData) (*PaginatedResult, error) {
 			sortType = "ASC"
 		}
 		orderClause := fmt.Sprintf("%s %s", data.SortAttribute, sortType)
-		query = query.Order(orderClause)
-	}
-
-	// 获取总数
-	if err := query.Count(&total).Error; err != nil {
-		fmt.Println("获取总数出错:", err.Error())
-		return nil, err
+		baseQuery = baseQuery.Order(orderClause)
 	}
 
 	// 检查是否需要分页
 	if data.Page > 0 && data.PageSize > 0 {
 		offset := (data.Page - 1) * data.PageSize
-		query = query.Offset(offset).Limit(data.PageSize)
+		baseQuery = baseQuery.Offset(offset).Limit(data.PageSize)
 	}
 
 	// 执行查询
-	if err := query.Find(&results).Error; err != nil {
+	if err := baseQuery.Find(&results).Error; err != nil {
 		fmt.Println("查询数据出错:", err.Error())
 		return nil, err
 	}
@@ -394,35 +396,36 @@ func buildComplexConditions(query *gorm.DB, conditions []interface{}, tableName 
 		return query
 	}
 
-	// 使用子查询来正确处理 AND/OR 逻辑
-	return query.Where(func(subQuery *gorm.DB) *gorm.DB {
-		for i, condItem := range conditions {
-			condMap, ok := condItem.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			field, _ := condMap["field"].(string)
-			operator, _ := condMap["operator"].(string)
-			value := condMap["value"]
-			logic, _ := condMap["logic"].(string)
-
-			if field == "" || operator == "" {
-				continue
-			}
-
-			// 构建单个条件
-			condition := buildSingleCondition(field, operator, value)
-
-			// 第一个条件或使用 AND
-			if i == 0 || strings.ToUpper(logic) == "AND" {
-				subQuery = subQuery.Where(condition.sql, condition.args...)
-			} else if strings.ToUpper(logic) == "OR" {
-				subQuery = subQuery.Or(condition.sql, condition.args...)
-			}
+	for i, condItem := range conditions {
+		condMap, ok := condItem.(map[string]interface{})
+		if !ok {
+			continue
 		}
-		return subQuery
-	})
+
+		field, _ := condMap["field"].(string)
+		operator, _ := condMap["operator"].(string)
+		value := condMap["value"]
+		logic, _ := condMap["logic"].(string)
+
+		if field == "" || operator == "" {
+			continue
+		}
+
+		// 构建单个条件
+		condition := buildSingleCondition(field, operator, value)
+
+		// 第一个条件使用 Where，后续根据 logic 决定
+		if i == 0 {
+			query = query.Where(condition.sql, condition.args...)
+		} else if strings.ToUpper(logic) == "OR" {
+			query = query.Or(condition.sql, condition.args...)
+		} else {
+			// 默认使用 AND
+			query = query.Where(condition.sql, condition.args...)
+		}
+	}
+
+	return query
 }
 
 // ConditionResult 条件构建结果
@@ -519,7 +522,10 @@ func (uc *UserController) SearchGeoFromSchema(c *gin.Context) {
 	var jsonData searchData
 	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
 	DB := models.DB
-	result, _ := queryTable(DB, jsonData)
+	result, err := queryTable(DB, jsonData)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
 	data := methods.MakeGeoJSON2(result.Data)
 	type outdata struct {
 		Data       interface{} `json:"data"`
@@ -528,6 +534,7 @@ func (uc *UserController) SearchGeoFromSchema(c *gin.Context) {
 		PageSize   int         `json:"pageSize"`
 		TotalPages int         `json:"totalPages"`
 		TableName  string      `json:"TableName"`
+		Code       int         `json:"code"`
 	}
 	response := outdata{
 		Data:       data,              // 设置地理数据
@@ -536,6 +543,7 @@ func (uc *UserController) SearchGeoFromSchema(c *gin.Context) {
 		TotalPages: result.TotalPages, // 设置总页数
 		PageSize:   result.PageSize,   // 设置每页大小
 		TableName:  jsonData.TableName,
+		Code:       200,
 	}
 	c.JSON(http.StatusOK, response)
 }
