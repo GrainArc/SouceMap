@@ -12,6 +12,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/paulmach/orb/geojson"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 	"io"
 	"log"
 	"net/http"
@@ -592,4 +594,101 @@ func (uc *UserController) DeleteReportConfig(c *gin.Context) {
 		"code":    200,
 		"message": "删除成功",
 	})
+}
+
+// 同步报告配置到目标数据库
+func SyncLayerReportToDB(id string, sourceDB *gorm.DB, targetDB *gorm.DB) bool {
+	// 1. 从源数据库查询 LayerHeader
+	var ReportHeader models.Report
+	targetDB.NamingStrategy = schema.NamingStrategy{
+		SingularTable: true,
+	}
+	if err := sourceDB.Where("id = ?", id).First(&ReportHeader).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			log.Printf("未找到 MXDUid=%s 的 Report 记录", id)
+			return false
+		}
+		log.Printf("查询 LayerHeader 失败: %v", err)
+		return false
+	}
+
+	// 2. 从源数据库查询所有相关的 LayerMXD
+	var layerMXDs models.Report
+	if err := sourceDB.Where("id = ?", id).Find(&layerMXDs).Error; err != nil {
+		log.Printf("查询 Report 失败: %v", err)
+		return false
+	}
+
+	// 3. 开启事务进行同步
+	tx := targetDB.Begin()
+	if tx.Error != nil {
+		log.Printf("开启事务失败: %v", tx.Error)
+		return false
+	}
+
+	// 4. 删除目标数据库中已存在的 LayerHeader
+	if err := tx.Where("id = ?", id).Delete(&models.Report{}).Error; err != nil {
+		tx.Rollback()
+		log.Printf("删除目标数据库 Report 失败: %v", err)
+		return false
+	}
+
+	// 5. 删除目标数据库中已存在的 LayerMXD
+	if err := tx.Where("id = ?", id).Delete(&models.Report{}).Error; err != nil {
+		tx.Rollback()
+		log.Printf("删除目标数据库 LayerMXD 失败: %v", err)
+		return false
+	}
+
+	// 6. 插入新的 LayerHeader
+	newHeader := models.Report{
+		ReportName: ReportHeader.ReportName,
+		Layers:     ReportHeader.Layers,
+		Content:    ReportHeader.Content,
+	}
+	if err := tx.Create(&newHeader).Error; err != nil {
+		tx.Rollback()
+		log.Printf("创建 LayerHeader 失败: %v", err)
+		return false
+	}
+
+	// 8. 提交事务
+	if err := tx.Commit().Error; err != nil {
+		log.Printf("提交事务失败: %v", err)
+		return false
+	}
+
+	return true
+}
+
+// 同步工程数据到其他数据库
+func (uc *UserController) SyncReport(c *gin.Context) {
+	IP := c.Query("IP")
+	ID := c.Query("ID")
+	DB := models.DB
+
+	// 连接目标数据库
+	deviceDB, err := ConnectToDeviceDB(IP)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "连接目标数据库失败: " + err.Error(),
+		})
+		return
+	}
+
+	// 执行同步
+	success := SyncLayerReportToDB(ID, DB, deviceDB)
+
+	if success {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    200,
+			"message": "同步成功",
+		})
+	} else {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "同步失败",
+		})
+	}
 }

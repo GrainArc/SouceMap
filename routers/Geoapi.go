@@ -129,6 +129,7 @@ func GeoRouters(r *gin.Engine) {
 		report.GET("/GetReportConfig", UserController.GetReportConfig)        // 获取报告配置
 		report.POST("/ListReportConfigs", UserController.ListReportConfigs)   // 查询报告类型
 		report.GET("/DeleteReportConfig", UserController.DeleteReportConfig)
+		report.GET("/SyncReport", UserController.SyncReport)
 
 	}
 	mxd := r.Group("/mxd")

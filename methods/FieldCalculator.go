@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/GrainArc/SouceMap/models"
 	"gorm.io/gorm"
+	"strconv"
 	"strings"
 )
 
@@ -147,6 +148,7 @@ func (s *FieldCalculatorService) buildCalculateSQL(req models.FieldCalculatorReq
 		return "", err
 	}
 
+	// 包装整个计算表达式，确保结果也是数字类型
 	sql := fmt.Sprintf(`UPDATE "%s" SET "%s" = %s`, req.TableName, req.TargetField, calcExpr)
 
 	if req.Condition != "" {
@@ -157,18 +159,21 @@ func (s *FieldCalculatorService) buildCalculateSQL(req models.FieldCalculatorReq
 }
 
 // buildExpression 递归构建计算表达式
+// buildExpression 递归构建计算表达式
 func (s *FieldCalculatorService) buildExpression(tableName string, expr *models.CalculateExpression) (string, error) {
 	switch expr.Type {
 	case "value":
-		// 直接值
-		return s.formatValue(expr.Value), nil
+		// 直接值 - 确保是数字类型
+		return s.formatNumericValue(expr.Value)
 
 	case "field":
-		// 字段引用
+		// 字段引用 - 转换为数字类型
 		if err := s.validateField(tableName, expr.Field); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf(`"%s"`, expr.Field), nil
+		// 使用 CAST 或 :: 语法将字段转换为 NUMERIC 类型
+		// 使用 NULLIF 处理空字符串，避免转换错误
+		return s.buildFieldToNumeric(expr.Field), nil
 
 	case "expression":
 		// 复合表达式
@@ -194,6 +199,56 @@ func (s *FieldCalculatorService) buildExpression(tableName string, expr *models.
 
 	default:
 		return "", fmt.Errorf("不支持的表达式类型: %s", expr.Type)
+	}
+}
+
+// buildFieldToNumeric 将字段转换为数字类型的SQL表达式
+func (s *FieldCalculatorService) buildFieldToNumeric(fieldName string) string {
+	// 使用 CASE 语句进行安全转换
+	// 1. 先 TRIM 去除空格
+	// 2. 使用 NULLIF 将空字符串转为 NULL
+	// 3. 使用正则表达式验证是否为有效数字格式
+	// 4. 转换为 NUMERIC 类型
+	return fmt.Sprintf(`
+		CASE 
+			WHEN TRIM(COALESCE("%s"::text, '')) = '' THEN 0
+			WHEN TRIM("%s"::text) ~ '^-?[0-9]+\.?[0-9]*$' THEN TRIM("%s"::text)::numeric
+			ELSE (
+				SELECT CASE 
+					WHEN TRIM("%s"::text) ~ '^-?[0-9]+\.?[0-9]*$' THEN NULL
+					ELSE NULL / 0  -- 这会触发除零错误，提示转换失败
+				END
+			)
+		END`,
+		fieldName, fieldName, fieldName, fieldName)
+}
+
+// buildFieldToNumericSimple 简化版本 - 直接转换,失败则报错
+func (s *FieldCalculatorService) buildFieldToNumericSimple(fieldName string) string {
+	// 更简洁的版本：直接尝试转换,PostgreSQL会在转换失败时抛出错误
+	return fmt.Sprintf(`
+		(CASE 
+			WHEN TRIM(COALESCE("%s"::text, '')) = '' THEN 0
+			ELSE CAST(TRIM("%s"::text) AS numeric)
+		END)`,
+		fieldName, fieldName)
+}
+
+// formatNumericValue 格式化数字值
+func (s *FieldCalculatorService) formatNumericValue(value interface{}) (string, error) {
+	switch v := value.(type) {
+	case int, int32, int64, float32, float64:
+		return fmt.Sprintf("%v", v), nil
+	case string:
+		// 验证字符串是否为有效数字
+		if _, err := strconv.ParseFloat(v, 64); err != nil {
+			return "", fmt.Errorf("值 '%s' 不是有效的数字", v)
+		}
+		return v, nil
+	case nil:
+		return "0", nil // 或者返回 "NULL"，根据业务需求
+	default:
+		return "", fmt.Errorf("不支持的数值类型: %T", v)
 	}
 }
 
