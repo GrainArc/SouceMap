@@ -14,6 +14,8 @@ import (
 	"gorm.io/gorm"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -546,6 +548,45 @@ func (uc *UserController) SearchGeoFromSchema(c *gin.Context) {
 		Code:       200,
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+func DownloadSearchGeo(SD searchData) string {
+	DB := models.DB
+	var Schema models.MySchema
+	DB.Where("en = ?", SD.TableName).First(&Schema)
+	taskid := Schema.EN
+	existingZipPath := "OutFile/" + taskid + "/" + SD.TableName + ".zip"
+	if _, err := os.Stat(existingZipPath); err == nil {
+		// 文件存在，直接返回路径
+		return existingZipPath
+	}
+
+	result, _ := queryTable(DB, SD)
+
+	outdir := "OutFile/" + taskid
+	os.MkdirAll(outdir, os.ModePerm)
+	outshp := "OutFile/" + taskid + "/" + Schema.CN + ".shp"
+
+	// 直接从查询结果转换为Shapefile
+	Gogeo.ConvertPostGISToShapefileWithStructure(DB, result.Data, outshp, SD.TableName)
+
+	methods.ZipFolder(outdir, SD.TableName)
+	copyFile("./OutFile/"+taskid+"/"+SD.TableName+".zip", config.MainConfig.Download)
+
+	return "OutFile/" + taskid + "/" + SD.TableName + ".zip"
+}
+
+func (uc *UserController) DownloadSearchGeoFromSchema(c *gin.Context) {
+	var jsonData searchData
+	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
+	path := DownloadSearchGeo(jsonData)
+	host := c.Request.Host
+	url := &url.URL{
+		Scheme: "http",
+		Host:   host,
+		Path:   "/geo/" + path,
+	}
+	c.String(http.StatusOK, url.String())
 }
 
 // 获取修改记录

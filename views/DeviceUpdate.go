@@ -613,10 +613,10 @@ func DownLayer(tablename string) string {
 	outshp := "OutFile/" + taskid + "/" + Schema.CN + ".shp"
 
 	// 直接从查询结果转换为Shapefile
-
 	Gogeo.ConvertPostGISToShapefileWithStructure(DB, result.Data, outshp, tablename)
 
 	methods.ZipFolder(outdir, tablename)
+	copyFile("./OutFile/"+taskid+"/"+tablename+".zip", config.MainConfig.Download)
 
 	return "OutFile/" + taskid + "/" + tablename + ".zip"
 }
