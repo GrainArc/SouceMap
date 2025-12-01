@@ -295,12 +295,19 @@ func (uc *UserController) ChangeGeoToSchema(c *gin.Context) {
 // 图层要素查询
 
 type searchData struct {
-	Rule          map[string]interface{} `json:"Rule"`
-	TableName     string                 `json:"TableName"`
-	Page          int                    `json:"page"`
-	PageSize      int                    `json:"pagesize"`
-	SortAttribute string                 `json:"SortAttribute"` // 排序字段
-	SortType      string                 `json:"SortType"`      // 排序方式：DESC/ASC
+	Rule          interface{} `json:"Rule"` // 改为 interface{} 以支持多种格式
+	TableName     string      `json:"TableName"`
+	Page          int         `json:"page"`
+	PageSize      int         `json:"pagesize"`
+	SortAttribute string      `json:"SortAttribute"` // 排序字段
+	SortType      string      `json:"SortType"`      // 排序方式：DESC/ASC
+}
+
+type SearchCondition struct {
+	Logic    string      `json:"logic"`    // AND 或 OR
+	Field    string      `json:"field"`    // 字段名
+	Operator string      `json:"operator"` // 操作符：=, !=, >, <, >=, <=, LIKE, NOT LIKE, IS NULL, IS NOT NULL, IN, NOT IN
+	Value    interface{} `json:"value"`    // 值
 }
 
 type PaginatedResult struct {
@@ -317,32 +324,15 @@ func queryTable(db *gorm.DB, data searchData) (*PaginatedResult, error) {
 
 	query := db.Table(data.TableName)
 
-	// 动态构建查询条件
-	for key, value := range data.Rule {
-		searchValue := fmt.Sprintf("%%%v%%", value)
-
-		if key == "all_data_search" {
-			// 获取表中所有字段
-			atts := GetAtt(data.TableName, "")
-			for _, field := range atts {
-				condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", field)
-				query = query.Or(condition, searchValue)
-			}
-		} else {
-			condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", key)
-			query = query.Where(condition, searchValue)
-		}
-	}
+	// 处理查询条件
+	query = buildQueryConditions(query, data.Rule, data.TableName)
 
 	// 添加排序条件
 	if data.SortAttribute != "" {
 		sortType := strings.ToUpper(data.SortType)
-		// 验证排序类型，默认为ASC
 		if sortType != "DESC" && sortType != "ASC" {
 			sortType = "ASC"
 		}
-
-		// 构建排序语句
 		orderClause := fmt.Sprintf("%s %s", data.SortAttribute, sortType)
 		query = query.Order(orderClause)
 	}
@@ -378,6 +368,151 @@ func queryTable(db *gorm.DB, data searchData) (*PaginatedResult, error) {
 		PageSize:   data.PageSize,
 		TotalPages: totalPages,
 	}, nil
+}
+
+// buildQueryConditions 构建查询条件
+func buildQueryConditions(query *gorm.DB, rule interface{}, tableName string) *gorm.DB {
+	if rule == nil {
+		return query
+	}
+
+	switch v := rule.(type) {
+	case []interface{}:
+		// 新格式：复杂条件数组
+		return buildComplexConditions(query, v, tableName)
+	case map[string]interface{}:
+		// 旧格式：简单键值对
+		return buildSimpleConditions(query, v, tableName)
+	default:
+		return query
+	}
+}
+
+// buildComplexConditions 构建复杂查询条件（支持 AND/OR 和多种操作符）
+func buildComplexConditions(query *gorm.DB, conditions []interface{}, tableName string) *gorm.DB {
+	if len(conditions) == 0 {
+		return query
+	}
+
+	// 使用子查询来正确处理 AND/OR 逻辑
+	return query.Where(func(subQuery *gorm.DB) *gorm.DB {
+		for i, condItem := range conditions {
+			condMap, ok := condItem.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			field, _ := condMap["field"].(string)
+			operator, _ := condMap["operator"].(string)
+			value := condMap["value"]
+			logic, _ := condMap["logic"].(string)
+
+			if field == "" || operator == "" {
+				continue
+			}
+
+			// 构建单个条件
+			condition := buildSingleCondition(field, operator, value)
+
+			// 第一个条件或使用 AND
+			if i == 0 || strings.ToUpper(logic) == "AND" {
+				subQuery = subQuery.Where(condition.sql, condition.args...)
+			} else if strings.ToUpper(logic) == "OR" {
+				subQuery = subQuery.Or(condition.sql, condition.args...)
+			}
+		}
+		return subQuery
+	})
+}
+
+// ConditionResult 条件构建结果
+type ConditionResult struct {
+	sql  string
+	args []interface{}
+}
+
+// buildSingleCondition 构建单个查询条件
+func buildSingleCondition(field, operator string, value interface{}) ConditionResult {
+	operator = strings.ToUpper(operator)
+
+	switch operator {
+	case "=", "!=", ">", "<", ">=", "<=":
+		// 基本比较操作符
+		sql := fmt.Sprintf("CAST(%s AS TEXT) %s ?", field, operator)
+		return ConditionResult{sql: sql, args: []interface{}{value}}
+
+	case "LIKE":
+		// 模糊查询
+		sql := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", field)
+		return ConditionResult{sql: sql, args: []interface{}{value}}
+
+	case "NOT LIKE":
+		// 不包含
+		sql := fmt.Sprintf("CAST(%s AS TEXT) NOT ILIKE ?", field)
+		return ConditionResult{sql: sql, args: []interface{}{value}}
+
+	case "IS NULL":
+		// 为空
+		sql := fmt.Sprintf("%s IS NULL", field)
+		return ConditionResult{sql: sql, args: []interface{}{}}
+
+	case "IS NOT NULL":
+		// 不为空
+		sql := fmt.Sprintf("%s IS NOT NULL", field)
+		return ConditionResult{sql: sql, args: []interface{}{}}
+
+	case "IN":
+		// 在范围内
+		values, ok := value.([]interface{})
+		if !ok {
+			// 尝试转换字符串为数组
+			if strVal, ok := value.(string); ok {
+				values = []interface{}{strVal}
+			} else {
+				values = []interface{}{value}
+			}
+		}
+		sql := fmt.Sprintf("CAST(%s AS TEXT) IN (?)", field)
+		return ConditionResult{sql: sql, args: []interface{}{values}}
+
+	case "NOT IN":
+		// 不在范围内
+		values, ok := value.([]interface{})
+		if !ok {
+			if strVal, ok := value.(string); ok {
+				values = []interface{}{strVal}
+			} else {
+				values = []interface{}{value}
+			}
+		}
+		sql := fmt.Sprintf("CAST(%s AS TEXT) NOT IN (?)", field)
+		return ConditionResult{sql: sql, args: []interface{}{values}}
+
+	default:
+		// 默认使用等于
+		sql := fmt.Sprintf("CAST(%s AS TEXT) = ?", field)
+		return ConditionResult{sql: sql, args: []interface{}{value}}
+	}
+}
+
+// buildSimpleConditions 构建简单查询条件（兼容旧格式）
+func buildSimpleConditions(query *gorm.DB, rule map[string]interface{}, tableName string) *gorm.DB {
+	for key, value := range rule {
+		searchValue := fmt.Sprintf("%%%v%%", value)
+
+		if key == "all_data_search" {
+			// 获取表中所有字段
+			atts := GetAtt(tableName, "")
+			for _, field := range atts {
+				condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", field)
+				query = query.Or(condition, searchValue)
+			}
+		} else {
+			condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", key)
+			query = query.Where(condition, searchValue)
+		}
+	}
+	return query
 }
 
 func (uc *UserController) SearchGeoFromSchema(c *gin.Context) {
