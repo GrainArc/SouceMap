@@ -60,10 +60,12 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.Static("/OutFile", "./OutFile")
 		mapRouter.POST("/OutIntersect", UserController.OutIntersect)
 		mapRouter.GET("/OutLayer", UserController.OutLayer)
+
 		mapRouter.POST("/UpdateLayer", UserController.UpdateLayer)
 		mapRouter.POST("/AppendLayer", UserController.AppendLayer)
 		mapRouter.GET("/GetUpdateMSG", UserController.GetUpdateMSG)
 		mapRouter.GET("/DownloadOfflineLayer", UserController.DownloadOfflineLayer)
+		mapRouter.POST("/DownloadSearchGeoFromSchema", UserController.DownloadSearchGeoFromSchema)
 		mapRouter.GET("/RestoreOfflineLayer", UserController.RestoreOfflineLayer)
 		mapRouter.GET("/GetReatoreFile", UserController.GetReatoreFile)
 		mapRouter.GET("/GetLayerExtent", UserController.GetLayerExtent)
