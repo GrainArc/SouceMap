@@ -60,6 +60,8 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.Static("/OutFile", "./OutFile")
 		mapRouter.POST("/OutIntersect", UserController.OutIntersect)
 		mapRouter.GET("/OutLayer", UserController.OutLayer)
+		// 在路由注册文件中添加
+		mapRouter.GET("/GetDirectoryTree", UserController.GetDirectoryTree)
 
 		mapRouter.POST("/UpdateLayer", UserController.UpdateLayer)
 		mapRouter.POST("/AppendLayer", UserController.AppendLayer)

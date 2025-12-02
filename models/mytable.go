@@ -41,6 +41,13 @@ type MySchema struct {
 	Userunits   string         `gorm:"type:varchar(255)"`
 }
 
+// DirectoryNode 目录树节点
+type DirectoryNode struct {
+	Value    string           `json:"value"`
+	Label    string           `json:"label"`
+	Children []*DirectoryNode `json:"children,omitempty"`
+}
+
 // 配置表
 type LayerMXD struct {
 	ID      int64  `gorm:"primary_key;autoIncrement"`

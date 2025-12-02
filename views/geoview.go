@@ -1616,3 +1616,113 @@ func isValidTableName(tablename string) bool {
 	matched, _ := regexp.MatchString(`^[a-zA-Z_][a-zA-Z0-9_]{0,62}$`, tablename)
 	return matched
 }
+
+// GetDirectoryTree 获取目录树结构
+func (uc *UserController) GetDirectoryTree(c *gin.Context) {
+	DB := models.DB
+
+	// 查询所有不重复的 Main 字段
+	var mains []string
+	err := DB.Model(&models.MySchema{}).
+		Distinct("main").
+		Where("main IS NOT NULL AND main != ''").
+		Pluck("main", &mains).Error
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code": -1,
+			"msg":  "查询失败: " + err.Error(),
+			"data": nil,
+		})
+		return
+	}
+
+	// 构建目录树
+	tree := buildDirectoryTree(mains)
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "success",
+		"data": tree,
+	})
+}
+
+// buildDirectoryTree 将路径列表构建为树形结构
+func buildDirectoryTree(paths []string) []*models.DirectoryNode {
+	// 使用 map 来构建树，key 是完整路径
+	root := make(map[string]*models.DirectoryNode)
+
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+
+		parts := strings.Split(path, "/")
+		currentPath := ""
+
+		for i, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+
+			if currentPath == "" {
+				currentPath = part
+			} else {
+				currentPath = currentPath + "/" + part
+			}
+
+			// 检查当前路径节点是否已存在
+			if _, exists := root[currentPath]; !exists {
+				root[currentPath] = &models.DirectoryNode{
+					Value:    part,
+					Label:    part,
+					Children: []*models.DirectoryNode{},
+				}
+			}
+
+			// 如果不是第一级，需要将当前节点添加到父节点的 children 中
+			if i > 0 {
+				parentPath := strings.Join(parts[:i], "/")
+				if parent, exists := root[parentPath]; exists {
+					// 检查是否已经添加过
+					found := false
+					for _, child := range parent.Children {
+						if child.Value == part {
+							found = true
+							break
+						}
+					}
+					if !found {
+						parent.Children = append(parent.Children, root[currentPath])
+					}
+				}
+			}
+		}
+	}
+
+	// 提取根节点（第一级目录）
+	result := []*models.DirectoryNode{}
+	addedRoots := make(map[string]bool)
+
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		parts := strings.Split(path, "/")
+		rootPart := strings.TrimSpace(parts[0])
+		if rootPart != "" && !addedRoots[rootPart] {
+			if node, exists := root[rootPart]; exists {
+				result = append(result, node)
+				addedRoots[rootPart] = true
+			}
+		}
+	}
+
+	// 按字母顺序排序
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Label < result[j].Label
+	})
+
+	return result
+}

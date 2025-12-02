@@ -761,7 +761,6 @@ func (uc *UserController) UpdateLayer(c *gin.Context) {
 	}
 
 }
-
 func (uc *UserController) AppendLayer(c *gin.Context) {
 	tablename := c.PostForm("tablename")
 	file, err := c.FormFile("file")
