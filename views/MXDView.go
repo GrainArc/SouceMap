@@ -2,13 +2,12 @@ package views
 
 import "C"
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/GrainArc/SouceMap/ImgHandler"
+	"gorm.io/datatypes"
 
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
-	"gorm.io/datatypes"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
@@ -25,16 +24,11 @@ type AddLayerMXDRequest struct {
 }
 
 type LayerStyle struct {
-	EN            string     `json:"EN"`
-	Main          string     `json:"Main"`
-	CN            string     `json:"CN"`
-	LineWidth     string     `json:"LineWidth"`
-	LayerSortID   int64      `json:"LayerSortID"`
-	Opacity       string     `json:"Opacity"`
-	FillType      string     `json:"FillType"`
-	LineColor     string     `json:"LineColor"`
-	AnnotationAtt string     `json:"AnnotationAtt"`
-	ColorSet      *ColorData `json:"ColorSet"`
+	EN          string         `json:"EN"`
+	Main        string         `json:"Main"`
+	CN          string         `json:"CN"`
+	LayerSortID int64          `json:"LayerSortID"`
+	Style       datatypes.JSON `json:"Style"`
 }
 
 // 新增图层工程
@@ -93,30 +87,17 @@ func (uc *UserController) AddUpdateLayerMXD(c *gin.Context) {
 	}
 
 	// 批量创建 LayerMXD 记录
+
 	layerMXDs := make([]models.LayerMXD, 0, len(req.LayerStyles))
 	for _, layerStyle := range req.LayerStyles {
 		layerMXD := models.LayerMXD{
-			EN:            layerStyle.EN,
-			Main:          layerStyle.Main,
-			CN:            layerStyle.CN,
-			MXDName:       req.MXDName,
-			MXDUid:        req.MXDUid,
-			LineWidth:     layerStyle.LineWidth,
-			LayerSortID:   layerStyle.LayerSortID,
-			Opacity:       layerStyle.Opacity,
-			FillType:      layerStyle.FillType,
-			LineColor:     layerStyle.LineColor,
-			AnnotationAtt: layerStyle.AnnotationAtt,
-		}
-
-		// 处理 ColorSet
-		if layerStyle.ColorSet != nil {
-			jsonData, err := json.Marshal(layerStyle.ColorSet)
-			if err != nil {
-				// 处理错误
-				return
-			}
-			layerMXD.ColorSet = datatypes.JSON(jsonData)
+			EN:          layerStyle.EN,
+			Main:        layerStyle.Main,
+			CN:          layerStyle.CN,
+			MXDName:     req.MXDName,
+			MXDUid:      req.MXDUid,
+			Style:       layerStyle.Style,
+			LayerSortID: layerStyle.LayerSortID,
 		}
 
 		layerMXDs = append(layerMXDs, layerMXD)
@@ -419,12 +400,8 @@ func SyncLayerMXDToDB(MXDUid string, sourceDB *gorm.DB, targetDB *gorm.DB) bool 
 				CN:          mxd.CN,
 				MXDName:     mxd.MXDName,
 				MXDUid:      mxd.MXDUid,
-				LineWidth:   mxd.LineWidth,
 				LayerSortID: mxd.LayerSortID,
-				Opacity:     mxd.Opacity,
-				FillType:    mxd.FillType,
-				LineColor:   mxd.LineColor,
-				ColorSet:    mxd.ColorSet,
+				Style:       mxd.Style,
 			}
 		}
 
