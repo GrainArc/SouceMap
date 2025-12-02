@@ -286,7 +286,10 @@ func (uc *UserController) ChangeGeoToSchema(c *gin.Context) {
 		NewGeojson:   NewGeojson,
 		DelObjectIDs: delObjJSON,
 		BZ:           jsonData.BZ}
-	DB.Create(&result)
+	err := DB.Create(&result).Error
+	if err != nil {
+		log.Printf("Failed to create geo record: %v", err)
+	}
 	geom := geo.Features[0].Geometry
 	geom2 := jsonData.GeoJson.Features[0].Geometry
 	pgmvt.DelMVT(DB, jsonData.TableName, geom)

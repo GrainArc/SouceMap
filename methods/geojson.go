@@ -136,10 +136,15 @@ func UpdateGeojsonToTable(db *gorm.DB, jsonData geojson.FeatureCollection, table
 			TempAttr[strings.ToLower(key)] = value
 		}
 
-		TempAttr["geom"] = clause.Expr{SQL: "ST_GeomFromWKB(decode(?, 'hex'))", Vars: []interface{}{wkb_result}}
-		// 使用gorm插入数据
+		// 使用 ST_SetSRID 设置坐标系
+		TempAttr["geom"] = clause.Expr{
+			SQL:  "ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), ?)",
+			Vars: []interface{}{wkb_result, 4326},
+		}
+
+		// 使用gorm更新数据
 		if err := db.Table(tablename).Where("id = ?", id).Updates(TempAttr).Error; err != nil {
-			log.Printf("Failed to insert feature: %v, error: %v", t, err)
+			log.Printf("Failed to update feature: %v, error: %v", t, err)
 		}
 	}
 }
