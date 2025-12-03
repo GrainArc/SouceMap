@@ -204,7 +204,6 @@ func UpdateGeojsonToTable(db *gorm.DB, jsonData geojson.FeatureCollection, table
 			SQL:  "ST_SetSRID(ST_MakeValid(ST_GeomFromWKB(decode(?, 'hex'))), ?)",
 			Vars: []interface{}{wkb_result, 4326},
 		}
-
 		// 使用gorm更新数据
 		if err := db.Table(tablename).Where("id = ?", id).Updates(TempAttr).Error; err != nil {
 			log.Printf("Failed to update feature: %v, error: %v", t, err)

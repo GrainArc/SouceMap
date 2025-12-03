@@ -606,16 +606,6 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 从URL查询参数中获取用户名
 	username := c.Query("Username")
 
-	// 参数验证：检查用户名是否为空
-	if username == "" {
-		// 用户名为空时返回400错误
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,              // 状态码：请求参数错误
-			"message": "用户名不能为空", // 错误提示信息
-		})
-		return // 提前返回，不执行后续操作
-	}
-
 	// 获取数据库连接实例
 	DB := models.DB
 
@@ -678,15 +668,15 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		var featureCollection geojson.FeatureCollection
 		json.Unmarshal(aa.OldGeojson, &featureCollection)
 		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection)
+		json.Unmarshal(aa.NewGeojson, &featureCollection2)
 		methods.UpdateGeojsonToTable(DB, featureCollection, aa.TableName, aa.GeoID)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection2.Features[0].Geometry)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
+
 	case "要素分割":
 		var featureCollection geojson.FeatureCollection
 		json.Unmarshal(aa.OldGeojson, &featureCollection)
 		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection)
+		json.Unmarshal(aa.NewGeojson, &featureCollection2)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 		for _, feature := range featureCollection2.Features {
 			DB.Table(aa.TableName).Where("id = ?", feature.Properties["id"].(int32)).Delete(nil)
@@ -696,7 +686,7 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		var featureCollection geojson.FeatureCollection
 		json.Unmarshal(aa.OldGeojson, &featureCollection)
 		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection)
+		json.Unmarshal(aa.NewGeojson, &featureCollection2)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 		for _, feature := range featureCollection2.Features {
 			DB.Table(aa.TableName).Where("id = ?", feature.Properties["id"].(int32)).Delete(nil)
