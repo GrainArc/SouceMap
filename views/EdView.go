@@ -671,7 +671,7 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		json.Unmarshal(aa.NewGeojson, &featureCollection2)
 		methods.UpdateGeojsonToTable(DB, featureCollection, aa.TableName, aa.GeoID)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection2.Features[0].Geometry)
-
+		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 	case "要素分割":
 		var featureCollection geojson.FeatureCollection
 		json.Unmarshal(aa.OldGeojson, &featureCollection)
@@ -679,7 +679,19 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		json.Unmarshal(aa.NewGeojson, &featureCollection2)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 		for _, feature := range featureCollection2.Features {
-			DB.Table(aa.TableName).Where("id = ?", feature.Properties["id"].(int32)).Delete(nil)
+			var id int32
+			switch v := feature.Properties["id"].(type) {
+			case float64:
+				id = int32(v)
+			case int:
+				id = int32(v)
+			case int32:
+				id = v
+			default:
+				log.Printf("unexpected type for id: %T", v)
+				return
+			}
+			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
 		}
 		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
 	case "要素合并":
@@ -689,7 +701,19 @@ func (uc *UserController) BackUpRecord(c *gin.Context) {
 		json.Unmarshal(aa.NewGeojson, &featureCollection2)
 		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
 		for _, feature := range featureCollection2.Features {
-			DB.Table(aa.TableName).Where("id = ?", feature.Properties["id"].(int32)).Delete(nil)
+			var id int32
+			switch v := feature.Properties["id"].(type) {
+			case float64:
+				id = int32(v)
+			case int:
+				id = int32(v)
+			case int32:
+				id = v
+			default:
+				log.Printf("unexpected type for id: %T", v)
+				return
+			}
+			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
 		}
 		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
 	}
@@ -707,7 +731,6 @@ type SplitData struct {
 
 func (uc *UserController) SplitFeature(c *gin.Context) {
 	var jsonData SplitData
-	// 绑定JSON请求体到结构体,并检查绑定是否成功
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
@@ -754,6 +777,18 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
+	// ========== 新增：使用 advisory lock 防止并发冲突 ==========
+	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_id_lock'))`, LayerName)
+	if err := tx.Exec(lockSQL).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取锁失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
 	// 1. 先获取原要素的所有属性（除了id和geom）
 	var originalFeature map[string]interface{}
 	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
@@ -777,34 +812,48 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
-	// 2. 执行切割并插入新要素
-	// 获取所有附加列（排除id和geom）
+	// 2. 获取所有附加列（排除id和geom）
 	var additionalColumns []string
 	for key := range originalFeature {
 		if key != "id" && key != "geom" {
 			additionalColumns = append(additionalColumns, key)
 		}
 	}
-	// ========== 新增：查询 objectid 的最大值 ==========
-	var maxObjectID int32
-	getMaxSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxSQL).Scan(&maxObjectID).Error; err != nil {
 
+	// ========== 查询 id 和 objectid 的最大值 ==========
+	var maxID int32
+	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询最大ID失败: " + err.Error(),
+			"data":    "",
+		})
+		return
 	}
+
+	var maxObjectID int32
+	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
+		// objectid 可能不存在，忽略错误
+		maxObjectID = 0
+	}
+
 	// 构建 split_geom CTE 的选择列
 	splitSelectCols := `(ST_Dump(ST_Split(o.geom, ST_GeomFromGeoJSON('%s')))).geom AS geom`
 	for _, col := range additionalColumns {
 		splitSelectCols += fmt.Sprintf(`, o."%s"`, col)
 	}
 
-	// 构建 INSERT 的列名（不包括id，让数据库自动生成）
-	insertCols := "geom"
+	// 构建 INSERT 的列名（包括id）
+	insertCols := "id, geom"
 	for _, col := range additionalColumns {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
 
-	// 构建 SELECT 的列名（不包括id）
-	selectCols := "geom"
+	// 构建 SELECT 的列名（包括id的自增逻辑）
+	selectCols := fmt.Sprintf(`%d + ROW_NUMBER() OVER () AS id, geom`, maxID)
 	for _, col := range additionalColumns {
 		if col == "objectid" {
 			// 使用 ROW_NUMBER() 生成递增的 objectid
@@ -814,7 +863,6 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		}
 	}
 
-	// 方案1：如果id列有DEFAULT值（如SERIAL或使用nextval）
 	splitAndInsertSQL := fmt.Sprintf(`
 		WITH original AS (
 			SELECT * FROM "%s" WHERE id = %d
@@ -855,7 +903,7 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
-	//更新缓存库
+	// 更新缓存库
 	GetPdata := getData{
 		TableName: LayerName,
 		ID:        jsonData.ID,
@@ -895,19 +943,23 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		})
 		return
 	}
+
 	splitGeojson := GetGeos(getdata2)
 	delObjJSON := DelIDGen(geom)
 	OldGeojson, _ := json.Marshal(geom)
 	NewGeojson, _ := json.Marshal(splitGeojson)
-	RecordResult := models.GeoRecord{TableName: jsonData.LayerName,
+	RecordResult := models.GeoRecord{
+		TableName:    jsonData.LayerName,
 		GeoID:        jsonData.ID,
 		Type:         "要素分割",
 		Date:         time.Now().Format("2006-01-02 15:04:05"),
 		OldGeojson:   OldGeojson,
 		NewGeojson:   NewGeojson,
-		DelObjectIDs: delObjJSON}
+		DelObjectIDs: delObjJSON,
+	}
 
 	DB.Create(&RecordResult)
+
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
