@@ -601,6 +601,59 @@ func (uc *UserController) GetChangeRecord(c *gin.Context) {
 	c.JSON(http.StatusOK, aa)
 }
 
+// DelChangeRecord 删除指定用户的所有地理记录
+func (uc *UserController) DelChangeRecord(c *gin.Context) {
+	// 从URL查询参数中获取用户名
+	username := c.Query("Username")
+
+	// 参数验证：检查用户名是否为空
+	if username == "" {
+		// 用户名为空时返回400错误
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,              // 状态码：请求参数错误
+			"message": "用户名不能为空", // 错误提示信息
+		})
+		return // 提前返回，不执行后续操作
+	}
+
+	// 获取数据库连接实例
+	DB := models.DB
+
+	// 执行删除操作
+	// 使用 Model 指定表，Where 指定条件，Delete 执行删除
+	// result 包含操作结果信息
+	result := DB.Where("username = ?", username).Delete(&models.GeoRecord{})
+
+	// 检查数据库操作是否发生错误
+	if result.Error != nil {
+		// 数据库操作失败，返回500内部错误
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,                  // 状态码：服务器内部错误
+			"message": "删除记录失败",       // 错误提示信息
+			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
+		})
+		return // 提前返回
+	}
+
+	// 检查是否有记录被删除
+	if result.RowsAffected == 0 {
+		// 没有找到匹配的记录
+		c.JSON(http.StatusOK, gin.H{
+			"code":    200,                    // 状态码：请求成功
+			"message": "没有找到该用户的记录", // 提示信息
+			"count":   0,                      // 删除的记录数量
+		})
+		return // 提前返回
+	}
+
+	// 删除成功，返回成功响应
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,                 // 状态码：请求成功
+		"message": "清空记录成功",      // 成功提示信息
+		"count":   result.RowsAffected, // 返回实际删除的记录数量
+	})
+}
+
 // 还原图形
 func (uc *UserController) BackUpRecord(c *gin.Context) {
 	ID := c.Query("ID")

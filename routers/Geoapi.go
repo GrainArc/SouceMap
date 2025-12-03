@@ -18,6 +18,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.GET("/GetSchemaByUnits", UserController.GetSchemaByUnits)
 		mapRouter.POST("/AddUpdateColorSet", UserController.AddUpdateColorSet)
 		mapRouter.GET("/GetChangeRecord", UserController.GetChangeRecord)
+		mapRouter.GET("/DelChangeRecord", UserController.DelChangeRecord)
 		mapRouter.GET("/BackUpRecord", UserController.BackUpRecord)
 		mapRouter.GET("/GetAllDeviceName", UserController.GetAllDeviceName)
 		mapRouter.POST("/UpdateDevice", UserController.UpdateDevice)

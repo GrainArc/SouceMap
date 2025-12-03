@@ -127,18 +127,78 @@ func SavaGeojsonToTable(db *gorm.DB, jsonData geojson.FeatureCollection, tablena
 	wg.Wait()
 }
 
+// CloseRing 确保环是闭合的（首尾点相同）
+func CloseRing(ring orb.Ring) orb.Ring {
+	if len(ring) < 2 {
+		return ring
+	}
+	// 检查首尾点是否相同
+	if ring[0] != ring[len(ring)-1] {
+		// 添加首点到末尾以闭合环
+		ring = append(ring, ring[0])
+	}
+	return ring
+}
+
+// FixPolygon 修复多边形，确保所有环都是闭合的
+func FixPolygon(polygon orb.Polygon) orb.Polygon {
+	fixed := make(orb.Polygon, len(polygon))
+	for i, ring := range polygon {
+		fixed[i] = CloseRing(ring)
+	}
+	return fixed
+}
+
+// FixMultiPolygon 修复多多边形
+func FixMultiPolygon(mp orb.MultiPolygon) orb.MultiPolygon {
+	fixed := make(orb.MultiPolygon, len(mp))
+	for i, polygon := range mp {
+		fixed[i] = FixPolygon(polygon)
+	}
+	return fixed
+}
+
+// FixGeometry 修复几何图形，确保多边形环是闭合的
+func FixGeometry(geom orb.Geometry) orb.Geometry {
+	if geom == nil {
+		return nil
+	}
+
+	switch g := geom.(type) {
+	case orb.Polygon:
+		return FixPolygon(g)
+	case orb.MultiPolygon:
+		return FixMultiPolygon(g)
+	default:
+		// 其他类型（Point, LineString等）不需要修复
+		return geom
+	}
+}
+
+// FixFeature 修复Feature中的几何图形
+func FixFeature(f *geojson.Feature) *geojson.Feature {
+	if f == nil || f.Geometry == nil {
+		return f
+	}
+	f.Geometry = FixGeometry(f.Geometry)
+	return f
+}
+
 func UpdateGeojsonToTable(db *gorm.DB, jsonData geojson.FeatureCollection, tablename string, id int32) {
 
 	for _, t := range jsonData.Features {
-		wkb_result := GeoJsonToWKB(*t)
+		// 先修复几何图形
+		fixedFeature := FixFeature(t)
+
+		wkb_result := GeoJsonToWKB(*fixedFeature)
 		TempAttr := make(map[string]interface{})
-		for key, value := range t.Properties {
+		for key, value := range fixedFeature.Properties {
 			TempAttr[strings.ToLower(key)] = value
 		}
 
 		// 使用 ST_SetSRID 设置坐标系
 		TempAttr["geom"] = clause.Expr{
-			SQL:  "ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), ?)",
+			SQL:  "ST_SetSRID(ST_MakeValid(ST_GeomFromWKB(decode(?, 'hex'))), ?)",
 			Vars: []interface{}{wkb_result, 4326},
 		}
 
