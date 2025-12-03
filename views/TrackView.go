@@ -51,11 +51,6 @@ func (h *TrackHandler) InitTrack(c *gin.Context) {
 		return
 	}
 
-	// 验证数据
-	if len(trackData.StartPoint) != 2 {
-		c.JSON(400, gin.H{"error": "invalid start point"})
-		return
-	}
 	if len(trackData.LayerNames) == 0 {
 		c.JSON(400, gin.H{"error": "layer names required"})
 		return
