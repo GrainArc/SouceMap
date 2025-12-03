@@ -106,7 +106,10 @@ func SavaGeojsonToTable(db *gorm.DB, jsonData geojson.FeatureCollection, tablena
 					TempAttr[strings.ToLower(key)] = value
 				}
 
-				TempAttr["geom"] = clause.Expr{SQL: "ST_GeomFromWKB(decode(?, 'hex'))", Vars: []interface{}{wkb_result}}
+				TempAttr["geom"] = clause.Expr{
+					SQL:  "ST_MakeValid(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), ?))",
+					Vars: []interface{}{wkb_result, 4326}, // 4326 是 WGS84 坐标系，根据实际情况修改
+				}
 				// 使用gorm插入数据
 				if err := db.Table(tablename).Create(TempAttr).Error; err != nil {
 					log.Printf("Failed to insert feature: %v, error: %v", t, err)
