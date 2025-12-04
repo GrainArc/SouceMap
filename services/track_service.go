@@ -188,21 +188,62 @@ func (s *TrackService) CalculateShortestPath(
 		Features: make([]*geojson.Feature, 0),
 	}
 
-	// 添加路径中的每条边
+	// 将所有边串联成一个 LineString
+	mergedLineString := mergeEdgesToLineString(path)
+
+	// 计算总成本
 	totalCost := 0.0
-	for i, edge := range path {
-		feature := geojson.NewFeature(edge.LineString)
+	edgeIDs := make([]int, 0, len(path))
+	for _, edge := range path {
 		totalCost += edge.Cost
-		feature.Properties = geojson.Properties{
-			"seq":      i + 1,
-			"edge_id":  edge.ID,
-			"cost":     edge.Cost,
-			"agg_cost": totalCost,
-		}
-		resultCollection.Features = append(resultCollection.Features, feature)
+		edgeIDs = append(edgeIDs, edge.ID)
 	}
 
+	// 创建单个 Feature，包含合并后的 LineString
+	feature := geojson.NewFeature(mergedLineString)
+	feature.Properties = geojson.Properties{
+		"total_cost":   totalCost,
+		"total_length": calculateLength(mergedLineString),
+		"edge_count":   len(path),
+		"edge_ids":     edgeIDs,
+	}
+	resultCollection.Features = append(resultCollection.Features, feature)
+
 	return resultCollection, nil
+}
+
+// mergeEdgesToLineString 将多条边合并成一条 LineString
+func mergeEdgesToLineString(edges []*Edge) orb.LineString {
+	if len(edges) == 0 {
+		return orb.LineString{}
+	}
+
+	// 预估总点数以优化内存分配
+	totalPoints := 0
+	for _, edge := range edges {
+		totalPoints += len(edge.LineString)
+	}
+
+	merged := make(orb.LineString, 0, totalPoints)
+
+	for i, edge := range edges {
+		ls := edge.LineString
+		if len(ls) == 0 {
+			continue
+		}
+
+		if i == 0 {
+			// 第一条边，添加所有点
+			merged = append(merged, ls...)
+		} else {
+			// 后续边，跳过第一个点（因为它与前一条边的最后一个点重复）
+			if len(ls) > 1 {
+				merged = append(merged, ls[1:]...)
+			}
+		}
+	}
+
+	return merged
 }
 
 // SplitResult 存储线段打断的结果
