@@ -1213,9 +1213,8 @@ FROM
 //自动追踪构面
 
 type AutoData struct {
-	Line      geojson.FeatureCollection `json:"Line"`
-	Layer     string
-	TempLayer []string
+	Line  geojson.FeatureCollection `json:"Line"`
+	Layer string
 }
 
 func (uc *UserController) AutoPolygon(c *gin.Context) {
@@ -1224,130 +1223,7 @@ func (uc *UserController) AutoPolygon(c *gin.Context) {
 	DB := models.DB
 	var sql string
 	line := Transformer.GetGeometryString(jsonData.Line.Features[0])
-	Templarers := jsonData.TempLayer
-	if len(Templarers) != 0 {
-		geojsons := GetTempLayers(Templarers)
-		//点线面分离
-		var PolygonJson []*geojson.Feature
-		var LineJson []*geojson.Feature
-		for _, item := range geojsons {
-			switch item.Geometry.GeoJSONType() {
-			case "Polygon":
-				PolygonJson = append(PolygonJson, item)
-			case "MultiPolygon":
-				PolygonJson = append(PolygonJson, item)
-			case "LineString":
-				LineJson = append(LineJson, item)
-			}
-		}
-		//面数据捕捉
-		if len(PolygonJson) != 0 {
-			geo := Transformer.GetFeatureString(PolygonJson)
-			sql = fmt.Sprintf(`
-					WITH input_linefrist AS (
-						SELECT ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326) AS geom
-					),
-					input_line AS (
-						SELECT
-						ST_LineMerge(ST_Union( ARRAY[
-								ST_MakeLine(ST_StartPoint(geom),ST_Project(ST_StartPoint(geom), 0.000001, ST_Azimuth(ST_PointN(geom,2),ST_StartPoint(geom)))::geometry),
-								geom,
-								ST_MakeLine(ST_EndPoint(geom),ST_Project(ST_EndPoint(geom), 0.000001, ST_Azimuth(ST_PointN(geom,ST_NumPoints(geom) - 1),ST_EndPoint(geom)))::geometry)
-							 ])) AS geom
-						FROM input_linefrist
-					),
-					intersecting_areas AS (
-						SELECT ST_SetSRID(ST_GeomFromGeoJSON(feature->'geometry'::text), 4326) AS geom
-						FROM jsonb_array_elements('%s'::jsonb) AS feature
-						WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON(feature->'geometry'::text), 4326), (SELECT geom FROM input_line))
-					),
-					boundary_lines AS (
-						SELECT ST_Boundary(geom) AS geom
-						FROM intersecting_areas
-					),
-					closed_geometries AS (
-						SELECT ST_Union(ST_Collect((SELECT geom FROM input_line), boundary_lines.geom)) AS lines
-						FROM boundary_lines
-					),
-					newpolygons AS (
-						SELECT ST_Polygonize(lines) AS polygon_geoms
-						FROM closed_geometries
-					),
-					boundary_lines2 AS (
-						SELECT (ST_Dump(ST_Boundary(polygon_geoms))).geom AS geom 
-						FROM newpolygons
-					),
-					intersecting_lines AS (
-						SELECT ST_Intersection(input_line.geom, boundary_lines2.geom,0.0000001) AS geom, boundary_lines2.geom AS boundary_geom
-						FROM input_line, boundary_lines2
-					),
-					max_overlap AS (
-						SELECT 
-							boundary_geom, 
-							ST_Length(geom)/ST_Length(boundary_geom) AS overlap_length
-						FROM intersecting_lines
-						ORDER BY overlap_length DESC
-						LIMIT 1
-					)
-					SELECT ST_AsGeoJSON(ST_MakePolygon(boundary_geom)) AS geojson,
-					overlap_length::float AS lenth
-					FROM max_overlap
-			`, line, geo)
-		}
-		if len(LineJson) != 0 {
-			geo := Transformer.GetFeatureString(LineJson)
-			sql = fmt.Sprintf(`
-					WITH input_linefrist AS (
-						SELECT ST_SetSRID(ST_GeomFromGeoJSON('%s'), 4326) AS geom
-					),
-					input_line AS (
-						SELECT
-						ST_LineMerge(ST_Union( ARRAY[
-								ST_MakeLine(ST_StartPoint(geom),ST_Project(ST_StartPoint(geom), 0.000001, ST_Azimuth(ST_PointN(geom,2),ST_StartPoint(geom)))::geometry),
-								geom,
-								ST_MakeLine(ST_EndPoint(geom),ST_Project(ST_EndPoint(geom), 0.000001, ST_Azimuth(ST_PointN(geom,ST_NumPoints(geom) - 1),ST_EndPoint(geom)))::geometry)
-							 ])) AS geom
-						FROM input_linefrist
-					),
-					intersecting_areas AS (
-						SELECT ST_SetSRID(ST_GeomFromGeoJSON(feature->'geometry'::text), 4326) AS geom
-						FROM jsonb_array_elements('%s'::jsonb) AS feature
-						WHERE ST_Intersects(ST_SetSRID(ST_GeomFromGeoJSON(feature->'geometry'::text), 4326), (SELECT geom FROM input_line))
-					),
-					boundary_lines AS (
-						SELECT geom AS geom
-						FROM intersecting_areas
-					),
-					closed_geometries AS (
-						SELECT ST_Union(ST_Collect((SELECT geom FROM input_line), boundary_lines.geom)) AS lines
-						FROM boundary_lines
-					),
-					newpolygons AS (
-						SELECT ST_Polygonize(lines) AS polygon_geoms
-						FROM closed_geometries
-					),
-					boundary_lines2 AS (
-						SELECT (ST_Dump(ST_Boundary(polygon_geoms))).geom AS geom 
-						FROM newpolygons
-					),
-					intersecting_lines AS (
-						SELECT ST_Intersection(input_line.geom, boundary_lines2.geom,0.0000001) AS geom, boundary_lines2.geom AS boundary_geom
-						FROM input_line, boundary_lines2
-					),
-					max_overlap AS (
-						SELECT 
-							boundary_geom, 
-							ST_Length(geom)/ST_Length(boundary_geom) AS overlap_length
-						FROM intersecting_lines
-						ORDER BY overlap_length DESC
-						LIMIT 1
-					)
-					SELECT ST_AsGeoJSON(ST_MakePolygon(boundary_geom)) AS geojson,
-					overlap_length::float AS lenth
-					FROM max_overlap
-			`, line, geo)
-		}
-	} else {
+	{
 		layer := jsonData.Layer
 		var schema []models.MySchema
 		DB.Where("en = ?", layer).Find(&schema)

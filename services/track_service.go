@@ -251,7 +251,7 @@ type SplitResult struct {
 	Feature      *geojson.Feature
 	SplitPoint   orb.Point
 	SegmentIndex int     // 在哪个线段上打断
-	T            float64 // 投影参数
+	T            float64 // 投影参数 (0-1)，表示在该 segment 上的位置
 }
 
 func splitLinesAtPoints(
@@ -273,10 +273,10 @@ func splitLinesAtPoints(
 		Features: make([]*geojson.Feature, 0),
 	}
 
-	// 记录需要打断的线段索引
+	// 记录需要打断的线段索引 -> 分割点列表
 	splitIndices := make(map[int][]SplitResult)
 
-	// 记录起点线段的分割信息
+	// 找到起点所在的 feature 索引
 	startFeatureIdx := -1
 	for i, feature := range fc.Features {
 		if feature == startSplit.Feature {
@@ -284,11 +284,8 @@ func splitLinesAtPoints(
 			break
 		}
 	}
-	if startFeatureIdx >= 0 {
-		splitIndices[startFeatureIdx] = append(splitIndices[startFeatureIdx], *startSplit)
-	}
 
-	// 记录终点线段的分割信息
+	// 找到终点所在的 feature 索引
 	endFeatureIdx := -1
 	for i, feature := range fc.Features {
 		if feature == endSplit.Feature {
@@ -296,13 +293,13 @@ func splitLinesAtPoints(
 			break
 		}
 	}
+
+	// 添加分割点到对应的 feature
+	if startFeatureIdx >= 0 {
+		splitIndices[startFeatureIdx] = append(splitIndices[startFeatureIdx], *startSplit)
+	}
 	if endFeatureIdx >= 0 {
-		// 如果起点和终点在同一条线段上，需要特殊处理
-		if startFeatureIdx == endFeatureIdx {
-			splitIndices[endFeatureIdx] = append(splitIndices[endFeatureIdx], *endSplit)
-		} else {
-			splitIndices[endFeatureIdx] = append(splitIndices[endFeatureIdx], *endSplit)
-		}
+		splitIndices[endFeatureIdx] = append(splitIndices[endFeatureIdx], *endSplit)
 	}
 
 	// 遍历所有线段，进行打断或保持原样
@@ -324,29 +321,140 @@ func splitLinesAtPoints(
 		}
 
 		// 需要打断线段
-		// 按 T 值排序分割点
-		sort.Slice(splits, func(i, j int) bool {
-			return splits[i].T < splits[j].T
+		// 关键修复：先按 SegmentIndex 排序，再按 T 值排序
+		sort.Slice(splits, func(a, b int) bool {
+			if splits[a].SegmentIndex != splits[b].SegmentIndex {
+				return splits[a].SegmentIndex < splits[b].SegmentIndex
+			}
+			return splits[a].T < splits[b].T
 		})
 
+		// 去重：如果两个分割点非常接近，只保留一个
+		splits = deduplicateSplits(splits)
+
 		// 执行打断
-		splitLines := splitLineString(lineString, splits)
+		splitLines := splitLineStringMultiple(lineString, splits)
 
 		// 添加打断后的线段
 		for _, splitLine := range splitLines {
 			if len(splitLine) < 2 {
 				continue
 			}
+			// 过滤掉太短的线段（小于 0.001 米）
+			if calculateLength(splitLine) < 0.001 {
+				continue
+			}
 			newFeature := geojson.NewFeature(splitLine)
 			// 复制原始属性
 			if feature.Properties != nil {
-				newFeature.Properties = feature.Properties
+				for k, v := range feature.Properties {
+					newFeature.Properties[k] = v
+				}
 			}
 			newFC.Features = append(newFC.Features, newFeature)
 		}
 	}
 
 	return newFC, startSplit.SplitPoint, endSplit.SplitPoint
+}
+
+// deduplicateSplits 去除非常接近的分割点
+func deduplicateSplits(splits []SplitResult) []SplitResult {
+	if len(splits) <= 1 {
+		return splits
+	}
+
+	result := make([]SplitResult, 0, len(splits))
+	result = append(result, splits[0])
+
+	for i := 1; i < len(splits); i++ {
+		prev := result[len(result)-1]
+		curr := splits[i]
+
+		// 如果在同一个 segment 上且 T 值非常接近，跳过
+		if prev.SegmentIndex == curr.SegmentIndex {
+			if math.Abs(prev.T-curr.T) < 0.0001 {
+				continue
+			}
+		}
+
+		// 如果两点距离非常近（小于 0.01 米），跳过
+		dist := haversineDistance(prev.SplitPoint, curr.SplitPoint)
+		if dist < 0.01 {
+			continue
+		}
+
+		result = append(result, curr)
+	}
+
+	return result
+}
+
+// splitLineStringMultiple 根据多个分割点打断线段（支持同一 segment 上多个分割点）
+func splitLineStringMultiple(ls orb.LineString, splits []SplitResult) []orb.LineString {
+	if len(splits) == 0 {
+		return []orb.LineString{ls}
+	}
+
+	result := make([]orb.LineString, 0)
+	currentLine := make(orb.LineString, 0)
+
+	// 为每个 segment 创建分割点列表
+	segmentSplits := make(map[int][]SplitResult)
+	for _, split := range splits {
+		segmentSplits[split.SegmentIndex] = append(segmentSplits[split.SegmentIndex], split)
+	}
+
+	// 遍历线段的每个点
+	for i := 0; i < len(ls); i++ {
+		currentLine = append(currentLine, ls[i])
+
+		// 如果不是最后一个点，检查当前 segment 是否有分割点
+		if i < len(ls)-1 {
+			segmentIdx := i
+			splitsOnSegment, hasSplits := segmentSplits[segmentIdx]
+
+			if hasSplits && len(splitsOnSegment) > 0 {
+				// 当前 segment 上有分割点，按 T 值顺序处理
+				// splitsOnSegment 已经按 T 值排序了
+				for _, split := range splitsOnSegment {
+					// 检查分割点是否与当前线段的最后一个点重合
+					if len(currentLine) > 0 {
+						lastPoint := currentLine[len(currentLine)-1]
+						if haversineDistance(lastPoint, split.SplitPoint) < 0.01 {
+							// 分割点与最后一个点重合，不需要添加
+							// 但仍然需要结束当前线段并开始新线段
+							if len(currentLine) >= 2 {
+								result = append(result, currentLine)
+							}
+							currentLine = make(orb.LineString, 0)
+							currentLine = append(currentLine, split.SplitPoint)
+							continue
+						}
+					}
+
+					// 添加分割点到当前线段
+					currentLine = append(currentLine, split.SplitPoint)
+
+					// 保存当前线段（如果有效）
+					if len(currentLine) >= 2 {
+						result = append(result, currentLine)
+					}
+
+					// 开始新线段，以分割点为起点
+					currentLine = make(orb.LineString, 0)
+					currentLine = append(currentLine, split.SplitPoint)
+				}
+			}
+		}
+	}
+
+	// 添加最后一段（如果有效）
+	if len(currentLine) >= 2 {
+		result = append(result, currentLine)
+	}
+
+	return result
 }
 
 // findNearestLineAndProject 找到距离目标点最近的线段和投影点
@@ -607,7 +715,7 @@ func findExactNode(graph *Graph, point orb.Point) *Node {
 	}
 
 	// 如果没有精确匹配，找最近的节点（容差范围内）
-	const tolerance = 0.000001 // 约 0.1 米
+	const tolerance = 0.1 // 约 0.1 米
 	var nearestNode *Node
 	minDist := math.MaxFloat64
 

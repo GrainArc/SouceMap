@@ -624,7 +624,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",             // 错误提示信息
+			"message": "删除记录失败",       // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -634,9 +634,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,          // 状态码：请求成功
+			"code":    200,                    // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,            // 删除的记录数量
+			"count":   0,                      // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -644,7 +644,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",            // 成功提示信息
+		"message": "清空记录成功",      // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
@@ -1713,4 +1713,52 @@ func mapPostGISTypeToGDB(pgType string) (Gogeo.FieldType, int, int) {
 		}
 		return Gogeo.FieldTypeString, width, 0
 	}
+}
+
+// 线面叠加分析
+type LineOnPolygon struct {
+	Polygon geojson.Feature
+	Line    geojson.Feature
+}
+
+func (uc *UserController) LineOnPolygonOverlay(c *gin.Context) {
+	// 声明数据结构体变量
+	var data LineOnPolygon
+
+	// 绑定 JSON 请求数据并检查错误
+	if err := c.BindJSON(&data); err != nil {
+		// 记录请求绑定错误日志
+
+		// 返回 400 Bad Request 状态码和错误信息
+		c.JSON(400, gin.H{
+			"code":    400,
+			"message": "请求数据格式错误",
+			"error":   err.Error(),
+		})
+		return
+	}
+
+	// 调用地理数据处理函数，传入线、多边形和精度参数
+	resultFeature, err := Gogeo.RemoveLinePolygonBoundaryOverlapFromGeoJSON(
+		&data.Line,
+		&data.Polygon,
+		0.00000001,
+	)
+	// 检查处理过程中是否发生错误
+	if err != nil {
+		// 记录处理失败的错误日志
+		// 返回 500 Internal Server Error 状态码
+		c.JSON(500, gin.H{
+			"code":    500,
+			"message": "地理数据处理失败",
+			"error":   err.Error(),
+		})
+		return
+	}
+	// 处理成功，返回 200 OK 状态码和结果数据
+	c.JSON(200, gin.H{
+		"code":    200,
+		"data":    resultFeature,
+		"message": "处理成功",
+	})
 }
