@@ -490,7 +490,6 @@ func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE strin
 			Main:        Main,
 			CN:          CN,
 			EN:          EN,
-			Color:       Color,
 			Opacity:     Opacity,
 			Userunits:   Userunits,
 			LineWidth:   LineWidth,
@@ -500,6 +499,13 @@ func handleSchemaRecord(DB *gorm.DB, EN, CN, Main, Color, Opacity, GEOTYPE strin
 			UpdatedDate: time.Now().Format("2006-01-02 15:04:05"),
 		}
 		DB.Create(&result)
+		colordata := models.AttColor{
+			LayerName: EN,
+			AttName:   "默认",
+			Property:  "默认",
+			Color:     Color,
+		}
+		DB.Create(&colordata)
 	}
 }
 
