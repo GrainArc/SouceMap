@@ -815,15 +815,16 @@ func createSHPTableDirect(DB *gorm.DB, tableName string, fields map[string]strin
 		if strings.EqualFold(fieldName, "id") {
 			continue
 		}
-		columns = append(columns, fmt.Sprintf("%s %s", fieldName, fieldType))
+		// 使用双引号转义字段名,避免关键字冲突
+		columns = append(columns, fmt.Sprintf(`"%s" %s`, fieldName, fieldType))
 	}
 	// 添加ID字段
-	columns = append(columns, "id SERIAL PRIMARY KEY")
+	columns = append(columns, `"id" SERIAL PRIMARY KEY`)
 
-	// 创建主表
-	query := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (%s, geom GEOMETRY(%s, 4326))",
+	// 创建主表 - 表名和列名都需要转义
+	query := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" (%s, "geom" GEOMETRY(%s, 4326))`,
 		tableName, strings.Join(columns, ","), geoType)
-
+	fmt.Println(query)
 	if err := DB.Exec(query).Error; err != nil {
 		log.Printf("创建表 %s 失败: %v", tableName, err)
 		return
@@ -835,7 +836,7 @@ func createSHPTableDirect(DB *gorm.DB, tableName string, fields map[string]strin
 		mvtTableName = tableName + "_mvt"
 	}
 
-	mvtQuery := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (ID SERIAL PRIMARY KEY, X INT8, Y INT8, Z INT8, Byte BYTEA)", mvtTableName)
+	mvtQuery := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS "%s" ("id" SERIAL PRIMARY KEY, "x" INT8, "y" INT8, "z" INT8, "byte" BYTEA)`, mvtTableName)
 	if err := DB.Exec(mvtQuery).Error; err != nil {
 		log.Printf("创建MVT表 %s 失败: %v", mvtTableName, err)
 	}

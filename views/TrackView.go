@@ -318,36 +318,44 @@ func (h *TrackHandler) handleSnapPoint(session *TrackSession, point []float64) {
 
 func (h *TrackHandler) handleMouseMove(session *TrackSession, currentPoint []float64) {
 	// 计算最短路径，返回 GeoJSON
-
 	pathFC, err := h.trackService.CalculateShortestPath(
 		session.ctx,
 		session.linesGeoJSON,
 		session.startPoint,
 		currentPoint,
 	)
+
+	var response models.TrackResponse
+
 	if err != nil {
 		log.Printf("Path calculation error: %v", err)
-		return
+		// 计算失败时也要返回响应，避免前端等待
+		response = models.TrackResponse{
+			Type:    "path_error",
+			Message: fmt.Sprintf("Path calculation failed: %v", err),
+			Path:    geojson.NewFeatureCollection(), // 返回空的 FeatureCollection
+		}
+	} else {
+		response = models.TrackResponse{
+			Type: "path",
+			Path: pathFC,
+		}
+
+		// 只在计算成功时更新起始点
+		session.mu.Lock()
+		session.startPoint = currentPoint
+		session.mu.Unlock()
 	}
 
-	response := models.TrackResponse{
-		Type: "path",
-		Path: pathFC,
-	}
-
-	// 发送路径更新
+	// 无论成功失败都发送响应
 	session.mu.Lock()
 	err = session.conn.WriteJSON(response)
-	if err != nil {
-		session.mu.Unlock()
-		log.Printf("Failed to send path update: %v", err)
-		session.cancel()
-		return
-	}
-
-	// 更新起始点为当前结束点
-	session.startPoint = currentPoint
 	session.mu.Unlock()
+
+	if err != nil {
+		log.Printf("Failed to send path response: %v", err)
+		session.cancel()
+	}
 }
 
 func (h *TrackHandler) handleComplete(session *TrackSession) {

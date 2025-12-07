@@ -1519,7 +1519,7 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 		return
 	}
 
-	// 安全性检查 - 防止SQL注入
+	// 安全性检查
 	if !isValidTableName(layername) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
@@ -1531,20 +1531,27 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 	// 获取采样比例参数，默认10%
 	samplePercent := c.DefaultQuery("sample", "10")
 
-	// 构建高性能SQL查询 - 直接返回GeoJSON
+	// 改进的SQL - 添加COALESCE处理NULL，并先检查数据是否存在
 	sql := fmt.Sprintf(`
-		SELECT ST_AsGeoJSON(
-			ST_Envelope(
-				ST_Collect(ST_Envelope(geom))
-			)
-		) as bbox_geojson,
-		ST_XMin(ST_Collect(ST_Envelope(geom))) as min_x,
-		ST_YMin(ST_Collect(ST_Envelope(geom))) as min_y,
-		ST_XMax(ST_Collect(ST_Envelope(geom))) as max_x,
-		ST_YMax(ST_Collect(ST_Envelope(geom))) as max_y
-		FROM %s 
-		TABLESAMPLE SYSTEM(%s)
-		WHERE geom IS NOT NULL
+		WITH sampled_data AS (
+			SELECT ST_Envelope(geom) as env
+			FROM %s 
+			TABLESAMPLE SYSTEM(%s)
+			WHERE geom IS NOT NULL
+		),
+		collected AS (
+			SELECT ST_Collect(env) as geom_collection
+			FROM sampled_data
+			WHERE env IS NOT NULL
+		)
+		SELECT 
+			COALESCE(ST_AsGeoJSON(ST_Envelope(geom_collection)), '') as bbox_geojson,
+			COALESCE(ST_XMin(geom_collection), 0) as min_x,
+			COALESCE(ST_YMin(geom_collection), 0) as min_y,
+			COALESCE(ST_XMax(geom_collection), 0) as max_x,
+			COALESCE(ST_YMax(geom_collection), 0) as max_y,
+			(SELECT COUNT(*) FROM sampled_data) as sample_count
+		FROM collected
 	`, layername, samplePercent)
 
 	// 执行查询
@@ -1554,13 +1561,14 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 		MinY        float64 `gorm:"column:min_y"`
 		MaxX        float64 `gorm:"column:max_x"`
 		MaxY        float64 `gorm:"column:max_y"`
+		SampleCount int     `gorm:"column:sample_count"`
 	}
 
-	// 设置查询超时
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
 	DB := models.DB
-	// 使用原生SQL执行，避免GORM开销
+	fmt.Println(sql)
 	err := DB.WithContext(ctx).Raw(sql).Scan(&result).Error
 	if err != nil {
 		log.Printf("获取图层范围失败: %v", err)
@@ -1572,6 +1580,37 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 		return
 	}
 
+	fmt.Printf("查询结果: %+v\n", result)
+
+	// 检查采样是否命中数据
+	if result.SampleCount == 0 {
+		log.Printf("警告: TABLESAMPLE 未命中任何数据，尝试全表查询")
+
+		// 回退到全表查询（可能较慢）
+		fallbackSQL := fmt.Sprintf(`
+			SELECT 
+				ST_AsGeoJSON(ST_Envelope(ST_Collect(geom))) as bbox_geojson,
+				ST_XMin(ST_Collect(geom)) as min_x,
+				ST_YMin(ST_Collect(geom)) as min_y,
+				ST_XMax(ST_Collect(geom)) as max_x,
+				ST_YMax(ST_Collect(geom)) as max_y
+			FROM %s 
+			WHERE geom IS NOT NULL
+			LIMIT 1000
+		`, layername)
+
+		err = DB.WithContext(ctx).Raw(fallbackSQL).Scan(&result).Error
+		if err != nil {
+			log.Printf("全表查询也失败: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    500,
+				"message": "查询失败",
+				"error":   err.Error(),
+			})
+			return
+		}
+	}
+
 	// 检查结果有效性
 	if result.BboxGeoJSON == "" || (result.MinX == 0 && result.MinY == 0 && result.MaxX == 0 && result.MaxY == 0) {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -1581,7 +1620,7 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 		return
 	}
 
-	// 解析GeoJSON字符串为JSON对象
+	// 解析GeoJSON
 	var geoJSON map[string]interface{}
 	if err := json.Unmarshal([]byte(result.BboxGeoJSON), &geoJSON); err != nil {
 		log.Printf("解析GeoJSON失败: %v", err)
@@ -1597,7 +1636,8 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 		"code":    200,
 		"message": "success",
 		"data": gin.H{
-			"tablename": layername,
+			"tablename":    layername,
+			"sample_count": result.SampleCount,
 			"extent": gin.H{
 				"minX": result.MinX,
 				"minY": result.MinY,

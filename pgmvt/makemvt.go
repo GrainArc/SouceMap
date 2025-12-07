@@ -137,7 +137,12 @@ func MakeMvtNew(x int, y int, z int, tableName string, db *gorm.DB) []byte {
 	db.Raw(query, x, y, z).Scan(&TempModel)
 
 	fieldNames, _ := GetTableColumns(db, tableName)
-	result := strings.Join(fieldNames, ",")
+	// 给每个字段名用双引号包裹，防止关键字冲突
+	quotedFields := make([]string, len(fieldNames))
+	for i, field := range fieldNames {
+		quotedFields[i] = fmt.Sprintf("\"%s\"", field)
+	}
+	result := strings.Join(quotedFields, ",")
 
 	if len(TempModel) == 1 {
 		byteData, _ := TempModel[0]["byte"].([]byte)

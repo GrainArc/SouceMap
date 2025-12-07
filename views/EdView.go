@@ -346,7 +346,8 @@ func queryTable(db *gorm.DB, data searchData) (*PaginatedResult, error) {
 		if sortType != "DESC" && sortType != "ASC" {
 			sortType = "ASC"
 		}
-		orderClause := fmt.Sprintf("%s %s", data.SortAttribute, sortType)
+		quotedField := fmt.Sprintf(`"%s"`, data.SortAttribute)
+		orderClause := fmt.Sprintf("%s %s", quotedField, sortType)
 		baseQuery = baseQuery.Order(orderClause)
 	}
 
@@ -442,31 +443,33 @@ type ConditionResult struct {
 // buildSingleCondition 构建单个查询条件
 func buildSingleCondition(field, operator string, value interface{}) ConditionResult {
 	operator = strings.ToUpper(operator)
+	// 用双引号包裹字段名,防止与SQL关键字冲突
+	quotedField := fmt.Sprintf(`"%s"`, field)
 
 	switch operator {
 	case "=", "!=", ">", "<", ">=", "<=":
 		// 基本比较操作符
-		sql := fmt.Sprintf("CAST(%s AS TEXT) %s ?", field, operator)
+		sql := fmt.Sprintf("CAST(%s AS TEXT) %s ?", quotedField, operator)
 		return ConditionResult{sql: sql, args: []interface{}{value}}
 
 	case "LIKE":
 		// 模糊查询
-		sql := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", field)
+		sql := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{value}}
 
 	case "NOT LIKE":
 		// 不包含
-		sql := fmt.Sprintf("CAST(%s AS TEXT) NOT ILIKE ?", field)
+		sql := fmt.Sprintf("CAST(%s AS TEXT) NOT ILIKE ?", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{value}}
 
 	case "IS NULL":
 		// 为空
-		sql := fmt.Sprintf("%s IS NULL", field)
+		sql := fmt.Sprintf("%s IS NULL", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{}}
 
 	case "IS NOT NULL":
 		// 不为空
-		sql := fmt.Sprintf("%s IS NOT NULL", field)
+		sql := fmt.Sprintf("%s IS NOT NULL", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{}}
 
 	case "IN":
@@ -480,7 +483,7 @@ func buildSingleCondition(field, operator string, value interface{}) ConditionRe
 				values = []interface{}{value}
 			}
 		}
-		sql := fmt.Sprintf("CAST(%s AS TEXT) IN (?)", field)
+		sql := fmt.Sprintf("CAST(%s AS TEXT) IN (?)", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{values}}
 
 	case "NOT IN":
@@ -493,12 +496,12 @@ func buildSingleCondition(field, operator string, value interface{}) ConditionRe
 				values = []interface{}{value}
 			}
 		}
-		sql := fmt.Sprintf("CAST(%s AS TEXT) NOT IN (?)", field)
+		sql := fmt.Sprintf("CAST(%s AS TEXT) NOT IN (?)", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{values}}
 
 	default:
 		// 默认使用等于
-		sql := fmt.Sprintf("CAST(%s AS TEXT) = ?", field)
+		sql := fmt.Sprintf("CAST(%s AS TEXT) = ?", quotedField)
 		return ConditionResult{sql: sql, args: []interface{}{value}}
 	}
 }
@@ -507,22 +510,24 @@ func buildSingleCondition(field, operator string, value interface{}) ConditionRe
 func buildSimpleConditions(query *gorm.DB, rule map[string]interface{}, tableName string) *gorm.DB {
 	for key, value := range rule {
 		searchValue := fmt.Sprintf("%%%v%%", value)
+		// 用双引号包裹字段名
+		quotedKey := fmt.Sprintf(`"%s"`, key)
 
 		if key == "all_data_search" {
 			// 获取表中所有字段
 			atts := GetAtt(tableName, "")
 			for _, field := range atts {
-				condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", field)
+				quotedField := fmt.Sprintf(`"%s"`, field)
+				condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", quotedField)
 				query = query.Or(condition, searchValue)
 			}
 		} else {
-			condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", key)
+			condition := fmt.Sprintf("CAST(%s AS TEXT) ILIKE ?", quotedKey)
 			query = query.Where(condition, searchValue)
 		}
 	}
 	return query
 }
-
 func (uc *UserController) SearchGeoFromSchema(c *gin.Context) {
 	var jsonData searchData
 	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
