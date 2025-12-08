@@ -392,8 +392,8 @@ func (s *GeometryService) buildUpdateSQL(req *models.GeometryUpdateRequest) (str
 
 	// 构建UPDATE语句
 	updateSQL := fmt.Sprintf(`
-        UPDATE %s
-        SET %s = %s
+        UPDATE "%s"
+        SET "%s" = %s
     `, req.TableName, req.TargetField, calcSQL)
 
 	// 添加WHERE子句（如果有）
