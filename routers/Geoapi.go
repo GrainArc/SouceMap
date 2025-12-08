@@ -74,6 +74,8 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.GET("/GetLayerExtent", UserController.GetLayerExtent)
 		mapRouter.POST("/SplitFeature", UserController.SplitFeature)
 		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
+		mapRouter.POST("/ExplodeFeature", UserController.ExplodeFeature)
+		
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
 		mapRouter.GET("/SyncToFile", UserController.SyncToFile)
 		mapRouter.POST("/LineOnPolygonOverlay", UserController.LineOnPolygonOverlay)

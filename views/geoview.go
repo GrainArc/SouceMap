@@ -138,7 +138,7 @@ func (uc *UserController) GetTableAttributes(c *gin.Context) {
 	var atts []Att
 	for _, item := range result {
 		switch item.ColumnName {
-		case "id", "geom", "tbmj", "mj":
+		case "id", "geom":
 			// 如果不是"id", "geom", "tbmj"，则创建一个新的Att结构体并添加到atts中
 		default:
 			attmap := GetCEMap(TableName)

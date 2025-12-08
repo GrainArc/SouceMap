@@ -1289,6 +1289,291 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	})
 }
 
+// 要素聚合体打散
+
+type ExplodeData struct {
+	LayerName string `json:"LayerName"`
+	ID        int32  `json:"ID"`
+}
+
+func (uc *UserController) ExplodeFeature(c *gin.Context) {
+	var jsonData ExplodeData
+	if err := c.ShouldBindJSON(&jsonData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	DB := models.DB
+	LayerName := jsonData.LayerName
+
+	// 查询schema信息
+	var schema models.MySchema
+	result := DB.Where("en = ?", LayerName).First(&schema)
+	if result.Error != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    500,
+			"message": result.Error.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 开启事务
+	tx := DB.Begin()
+	if tx.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "开启事务失败: " + tx.Error.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 使用 advisory lock 防止并发冲突
+	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_id_lock'))`, LayerName)
+	if err := tx.Exec(lockSQL).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取锁失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 1. 检查几何体是否为Multi类型（可打散）
+	var geomType string
+	checkTypeSQL := fmt.Sprintf(`SELECT ST_GeometryType(geom) FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
+	if err := tx.Raw(checkTypeSQL).Scan(&geomType).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取几何类型失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	if geomType == "" {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    404,
+			"message": "未找到指定ID的几何数据",
+			"data":    "",
+		})
+		return
+	}
+
+	// 检查是否为Multi类型或GeometryCollection
+	isMulti := strings.HasPrefix(geomType, "ST_Multi") || geomType == "ST_GeometryCollection"
+	if !isMulti {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "该要素不是聚合体类型（Multi*），无需打散",
+			"data":    "",
+		})
+		return
+	}
+
+	// 2. 检查聚合体包含多少个几何体
+	var numGeoms int
+	countGeomsSQL := fmt.Sprintf(`SELECT ST_NumGeometries(geom) FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
+	if err := tx.Raw(countGeomsSQL).Scan(&numGeoms).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取几何数量失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	if numGeoms <= 1 {
+		tx.Rollback()
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "该聚合体只包含一个几何体，无需打散",
+			"data":    "",
+		})
+		return
+	}
+
+	// 3. 获取原要素的所有属性（除了id和geom）
+	var originalFeature map[string]interface{}
+	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
+	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取原要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 4. 获取所有附加列（排除id和geom）
+	var additionalColumns []string
+	for key := range originalFeature {
+		if key != "id" && key != "geom" {
+			additionalColumns = append(additionalColumns, key)
+		}
+	}
+
+	// 5. 查询 id 和 objectid 的最大值
+	var maxID int32
+	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "查询最大ID失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	var maxObjectID int32
+	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
+		// objectid 可能不存在，忽略错误
+		maxObjectID = 0
+	}
+
+	// 6. 构建 explode CTE 的选择列
+	explodeSelectCols := `(ST_Dump(o.geom)).geom AS geom`
+	for _, col := range additionalColumns {
+		explodeSelectCols += fmt.Sprintf(`, o."%s"`, col)
+	}
+
+	// 构建 INSERT 的列名（包括id）
+	insertCols := "id, geom"
+	for _, col := range additionalColumns {
+		insertCols += fmt.Sprintf(`, "%s"`, col)
+	}
+
+	// 构建 SELECT 的列名（包括id的自增逻辑）
+	selectCols := fmt.Sprintf(`%d + ROW_NUMBER() OVER () AS id, geom`, maxID)
+	for _, col := range additionalColumns {
+		if col == "objectid" {
+			// 使用 ROW_NUMBER() 生成递增的 objectid
+			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxObjectID, col)
+		} else {
+			selectCols += fmt.Sprintf(`, "%s"`, col)
+		}
+	}
+
+	// 7. 执行打散并插入新要素
+	explodeAndInsertSQL := fmt.Sprintf(`
+		WITH original AS (
+			SELECT * FROM "%s" WHERE id = %d
+		),
+		exploded_geom AS (
+			SELECT %s
+			FROM original o
+		)
+		INSERT INTO "%s" (%s)
+		SELECT %s
+		FROM exploded_geom
+		RETURNING id
+	`, LayerName, jsonData.ID, explodeSelectCols, LayerName, insertCols, selectCols)
+
+	type InsertedID struct {
+		ID int32
+	}
+	var insertedIDs []InsertedID
+
+	if err := tx.Raw(explodeAndInsertSQL).Scan(&insertedIDs).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "打散并插入新要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 检查是否有插入的记录
+	if len(insertedIDs) == 0 {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "打散失败，未生成新要素",
+			"data":    "",
+		})
+		return
+	}
+
+	// 8. 更新缓存库
+	GetPdata := getData{
+		TableName: LayerName,
+		ID:        jsonData.ID,
+	}
+
+	geom := GetGeo(GetPdata)
+	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+
+	// 9. 删除原要素
+	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
+	if err := tx.Exec(deleteSQL).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "删除原要素失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 10. 查询新插入的所有几何，生成GeoJSON
+	var idList []int32
+	for _, id := range insertedIDs {
+		idList = append(idList, id.ID)
+	}
+	getdata2 := getDatas{
+		TableName: LayerName,
+		ID:        idList,
+	}
+
+	// 11. 提交事务
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "提交事务失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 12. 记录操作日志
+	explodedGeojson := GetGeos(getdata2)
+	delObjJSON := DelIDGen(geom)
+	OldGeojson, _ := json.Marshal(geom)
+	NewGeojson, _ := json.Marshal(explodedGeojson)
+	RecordResult := models.GeoRecord{
+		TableName:    jsonData.LayerName,
+		GeoID:        jsonData.ID,
+		Type:         "要素打散",
+		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		OldGeojson:   OldGeojson,
+		NewGeojson:   NewGeojson,
+		DelObjectIDs: delObjJSON,
+	}
+
+	DB.Create(&RecordResult)
+
+	// 返回成功结果
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": fmt.Sprintf("打散成功，已将聚合体拆分为 %d 个独立要素", len(insertedIDs)),
+		"data":    explodedGeojson,
+	})
+}
+
 // 同步编辑到文件
 func (uc *UserController) SyncToFile(c *gin.Context) {
 	TableName := c.Query("TableName")
