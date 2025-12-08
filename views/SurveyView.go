@@ -207,9 +207,13 @@ func (uc *UserController) processSHPFiles(dirpath, layername, mac, taskid, curre
 	}
 
 	for _, item := range shpfiles {
-		data, isTransform := Transformer.ConvertSHPToGeoJSON2(item)
-		if isTransform != "4326" {
-			data, _ = Transformer.GeoJsonTransformTo4326(data, isTransform)
+		Gdata, err := Gogeo.ReadShapeFileLayer(item)
+		if err != nil {
+			return false
+		}
+		data, err := Gogeo.LayerToGeoJSON(Gdata)
+		if err != nil {
+			return false
 		}
 
 		for index, feature := range data.Features {
