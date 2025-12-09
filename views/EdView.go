@@ -625,7 +625,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",       // 错误提示信息
+			"message": "删除记录失败",             // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -635,9 +635,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,                    // 状态码：请求成功
+			"code":    200,          // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,                      // 删除的记录数量
+			"count":   0,            // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -645,7 +645,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",      // 成功提示信息
+		"message": "清空记录成功",            // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
@@ -2570,10 +2570,9 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 4. 删除MVT缓存（原位置）
-	for _, feature := range oldGeo.Features {
-		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
-	}
+	// 4. 删除MVT缓存
+
+	pgmvt.DelMVTALL(DB, jsonData.LayerName)
 
 	// 5. 提交事务
 	if err := tx.Commit().Error; err != nil {
@@ -2593,11 +2592,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	newGeo := GetGeos(getdata3)
 	newGeojson, _ := json.Marshal(newGeo)
 
-	// 7. 删除新位置的MVT缓存
-	for _, feature := range newGeo.Features {
-		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
-	}
-
 	// 8. 记录操作
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
@@ -2610,15 +2604,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 
 	DB.Create(&RecordResult)
 
-	// 9. 构建返回数据
-	returnData := make([]gin.H, len(offsetResults))
-	for i, result := range offsetResults {
-		returnData[i] = gin.H{
-			"id":      result.ID,
-			"geojson": result.Geojson,
-		}
-	}
-
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
@@ -2629,7 +2614,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 			"offset_y_m": jsonData.YOffset,
 			"offset_lon": offsetLon,
 			"offset_lat": offsetLat,
-			"features":   returnData,
 		},
 	})
 }

@@ -199,9 +199,44 @@ func indexExists(db *gorm.DB, tableName, indexName string) bool {
 
 func DelMVT(DB *gorm.DB, tablename string, geom orb.Geometry) {
 	tile := Bounds(geom)
-	for _, value := range tile {
-		if err := DB.Table(tablename+"mvt").Where("x = ? AND y = ? AND z = ?", value.X, value.Y, value.Z).Delete(nil).Error; err != nil {
-			log.Printf(" error: %v", err)
+	if len(tile) == 0 {
+		return
+	}
+
+	var TempModelName string
+	if isEndWithNumber(tablename) {
+		TempModelName = tablename + "_mvt"
+	} else {
+		TempModelName = tablename + "mvt"
+	}
+
+	// 构建 OR 条件，一次性删除所有匹配的记录
+	query := DB.Table(TempModelName)
+	for i, value := range tile {
+		if i == 0 {
+			query = query.Where("(x = ? AND y = ? AND z = ?)", value.X, value.Y, value.Z)
+		} else {
+			query = query.Or("(x = ? AND y = ? AND z = ?)", value.X, value.Y, value.Z)
 		}
 	}
+
+	if err := query.Delete(nil).Error; err != nil {
+		log.Printf("error: %v", err)
+	}
+}
+
+func DelMVTALL(DB *gorm.DB, tablename string) {
+	var TempModelName string
+	if isEndWithNumber(tablename) {
+		TempModelName = tablename + "_mvt"
+	} else {
+		TempModelName = tablename + "mvt"
+	}
+
+	result := DB.Table(TempModelName).Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(nil)
+	if result.Error != nil {
+		log.Printf("error deleting all from %s: %v", TempModelName, result.Error)
+		return
+	}
+
 }
