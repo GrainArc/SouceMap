@@ -76,11 +76,10 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.GET("/GetLayerExtent", UserController.GetLayerExtent)
 		mapRouter.POST("/SplitFeature", UserController.SplitFeature)
 		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
-		mapRouter.POST("/ExplodeFeature", UserController.ExplodeFeature)
 		mapRouter.POST("/DonutBuilder", UserController.DonutBuilder)
 		mapRouter.POST("/AggregatorFeature", UserController.AggregatorFeature)
 		mapRouter.POST("/OffsetFeature", UserController.OffsetFeature)
-		mapRouter.POST("/DeAggregatorFeature", UserController.DeAggregatorFeature)
+		mapRouter.POST("/DeAggregatorFeature", UserController.ExplodeFeature)
 		mapRouter.POST("/AreaOnAreaAnalysis", UserController.AreaOnAreaAnalysis)
 
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)

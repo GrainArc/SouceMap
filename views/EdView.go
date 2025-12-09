@@ -13,6 +13,7 @@ import (
 	"github.com/paulmach/orb/geojson"
 	"gorm.io/gorm"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -1395,8 +1396,8 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 // 要素聚合体打散
 
 type ExplodeData struct {
-	LayerName string `json:"LayerName"`
-	ID        int32  `json:"ID"`
+	LayerName string  `json:"LayerName"`
+	IDs       []int32 `json:"ids"`
 }
 
 func (uc *UserController) ExplodeFeature(c *gin.Context) {
@@ -1405,6 +1406,16 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
 			"message": err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 验证输入
+	if len(jsonData.IDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    400,
+			"message": "IDs 不能为空",
 			"data":    "",
 		})
 		return
@@ -1448,10 +1459,23 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		return
 	}
 
-	// 1. 检查几何体是否为Multi类型（可打散）
-	var geomType string
-	checkTypeSQL := fmt.Sprintf(`SELECT ST_GeometryType(geom) FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
-	if err := tx.Raw(checkTypeSQL).Scan(&geomType).Error; err != nil {
+	// 构建 ID 列表的 SQL 占位符
+	idPlaceholders := make([]string, len(jsonData.IDs))
+	idInterfaces := make([]interface{}, len(jsonData.IDs))
+	for i, id := range jsonData.IDs {
+		idPlaceholders[i] = "?"
+		idInterfaces[i] = id
+	}
+	idCondition := fmt.Sprintf("id IN (%s)", strings.Join(idPlaceholders, ","))
+
+	// 1. 检查所有几何体是否为Multi类型（可打散）
+	type GeomInfo struct {
+		ID       int32
+		GeomType string
+	}
+	var geomInfos []GeomInfo
+	checkTypeSQL := fmt.Sprintf(`SELECT id, ST_GeometryType(geom) FROM "%s" WHERE %s`, LayerName, idCondition)
+	if err := tx.Raw(checkTypeSQL, idInterfaces...).Scan(&geomInfos).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1461,32 +1485,25 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		return
 	}
 
-	if geomType == "" {
+	// 验证返回的几何体数量
+	if len(geomInfos) != len(jsonData.IDs) {
 		tx.Rollback()
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    404,
-			"message": "未找到指定ID的几何数据",
+			"message": fmt.Sprintf("部分ID未找到对应的几何数据，期望 %d 个，实际找到 %d 个", len(jsonData.IDs), len(geomInfos)),
 			"data":    "",
 		})
 		return
 	}
 
-	// 检查是否为Multi类型或GeometryCollection
-	isMulti := strings.HasPrefix(geomType, "ST_Multi") || geomType == "ST_GeometryCollection"
-	if !isMulti {
-		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "该要素不是聚合体类型（Multi*），无需打散",
-			"data":    "",
-		})
-		return
+	// 2. 检查每个聚合体包含多少个几何体
+	type GeomCount struct {
+		ID    int32
+		Count int
 	}
-
-	// 2. 检查聚合体包含多少个几何体
-	var numGeoms int
-	countGeomsSQL := fmt.Sprintf(`SELECT ST_NumGeometries(geom) FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
-	if err := tx.Raw(countGeomsSQL).Scan(&numGeoms).Error; err != nil {
+	var geomCounts []GeomCount
+	countGeomsSQL := fmt.Sprintf(`SELECT id, ST_NumGeometries(geom) as count FROM "%s" WHERE %s`, LayerName, idCondition)
+	if err := tx.Raw(countGeomsSQL, idInterfaces...).Scan(&geomCounts).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1496,20 +1513,27 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		return
 	}
 
-	if numGeoms <= 1 {
+	singleGeoms := []int32{}
+	for _, count := range geomCounts {
+		if count.Count <= 1 {
+			singleGeoms = append(singleGeoms, count.ID)
+		}
+	}
+
+	if len(singleGeoms) > 0 {
 		tx.Rollback()
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
-			"message": "该聚合体只包含一个几何体，无需打散",
+			"message": fmt.Sprintf("以下ID的聚合体只包含一个几何体，无需打散: %v", singleGeoms),
 			"data":    "",
 		})
 		return
 	}
 
 	// 3. 获取原要素的所有属性（除了id和geom）
-	var originalFeature map[string]interface{}
-	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
-	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
+	var originalFeatures []map[string]interface{}
+	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s`, LayerName, idCondition)
+	if err := tx.Raw(getOriginalSQL, idInterfaces...).Scan(&originalFeatures).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1521,9 +1545,11 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 
 	// 4. 获取所有附加列（排除id和geom）
 	var additionalColumns []string
-	for key := range originalFeature {
-		if key != "id" && key != "geom" {
-			additionalColumns = append(additionalColumns, key)
+	if len(originalFeatures) > 0 {
+		for key := range originalFeatures[0] {
+			if key != "id" && key != "geom" {
+				additionalColumns = append(additionalColumns, key)
+			}
 		}
 	}
 
@@ -1573,7 +1599,7 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	// 7. 执行打散并插入新要素
 	explodeAndInsertSQL := fmt.Sprintf(`
 		WITH original AS (
-			SELECT * FROM "%s" WHERE id = %d
+			SELECT * FROM "%s" WHERE %s
 		),
 		exploded_geom AS (
 			SELECT %s
@@ -1583,14 +1609,14 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		SELECT %s
 		FROM exploded_geom
 		RETURNING id
-	`, LayerName, jsonData.ID, explodeSelectCols, LayerName, insertCols, selectCols)
+	`, LayerName, idCondition, explodeSelectCols, LayerName, insertCols, selectCols)
 
 	type InsertedID struct {
 		ID int32
 	}
 	var insertedIDs []InsertedID
 
-	if err := tx.Raw(explodeAndInsertSQL).Scan(&insertedIDs).Error; err != nil {
+	if err := tx.Raw(explodeAndInsertSQL, idInterfaces...).Scan(&insertedIDs).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1611,18 +1637,21 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		return
 	}
 
-	// 8. 更新缓存库
-	GetPdata := getData{
-		TableName: LayerName,
-		ID:        jsonData.ID,
+	// 8. 更新缓存库（对所有原要素进行清缓存）
+	for _, id := range jsonData.IDs {
+		GetPdata := getData{
+			TableName: LayerName,
+			ID:        id,
+		}
+		geom := GetGeo(GetPdata)
+		if len(geom.Features) > 0 {
+			pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
+		}
 	}
 
-	geom := GetGeo(GetPdata)
-	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
-
 	// 9. 删除原要素
-	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
-	if err := tx.Exec(deleteSQL).Error; err != nil {
+	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE %s`, LayerName, idCondition)
+	if err := tx.Exec(deleteSQL, idInterfaces...).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1654,13 +1683,39 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 
 	// 12. 记录操作日志
 	explodedGeojson := GetGeos(getdata2)
-	delObjJSON := DelIDGen(geom)
-	OldGeojson, _ := json.Marshal(geom)
+
+	// 构建原要素的 GeoJSON（用于记录）
+	type AllOriginalGeoms struct {
+		Type     string        `json:"type"`
+		Features []interface{} `json:"features"`
+	}
+	allOriginalGeoms := AllOriginalGeoms{
+		Type:     "FeatureCollection",
+		Features: []interface{}{},
+	}
+
+	// 获取所有原要素的 GeoJSON
+	for _, id := range jsonData.IDs {
+		GetPdata := getData{
+			TableName: LayerName,
+			ID:        id,
+		}
+		geom := GetGeo(GetPdata)
+		if len(geom.Features) > 0 {
+			allOriginalGeoms.Features = append(allOriginalGeoms.Features, geom.Features[0])
+		}
+	}
+
+	OldGeojson, _ := json.Marshal(allOriginalGeoms)
 	NewGeojson, _ := json.Marshal(explodedGeojson)
+
+	// 生成删除的对象IDs（可选，根据你的需求）
+	delObjJSON, _ := json.Marshal(jsonData.IDs)
+
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
-		GeoID:        jsonData.ID,
-		Type:         "要素打散",
+		GeoID:        jsonData.IDs[0], // 记录第一个ID（可选）
+		Type:         "要素批量打散",
 		Date:         time.Now().Format("2006-01-02 15:04:05"),
 		OldGeojson:   OldGeojson,
 		NewGeojson:   NewGeojson,
@@ -1672,7 +1727,7 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
-		"message": fmt.Sprintf("打散成功，已将聚合体拆分为 %d 个独立要素", len(insertedIDs)),
+		"message": fmt.Sprintf("打散成功，已将 %d 个聚合体拆分为 %d 个独立要素", len(jsonData.IDs), len(insertedIDs)),
 		"data":    explodedGeojson,
 	})
 }
@@ -2022,16 +2077,6 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 		return
 	}
 
-	// 验证是否为点数据或线数据（聚合通常用于点线数据）
-	if schema.Type != "point" && schema.Type != "linestring" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "只有点或线数据才能聚合",
-			"data":    "",
-		})
-		return
-	}
-
 	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -2170,17 +2215,65 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 	}
 
 	// 5. 执行聚合并插入新要素
-	// 聚合方式：使用ST_Collect收集所有几何，然后使用ST_Centroid获取中心点（对于点数据）
-	// 或使用ST_LineMerge合并线（对于线数据）
+	// 聚合方式：使用ST_Collect收集所有几何并打散Multi类型，然后重新组合成Multi类型
 	var aggregateSQL string
 	if schema.Type == "point" {
-		// 点数据聚合：使用ST_Centroid获取中心点
+		// 点数据聚合：打散Multi类型后重新组合成MultiPoint
 		aggregateSQL = fmt.Sprintf(`
-			WITH aggregated AS (
+			WITH dumped AS (
 				SELECT 
-					ST_Centroid(ST_Collect(geom)) AS aggregated_geom
+					(ST_Dump(geom)).geom AS single_geom
 				FROM "%s"
 				WHERE id IN (%s)
+			),
+			aggregated AS (
+				SELECT 
+					ST_Collect(single_geom) AS aggregated_geom
+				FROM dumped
+			)
+			INSERT INTO "%s" (id, geom%s)
+			SELECT 
+				%d AS id,
+				aggregated_geom
+				%s
+			FROM aggregated
+			RETURNING ST_AsGeoJSON(geom) AS geojson, id
+		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
+	} else if schema.Type == "line" {
+		// 线数据聚合：打散Multi类型后重新组合成MultiLineString
+		aggregateSQL = fmt.Sprintf(`
+			WITH dumped AS (
+				SELECT 
+					(ST_Dump(geom)).geom AS single_geom
+				FROM "%s"
+				WHERE id IN (%s)
+			),
+			aggregated AS (
+				SELECT 
+					ST_Collect(single_geom) AS aggregated_geom
+				FROM dumped
+			)
+			INSERT INTO "%s" (id, geom%s)
+			SELECT 
+				%d AS id,
+				aggregated_geom
+				%s
+			FROM aggregated
+			RETURNING ST_AsGeoJSON(geom) AS geojson, id
+		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
+	} else if schema.Type == "polygon" {
+		// 面数据聚合：打散Multi类型后重新组合成MultiPolygon
+		aggregateSQL = fmt.Sprintf(`
+			WITH dumped AS (
+				SELECT 
+					(ST_Dump(geom)).geom AS single_geom
+				FROM "%s"
+				WHERE id IN (%s)
+			),
+			aggregated AS (
+				SELECT 
+					ST_Collect(single_geom) AS aggregated_geom
+				FROM dumped
 			)
 			INSERT INTO "%s" (id, geom%s)
 			SELECT 
@@ -2191,13 +2284,18 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 			RETURNING ST_AsGeoJSON(geom) AS geojson, id
 		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
 	} else {
-		// 线数据聚合：使用ST_LineMerge合并线
+		// 默认方式：打散后使用ST_Collect
 		aggregateSQL = fmt.Sprintf(`
-			WITH aggregated AS (
+			WITH dumped AS (
 				SELECT 
-					ST_LineMerge(ST_Collect(geom)) AS aggregated_geom
+					(ST_Dump(geom)).geom AS single_geom
 				FROM "%s"
 				WHERE id IN (%s)
+			),
+			aggregated AS (
+				SELECT 
+					ST_Collect(single_geom) AS aggregated_geom
+				FROM dumped
 			)
 			INSERT INTO "%s" (id, geom%s)
 			SELECT 
@@ -2292,7 +2390,7 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
-		"message": fmt.Sprintf("成功聚合%d个要素为1个新要素，使用ID(%d)的属性", len(jsonData.IDs), jsonData.MainID),
+		"message": fmt.Sprintf("成功聚合%d个要素为1个Multi类型要素，使用ID(%d)的属性", len(jsonData.IDs), jsonData.MainID),
 		"data": gin.H{
 			"geojson": aggregatorResult.Geojson,
 			"new_id":  aggregatorResult.ID,
@@ -2305,13 +2403,25 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 type OffsetData struct {
 	LayerName string  `json:"LayerName"`
 	IDs       []int32 `json:"ids"`
-	XOffset   float64 `json:"xOffset"`
-	YOffset   float64 `json:"yOffset"`
+	XOffset   float64 `json:"xOffset"` // 米
+	YOffset   float64 `json:"yOffset"` // 米
+}
+
+// 地球半径（米）
+const EarthRadiusMeters = 6371000.0
+
+// 米转度数
+func metersToDegreesLat(meters float64) float64 {
+	return meters / (EarthRadiusMeters / 180.0 * math.Pi)
+}
+
+func metersToDegreeeLon(meters float64, latitude float64) float64 {
+	// 经度的度数取决于纬度
+	return meters / (EarthRadiusMeters * math.Cos(latitude*math.Pi/180.0) / 180.0 * math.Pi)
 }
 
 func (uc *UserController) OffsetFeature(c *gin.Context) {
 	var jsonData OffsetData
-	// 绑定JSON请求体到结构体，并检查绑定是否成功
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
@@ -2331,7 +2441,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 验证平移距离
 	if jsonData.XOffset == 0 && jsonData.YOffset == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
@@ -2405,13 +2514,34 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	oldGeo := GetGeos(getdata2)
 	oldGeojson, _ := json.Marshal(oldGeo)
 
-	// 3. 执行平移操作
+	// ========== 关键改动：米转度数 ==========
+	// 获取要素的中心纬度，用于计算经度偏移
+	var centerLat float64
+	latSQL := fmt.Sprintf(`
+		SELECT AVG(ST_Y(ST_Centroid(geom))) FROM "%s" WHERE id IN (%s)
+	`, LayerName, idsStr)
+
+	if err := tx.Raw(latSQL).Scan(&centerLat).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取纬度信息失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 转换单位：米 -> 度数
+	offsetLat := metersToDegreesLat(jsonData.YOffset)
+	offsetLon := metersToDegreeeLon(jsonData.XOffset, centerLat)
+
+	// 3. 执行平移操作（使用转换后的度数）
 	offsetSQL := fmt.Sprintf(`
 		UPDATE "%s"
 		SET geom = ST_Translate(geom, %f, %f)
 		WHERE id IN (%s)
 		RETURNING id, ST_AsGeoJSON(geom) AS geojson
-	`, LayerName, jsonData.XOffset, jsonData.YOffset, idsStr)
+	`, LayerName, offsetLon, offsetLat, idsStr)
 
 	type OffsetResult struct {
 		ID      int32
@@ -2455,7 +2585,7 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 6. 获取更新后的要素信息（用于记录和返回）
+	// 6. 获取更新后的要素信息
 	getdata3 := getDatas{
 		TableName: LayerName,
 		ID:        jsonData.IDs,
@@ -2492,304 +2622,14 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
-		"message": fmt.Sprintf("成功平移%d个要素，X偏移: %f, Y偏移: %f", len(jsonData.IDs), jsonData.XOffset, jsonData.YOffset),
+		"message": fmt.Sprintf("成功平移%d个要素，X偏移: %f米, Y偏移: %f米", len(jsonData.IDs), jsonData.XOffset, jsonData.YOffset),
 		"data": gin.H{
-			"count":    len(offsetResults),
-			"offset_x": jsonData.XOffset,
-			"offset_y": jsonData.YOffset,
-			"features": returnData,
-		},
-	})
-}
-
-// 要素打散
-type DeAggregatorData struct {
-	LayerName string  `json:"LayerName"`
-	IDs       []int32 `json:"ids"`
-}
-
-func (uc *UserController) DeAggregatorFeature(c *gin.Context) {
-	var jsonData DeAggregatorData
-	// 绑定JSON请求体到结构体，并检查绑定是否成功
-	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 验证参数
-	if len(jsonData.IDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "至少需要选择1个要素进行打散",
-			"data":    "",
-		})
-		return
-	}
-
-	DB := models.DB
-	LayerName := jsonData.LayerName
-
-	// 查询schema信息
-	var schema models.MySchema
-	result := DB.Where("en = ?", LayerName).First(&schema)
-	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 开启事务
-	tx := DB.Begin()
-	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 构建ID列表字符串
-	idList := make([]string, len(jsonData.IDs))
-	for i, id := range jsonData.IDs {
-		idList[i] = fmt.Sprintf("%d", id)
-	}
-	idsStr := strings.Join(idList, ",")
-
-	// 1. 验证所有ID是否存在
-	var count int64
-	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
-	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "验证要素失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	if int(count) != len(jsonData.IDs) {
-		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count),
-			"data":    "",
-		})
-		return
-	}
-
-	// 2. 检查几何类型是否可以打散
-	type GeometryTypeData struct {
-		ID   int32
-		Type string
-	}
-	var geomTypes []GeometryTypeData
-	checkGeomSQL := fmt.Sprintf(`
-		SELECT id, ST_GeometryType(geom) AS type FROM "%s" WHERE id IN (%s)
-	`, LayerName, idsStr)
-	if err := tx.Raw(checkGeomSQL).Scan(&geomTypes).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取几何类型失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 验证所有要素都是复合几何类型
-	canDeAggregate := make(map[int32]bool)
-	for _, geom := range geomTypes {
-		if geom.Type == "ST_MultiPoint" || geom.Type == "ST_MultiLineString" ||
-			geom.Type == "ST_MultiPolygon" || geom.Type == "ST_GeometryCollection" {
-			canDeAggregate[geom.ID] = true
-		} else {
-			canDeAggregate[geom.ID] = false
-		}
-	}
-
-	// 检查是否有无法打散的要素
-	unableToDeAggregate := []int32{}
-	for id, canDe := range canDeAggregate {
-		if !canDe {
-			unableToDeAggregate = append(unableToDeAggregate, id)
-		}
-	}
-
-	if len(unableToDeAggregate) > 0 {
-		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": fmt.Sprintf("以下ID对应的要素为单一几何类型，无法打散: %v", unableToDeAggregate),
-			"data":    "",
-		})
-		return
-	}
-
-	// 3. 获取原始要素的GeoJSON（用于记录）
-	getdata := getDatas{
-		TableName: LayerName,
-		ID:        jsonData.IDs,
-	}
-	oldGeo := GetGeos(getdata)
-	oldGeojson, _ := json.Marshal(oldGeo)
-
-	// 删除MVT缓存（原要素）
-	for _, feature := range oldGeo.Features {
-		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
-	}
-
-	// 4. 获取当前表的最大ID
-	var maxID int32
-	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取最大ID失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 5. 执行打散操作 - 使用CTE逐个处理每个ID
-	var allDeAggregatorResults []map[string]interface{}
-
-	deAggregatorSQL := fmt.Sprintf(`
-		WITH exploded AS (
-			SELECT 
-				ROW_NUMBER() OVER (PARTITION BY id ORDER BY (ST_Dump(geom)).path) + %d AS new_id,
-				id AS original_id,
-				(ST_Dump(geom)).geom AS geom
-			FROM "%s"
-			WHERE id IN (%s)
-		)
-		INSERT INTO "%s" (id, geom)
-		SELECT new_id, geom FROM exploded
-		RETURNING id, ST_AsGeoJSON(geom) AS geojson
-	`, maxID, LayerName, idsStr, LayerName)
-
-	if err := tx.Raw(deAggregatorSQL).Scan(&allDeAggregatorResults).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "打散要素失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 检查是否成功打散
-	if len(allDeAggregatorResults) == 0 {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "打散失败，未生成任何单一几何",
-			"data":    "",
-		})
-		return
-	}
-
-	// 6. 删除原要素
-	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
-	if err := tx.Exec(deleteSQL).Error; err != nil {
-		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 7. 提交事务
-	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
-		return
-	}
-
-	// 8. 获取打散后的要素信息（用于记录）
-	newFeatureIDs := make([]int32, len(allDeAggregatorResults))
-	for i, result := range allDeAggregatorResults {
-		if id, ok := result["id"].(int32); ok {
-			newFeatureIDs[i] = id
-		} else if id, ok := result["id"].(int64); ok {
-			newFeatureIDs[i] = int32(id)
-		}
-	}
-
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        newFeatureIDs,
-	}
-	newGeo := GetGeos(getdata2)
-	newGeojson, _ := json.Marshal(newGeo)
-
-	// 10. 记录操作
-	RecordResult := models.GeoRecord{
-		TableName:    jsonData.LayerName,
-		Type:         "要素打散",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
-		OldGeojson:   oldGeojson,
-		NewGeojson:   newGeojson,
-		DelObjectIDs: nil,
-	}
-
-	DB.Create(&RecordResult)
-
-	// 11. 统计每个原始ID打散出的要素数量
-	deAggregatorStats := make(map[int32]int)
-	for _, result := range allDeAggregatorResults {
-		if origID, ok := result["original_id"].(int32); ok {
-			deAggregatorStats[origID]++
-		} else if origID, ok := result["original_id"].(int64); ok {
-			deAggregatorStats[int32(origID)]++
-		}
-	}
-
-	// 12. 构建返回数据
-	returnData := make([]gin.H, len(allDeAggregatorResults))
-	for i, result := range allDeAggregatorResults {
-		returnData[i] = gin.H{
-			"id":      result["id"],
-			"geojson": result["geojson"],
-		}
-	}
-
-	// 13. 构建统计信息
-	statsData := make([]gin.H, 0)
-	for _, originalID := range jsonData.IDs {
-		if count, ok := deAggregatorStats[originalID]; ok {
-			statsData = append(statsData, gin.H{
-				"original_id":    originalID,
-				"exploded_count": count,
-			})
-		}
-	}
-
-	// 返回成功结果
-	c.JSON(http.StatusOK, gin.H{
-		"code":    200,
-		"message": fmt.Sprintf("成功打散%d个要素为%d个单一几何要素", len(jsonData.IDs), len(allDeAggregatorResults)),
-		"data": gin.H{
-			"original_ids":   jsonData.IDs,
-			"total_exploded": len(allDeAggregatorResults),
-			"exploded_count": len(jsonData.IDs),
-			"new_ids":        newFeatureIDs,
-			"explode_stats":  statsData,
-			"features":       returnData,
+			"count":      len(offsetResults),
+			"offset_x_m": jsonData.XOffset,
+			"offset_y_m": jsonData.YOffset,
+			"offset_lon": offsetLon,
+			"offset_lat": offsetLat,
+			"features":   returnData,
 		},
 	})
 }
@@ -2800,9 +2640,9 @@ type AreaOnAreaData struct {
 	IDs       []int32 `json:"ids"`
 }
 
+// 面要素去重叠
 func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 	var jsonData AreaOnAreaData
-	// 绑定JSON请求体到结构体，并检查绑定是否成功
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
@@ -2812,7 +2652,6 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 验证参数
 	if len(jsonData.IDs) < 2 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
@@ -2825,7 +2664,6 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 	DB := models.DB
 	LayerName := jsonData.LayerName
 
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
@@ -2837,7 +2675,6 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -2848,7 +2685,18 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 构建ID列表字符串
+	// ========== 使用 advisory lock 防止并发冲突 ==========
+	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_id_lock'))`, LayerName)
+	if err := tx.Exec(lockSQL).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取锁失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
 	idList := make([]string, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
 		idList[i] = fmt.Sprintf("%d", id)
@@ -2897,21 +2745,10 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 验证所有要素都是面类型
-	isPolygon := make(map[int32]bool)
-	for _, geom := range geomTypes {
-		if geom.Type == "ST_Polygon" || geom.Type == "ST_MultiPolygon" {
-			isPolygon[geom.ID] = true
-		} else {
-			isPolygon[geom.ID] = false
-		}
-	}
-
-	// 检查是否有非面类型的要素
 	nonPolygons := []int32{}
-	for id, isPoly := range isPolygon {
-		if !isPoly {
-			nonPolygons = append(nonPolygons, id)
+	for _, geom := range geomTypes {
+		if geom.Type != "ST_Polygon" && geom.Type != "ST_MultiPolygon" {
+			nonPolygons = append(nonPolygons, geom.ID)
 		}
 	}
 
@@ -2925,7 +2762,36 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 3. 获取原始要素的GeoJSON（用于记录）
+	// ========== 3. 获取原要素的所有属性（用于继承） ==========
+	var originalFeatures []map[string]interface{}
+	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
+	if err := tx.Raw(getOriginalSQL).Scan(&originalFeatures).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "获取原要素属性失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	// 获取所有附加列（排除id和geom）
+	var additionalColumns []string
+	if len(originalFeatures) > 0 {
+		for key := range originalFeatures[0] {
+			if key != "id" && key != "geom" {
+				additionalColumns = append(additionalColumns, key)
+			}
+		}
+	}
+
+	// 使用第一个要素的属性作为模板（你也可以根据业务需求调整）
+	var templateAttributes map[string]interface{}
+	if len(originalFeatures) > 0 {
+		templateAttributes = originalFeatures[0]
+	}
+
+	// 4. 获取原始要素的GeoJSON（用于记录）
 	getdata := getDatas{
 		TableName: LayerName,
 		ID:        jsonData.IDs,
@@ -2938,7 +2804,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
 	}
 
-	// 4. 获取当前表的最大ID
+	// ========== 5. 获取当前表的最大ID和最大objectid ==========
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
@@ -2951,64 +2817,28 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	var analysisResults []map[string]interface{}
-	// 获取重叠区域 - 通过ST_Intersection找出所有几何的交集
-	// 以及差异部分 - 通过ST_Difference去掉重叠的部分
-	analysisSQL := fmt.Sprintf(`
-		WITH input_geoms AS (
-			SELECT id, geom FROM "%s" WHERE id IN (%s)
-		),
-		union_geom AS (
-			SELECT ST_Union(geom) AS geom FROM input_geoms
-		),
-		-- 获取所有输入几何的交集（重叠部分）
-		intersection_geom AS (
-			SELECT 
-				%d + 1 AS new_id,
-				'overlap' AS type,
-				ST_Intersection(
-					(SELECT geom FROM input_geoms LIMIT 1),
-					(SELECT geom FROM union_geom)
-				) AS geom
-			WHERE ST_Intersects(
-				(SELECT geom FROM input_geoms LIMIT 1),
-				(SELECT geom FROM union_geom)
-			)
-		),
-		-- 获取每个输入几何去掉重叠部分后的差异部分
-		difference_geoms AS (
-			SELECT 
-				ROW_NUMBER() OVER (ORDER BY id) + %d + 1 AS new_id,
-				'non_overlap' AS type,
-				ST_Difference(
-					ig.geom,
-					(
-						SELECT ST_Union(geom) FROM input_geoms ig2 
-						WHERE ig2.id != ig.id
-					)
-				) AS geom
-			FROM input_geoms ig
-			WHERE ST_Difference(
-				ig.geom,
-				(
-					SELECT ST_Union(geom) FROM input_geoms ig2 
-					WHERE ig2.id != ig.id
-				)
-			) IS NOT NULL
-			AND NOT ST_IsEmpty(ST_Difference(
-				ig.geom,
-				(
-					SELECT ST_Union(geom) FROM input_geoms ig2 
-					WHERE ig2.id != ig.id
-				)
-			))
-		)
-		SELECT new_id, type, ST_AsGeoJSON(geom) AS geojson FROM intersection_geom
-		UNION ALL
-		SELECT new_id, type, ST_AsGeoJSON(geom) AS geojson FROM difference_geoms
-	`, maxID, maxID, maxID+int32(len(jsonData.IDs)))
+	var maxObjectID int32
+	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
+	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
+		// objectid 可能不存在，忽略错误
+		maxObjectID = 0
+	}
 
-	if err := tx.Raw(analysisSQL).Scan(&analysisResults).Error; err != nil {
+	// 6. 使用自定义函数进行叠加分析
+	Gogeo.InitializeGDAL()
+	gdallayer, err := Gogeo.ConvertGeoJSONToGDALLayer(&oldGeo, LayerName)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "转换GeoJSON失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	analysisGDAL, err := Gogeo.AreaOnAreaAnalysis(gdallayer, 0.00000001)
+	if err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -3018,8 +2848,19 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 检查是否有结果
-	if len(analysisResults) == 0 {
+	// 将GDAL结果转换为GeoJSON
+	analysisGeoJSON, err := Gogeo.LayerToGeoJSON(analysisGDAL)
+	if err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "转换分析结果失败: " + err.Error(),
+			"data":    "",
+		})
+		return
+	}
+
+	if len(analysisGeoJSON.Features) == 0 {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -3029,21 +2870,74 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 6. 插入新要素
+	// ========== 7. 插入新要素（包含所有属性） ==========
 	newFeatureIDs := make([]int32, 0)
-	insertSQL := fmt.Sprintf(`INSERT INTO "%s" (id, geom) VALUES `, LayerName)
+
+	// 构建列名（包括id, geom和所有附加列）
+	insertCols := "id, geom"
+	for _, col := range additionalColumns {
+		insertCols += fmt.Sprintf(`, "%s"`, col)
+	}
+
+	// 构建INSERT语句
+	insertSQL := fmt.Sprintf(`INSERT INTO "%s" (%s) VALUES `, LayerName, insertCols)
 	valueStrings := make([]string, 0)
-	for _, result := range analysisResults {
-		if newID, ok := result["new_id"].(int32); ok {
-			newFeatureIDs = append(newFeatureIDs, newID)
-		} else if newID, ok := result["new_id"].(int64); ok {
-			newFeatureIDs = append(newFeatureIDs, int32(newID))
+
+	for i, feature := range analysisGeoJSON.Features {
+		newID := maxID + int32(i) + 1
+		newFeatureIDs = append(newFeatureIDs, newID)
+
+		// 使用 geojson.NewGeometry 包装 orb.Geometry
+		geojsonGeom := geojson.NewGeometry(feature.Geometry)
+		geomBytes, err := json.Marshal(geojsonGeom)
+		if err != nil {
+			tx.Rollback()
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    500,
+				"message": fmt.Sprintf("序列化几何对象失败: %v", err),
+				"data":    "",
+			})
+			return
 		}
 
-		if geojson, ok := result["geojson"].(string); ok {
-			valueStrings = append(valueStrings, fmt.Sprintf(`(%d, ST_GeomFromGeoJSON('%s'))`,
-				result["new_id"], geojson))
+		geomStr := string(geomBytes)
+		geomStr = strings.ReplaceAll(geomStr, "'", "''")
+
+		// 构建值列表
+		valueList := fmt.Sprintf(`%d, ST_GeomFromGeoJSON('%s')`, newID, geomStr)
+
+		// 添加所有附加列的值
+		for _, col := range additionalColumns {
+			if col == "objectid" {
+				// objectid 使用自增值
+				newObjectID := maxObjectID + int32(i) + 1
+				valueList += fmt.Sprintf(`, %d`, newObjectID)
+			} else {
+				// 其他属性从模板继承
+				if templateAttributes != nil {
+					if val, exists := templateAttributes[col]; exists && val != nil {
+						// 根据值类型进行格式化
+						switch v := val.(type) {
+						case string:
+							escapedVal := strings.ReplaceAll(v, "'", "''")
+							valueList += fmt.Sprintf(`, '%s'`, escapedVal)
+						case int, int32, int64, float32, float64:
+							valueList += fmt.Sprintf(`, %v`, v)
+						case bool:
+							valueList += fmt.Sprintf(`, %t`, v)
+						default:
+							valueList += `, NULL`
+						}
+					} else {
+						valueList += `, NULL`
+					}
+				} else {
+					valueList += `, NULL`
+				}
+			}
 		}
+
+		valueStrings = append(valueStrings, fmt.Sprintf(`(%s)`, valueList))
 	}
 
 	if len(valueStrings) == 0 {
@@ -3067,7 +2961,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 7. 删除原要素
+	// 8. 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
@@ -3079,7 +2973,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 8. 提交事务
+	// 9. 提交事务
 	if err := tx.Commit().Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -3089,7 +2983,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	// 9. 获取分析后的要素信息（用于记录）
+	// 10. 获取分析后的要素信息（用于记录）
 	getdata2 := getDatas{
 		TableName: LayerName,
 		ID:        newFeatureIDs,
@@ -3100,11 +2994,11 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 	// 11. 统计重叠和非重叠区域
 	overlapCount := 0
 	nonOverlapCount := 0
-	for _, result := range analysisResults {
-		if resultType, ok := result["type"].(string); ok {
-			if resultType == "overlap" {
+	for _, feature := range analysisGeoJSON.Features {
+		if featureType, ok := feature.Properties["type"].(string); ok {
+			if featureType == "overlap" {
 				overlapCount++
-			} else if resultType == "non_overlap" {
+			} else if featureType == "non_overlap" {
 				nonOverlapCount++
 			}
 		}
@@ -3119,27 +3013,27 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		NewGeojson:   newGeojson,
 		DelObjectIDs: nil,
 	}
-
 	DB.Create(&RecordResult)
 
 	// 13. 构建返回数据
-	returnData := make([]gin.H, len(analysisResults))
-	for i, result := range analysisResults {
+	returnData := make([]gin.H, len(newGeo.Features))
+	for i, feature := range newGeo.Features {
 		returnData[i] = gin.H{
-			"id":      result["new_id"],
-			"type":    result["type"],
-			"geojson": result["geojson"],
+			"id":         newFeatureIDs[i],
+			"type":       analysisGeoJSON.Features[i].Properties["type"],
+			"geojson":    feature.Geometry,
+			"properties": feature.Properties,
 		}
 	}
 
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code": 200,
-		"message": fmt.Sprintf("成功完成叠加分析，生成%d个新要素（重叠区域%d个，非重叠区域%d个）",
-			len(analysisResults), overlapCount, nonOverlapCount),
+		"message": fmt.Sprintf("成功完成叠加分析,生成%d个新要素（重叠区域%d个，非重叠区域%d个）",
+			len(analysisGeoJSON.Features), overlapCount, nonOverlapCount),
 		"data": gin.H{
 			"original_ids":      jsonData.IDs,
-			"total_results":     len(analysisResults),
+			"total_results":     len(analysisGeoJSON.Features),
 			"overlap_count":     overlapCount,
 			"non_overlap_count": nonOverlapCount,
 			"new_ids":           newFeatureIDs,
