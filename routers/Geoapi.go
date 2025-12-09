@@ -40,6 +40,8 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/InTempLayer", UserController.InTempLayer)
 		mapRouter.POST("/ShowTempLayer", UserController.ShowTempLayer)
 		mapRouter.POST("/ShowSingleGeoByXY", UserController.ShowSingleGeoByXY)
+		mapRouter.POST("/ShowGeoByBox", UserController.ShowGeoByBox)
+
 		mapRouter.GET("/ShowSingleGeo", UserController.ShowSingleGeo)
 
 		mapRouter.POST("/ShowTempLayerHeader", UserController.ShowTempLayerHeader)
@@ -75,7 +77,12 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/SplitFeature", UserController.SplitFeature)
 		mapRouter.POST("/DissolveFeature", UserController.DissolveFeature)
 		mapRouter.POST("/ExplodeFeature", UserController.ExplodeFeature)
-		
+		mapRouter.POST("/DonutBuilder", UserController.DonutBuilder)
+		mapRouter.POST("/AggregatorFeature", UserController.AggregatorFeature)
+		mapRouter.POST("/OffsetFeature", UserController.OffsetFeature)
+		mapRouter.POST("/DeAggregatorFeature", UserController.DeAggregatorFeature)
+		mapRouter.POST("/AreaOnAreaAnalysis", UserController.AreaOnAreaAnalysis)
+
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
 		mapRouter.GET("/SyncToFile", UserController.SyncToFile)
 		mapRouter.POST("/LineOnPolygonOverlay", UserController.LineOnPolygonOverlay)

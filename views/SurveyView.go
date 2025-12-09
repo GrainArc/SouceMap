@@ -752,6 +752,84 @@ FROM intersecting_areas;
 	c.JSON(http.StatusOK, feature)
 }
 
+type BoxData struct {
+	Box       []float64 `json:"box"`
+	LayerName string    `json:"LayerName"`
+}
+
+// 通过Box坐标范围查询GeoJSON
+func (uc *UserController) ShowGeoByBox(c *gin.Context) {
+	var boxData BoxData
+	if err := c.BindJSON(&boxData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		return
+	}
+
+	// 验证box数据格式 [minX, minY, maxX, maxY]
+	if len(boxData.Box) != 4 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Box must contain 4 coordinates [minX, minY, maxX, maxY]"})
+		return
+	}
+
+	minX := boxData.Box[0]
+	minY := boxData.Box[1]
+	maxX := boxData.Box[2]
+	maxY := boxData.Box[3]
+	LayerName := boxData.LayerName
+
+	MakeGeoIndex(LayerName)
+	DB := models.DB
+
+	sql := fmt.Sprintf(`
+WITH input_box AS (
+    SELECT ST_SetSRID(ST_MakeEnvelope(%f, %f, %f, %f), 4326) AS geom
+),
+intersecting_areas AS (
+    SELECT *
+    FROM %s
+    WHERE ST_Intersects(%s.geom, (SELECT geom FROM input_box))
+)
+SELECT 
+    json_build_object(
+        'type', 'FeatureCollection',
+        'features', COALESCE(
+            json_agg(
+                json_build_object(
+                    'type', 'Feature',
+                    'geometry', ST_AsGeoJSON(geom)::json,
+                    'properties', to_jsonb(intersecting_areas.*) - 'geom'
+                )
+            ),
+            '[]'::json
+        )
+    ) AS geojson
+FROM intersecting_areas;
+	`, minX, minY, maxX, maxY, LayerName, LayerName)
+
+	// 执行SQL查询
+	var result struct {
+		GeoJSON []byte `gorm:"column:geojson"`
+	}
+
+	if err := DB.Raw(sql).Scan(&result).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	feature := geojson.NewFeatureCollection()
+	if err := json.Unmarshal(result.GeoJSON, &feature); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to parse GeoJSON"})
+		return
+	}
+
+	if len(feature.Features) == 0 {
+		c.JSON(http.StatusOK, gin.H{"message": "no data"})
+		return
+	}
+
+	c.JSON(http.StatusOK, feature)
+}
+
 // 临时表单数据获取
 func (uc *UserController) ShowTempLayerHeader(c *gin.Context) {
 	var jsonData map[string]interface{}
