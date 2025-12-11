@@ -599,12 +599,36 @@ func (uc *UserController) DownloadSearchGeoFromSchema(c *gin.Context) {
 }
 
 // 获取修改记录
+type GeoRecordResponse struct {
+	TableName string
+	Username  string
+	Type      string
+	Date      string
+	BZ        string
+	ID        int64
+	GeoID     int32
+}
+
 func (uc *UserController) GetChangeRecord(c *gin.Context) {
 	username := c.Query("Username")
 	DB := models.DB
 	var aa []models.GeoRecord
 	DB.Where("username = ?", username).Find(&aa)
-	c.JSON(http.StatusOK, aa)
+
+	// 转换为响应结构体
+	var response []GeoRecordResponse
+	for _, record := range aa {
+		response = append(response, GeoRecordResponse{
+			TableName: record.TableName,
+			Username:  record.Username,
+			Type:      record.Type,
+			Date:      record.Date,
+			BZ:        record.BZ,
+			ID:        record.ID,
+			GeoID:     record.GeoID,
+		})
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 // DelChangeRecord 删除指定用户的所有地理记录
@@ -625,7 +649,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",             // 错误提示信息
+			"message": "删除记录失败",       // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -635,9 +659,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,          // 状态码：请求成功
+			"code":    200,                    // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,            // 删除的记录数量
+			"count":   0,                      // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -645,7 +669,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",            // 成功提示信息
+		"message": "清空记录成功",      // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
