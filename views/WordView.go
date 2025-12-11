@@ -201,18 +201,14 @@ func (uc *UserController) SaveReportConfig(c *gin.Context) {
 }
 
 // 更新报告
-func (uc *UserController) UpdateReportConfig(c *gin.Context) {
-	// 获取报告ID
-	reportID, err := strconv.ParseInt(c.Param("id"), 10, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, SaveReportConfigResponse{
-			Code:    400,
-			Message: "无效的报告ID",
-		})
-		return
-	}
+type UpdateReportConfigRequest struct {
+	ID         int64                `json:"id" binding:"required"`
+	ReportName string               `json:"report_name" binding:"required"`
+	Content    []models.ContentItem `json:"content" binding:"required"`
+}
 
-	var req SaveReportConfigRequest
+func (uc *UserController) UpdateReportConfig(c *gin.Context) {
+	var req UpdateReportConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, SaveReportConfigResponse{
 			Code:    400,
@@ -225,7 +221,7 @@ func (uc *UserController) UpdateReportConfig(c *gin.Context) {
 
 	// 查询报告是否存在
 	var report models.Report
-	if err := DB.First(&report, reportID).Error; err != nil {
+	if err := DB.First(&report, req.ID).Error; err != nil {
 		c.JSON(http.StatusNotFound, SaveReportConfigResponse{
 			Code:    404,
 			Message: "报告配置不存在",
