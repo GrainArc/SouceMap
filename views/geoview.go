@@ -1395,12 +1395,10 @@ func (uc *UserController) GetDeviceName(c *gin.Context) {
 }
 
 func (uc *UserController) ChangeDeviceName(c *gin.Context) {
-	// 定义请求体结构
 	var req struct {
 		DeviceName string `json:"device_name" binding:"required"`
 	}
 
-	// 绑定并验证请求数据
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "设备名称不能为空",
@@ -1408,7 +1406,6 @@ func (uc *UserController) ChangeDeviceName(c *gin.Context) {
 		return
 	}
 
-	// 验证设备名称长度
 	if len(req.DeviceName) > 50 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": "设备名称长度不能超过50个字符",
@@ -1416,8 +1413,7 @@ func (uc *UserController) ChangeDeviceName(c *gin.Context) {
 		return
 	}
 
-	// 读取 XML 文件
-	configPath := "config.xml" // 根据实际路径调整
+	configPath := "config.xml"
 	xmlFile, err := os.ReadFile(configPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1426,44 +1422,18 @@ func (uc *UserController) ChangeDeviceName(c *gin.Context) {
 		return
 	}
 
-	// 解析 XML
-	type Config struct {
-		XMLName    xml.Name `xml:"config"`
-		DeviceName string   `xml:"DeviceName"`
-	}
+	// 使用正则表达式替换 DeviceName
+	re := regexp.MustCompile(`<DeviceName>.*?</DeviceName>`)
+	newContent := re.ReplaceAllString(string(xmlFile),
+		fmt.Sprintf("<DeviceName>%s</DeviceName>", req.DeviceName))
 
-	var cfg Config
-	if err := xml.Unmarshal(xmlFile, &cfg); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "解析配置文件失败",
-		})
-		return
-	}
-
-	// 更新设备名称
-	cfg.DeviceName = req.DeviceName
-
-	// 序列化为 XML
-	output, err := xml.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"error": "生成配置文件失败",
-		})
-		return
-	}
-
-	// 添加 XML 声明
-	xmlContent := []byte(xml.Header + string(output))
-
-	// 写入文件
-	if err := os.WriteFile(configPath, xmlContent, 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": "保存配置文件失败",
 		})
 		return
 	}
 
-	// 更新内存中的配置
 	config.DeviceName = req.DeviceName
 
 	c.JSON(http.StatusOK, gin.H{
