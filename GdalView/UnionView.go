@@ -150,7 +150,7 @@ func (uc *UserController) StartUnion(c *gin.Context) {
 		"task_id": taskID,
 		"status":  task.Status,
 		"message": "Union任务已创建，请使用WebSocket连接开始执行",
-		"ws_url":  fmt.Sprintf("/gdal/union/ws/%s", taskID),
+		"ws_url":  fmt.Sprintf("/gdal/Union/ws/%s", taskID),
 	})
 }
 

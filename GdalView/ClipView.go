@@ -157,7 +157,7 @@ func (uc *UserController) StartClip(c *gin.Context) {
 		"task_id": taskID,
 		"status":  task.Status,
 		"message": "裁剪任务已创建，请使用WebSocket连接开始执行",
-		"ws_url":  fmt.Sprintf("/gdal/clip/ws/%s", taskID),
+		"ws_url":  fmt.Sprintf("/gdal/Clip/ws/%s", taskID),
 	})
 }
 
