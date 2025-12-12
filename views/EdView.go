@@ -649,7 +649,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",             // 错误提示信息
+			"message": "删除记录失败",       // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -659,9 +659,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,          // 状态码：请求成功
+			"code":    200,                    // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,            // 删除的记录数量
+			"count":   0,                      // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -669,7 +669,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",            // 成功提示信息
+		"message": "清空记录成功",      // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
@@ -899,6 +899,18 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
+	// ========== 获取文件类型以确定映射字段 ==========
+	fileExt := GetFileExt(LayerName)
+	var mappingField string // 映射字段名称
+	switch fileExt {
+	case ".shp":
+		mappingField = "objectid"
+	case ".gdb":
+		mappingField = "fid"
+	default:
+		mappingField = "" // 空字符串表示没有映射字段
+	}
+
 	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -953,7 +965,7 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		}
 	}
 
-	// ========== 查询 id 和 objectid 的最大值 ==========
+	// ========== 查询 id 的最大值（三种情况都需要） ==========
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
@@ -966,11 +978,14 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		return
 	}
 
-	var maxObjectID int32
-	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
-		// objectid 可能不存在，忽略错误
-		maxObjectID = 0
+	// ========== 查询映射字段的最大值（如果存在） ==========
+	var maxMappingID int32
+	if mappingField != "" {
+		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) as max_id FROM "%s"`, mappingField, LayerName)
+		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
+			// 映射字段可能不存在，忽略错误
+			maxMappingID = 0
+		}
 	}
 
 	// 构建 split_geom CTE 的选择列
@@ -985,12 +1000,12 @@ func (uc *UserController) SplitFeature(c *gin.Context) {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
 
-	// 构建 SELECT 的列名（包括id的自增逻辑）
+	// 构建 SELECT 的列名（包括id的自增逻辑和映射字段的自增逻辑）
 	selectCols := fmt.Sprintf(`%d + ROW_NUMBER() OVER () AS id, geom`, maxID)
 	for _, col := range additionalColumns {
-		if col == "objectid" {
-			// 使用 ROW_NUMBER() 生成递增的 objectid
-			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxObjectID, col)
+		if mappingField != "" && col == mappingField {
+			// 如果是映射字段，使用 ROW_NUMBER() 生成递增的值
+			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxMappingID, col)
 		} else {
 			selectCols += fmt.Sprintf(`, "%s"`, col)
 		}
@@ -1110,7 +1125,7 @@ type DissolveData struct {
 
 func (uc *UserController) DissolveFeature(c *gin.Context) {
 	var jsonData DissolveData
-	// 绑定JSON请求体到结构体，并检查绑定是否成功
+	// 绑定JSON请求体到结构体,并检查绑定是否成功
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
@@ -1170,6 +1185,18 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 			"data":    "",
 		})
 		return
+	}
+
+	// 判断数据源类型，确定映射字段
+	fileExt := GetFileExt(LayerName)
+	var mappingField string
+	switch fileExt {
+	case ".shp":
+		mappingField = "objectid"
+	case ".gdb":
+		mappingField = "fid"
+	default:
+		mappingField = "" // 空字符串表示不需要额外的映射字段
 	}
 
 	// 开启事务
@@ -1237,7 +1264,7 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		return
 	}
 
-	// 3. 获取当前表的最大ID，用于生成新ID
+	// 3. 获取当前表的最大ID，用于生成新ID（所有情况都需要）
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
@@ -1249,22 +1276,30 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		})
 		return
 	}
-	// ========== 新增：查询 objectid 的最大值 ==========
-	var maxObjectID int32
-	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
 
+	// 查询映射字段的最大值（如果需要）
+	var maxMappingID int32
+	if mappingField != "" {
+		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) FROM "%s"`, mappingField, LayerName)
+		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
+			// 如果字段不存在，忽略错误
+			maxMappingID = 0
+		}
 	}
+
 	// 4. 构建属性字段列表（排除id和geom）
 	var columnNames []string
 	var columnValues []string
 	for key, value := range originalFeature {
 		if key != "id" && key != "geom" {
 			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
-			if key == "objectid" {
-				columnValues = append(columnValues, fmt.Sprintf("%d", maxObjectID+1))
+
+			// 判断是否为映射字段，如果是则使用自增值
+			if mappingField != "" && key == mappingField {
+				columnValues = append(columnValues, fmt.Sprintf("%d", maxMappingID+1))
 				continue
 			}
+
 			// 根据值类型构建SQL值
 			switch v := value.(type) {
 			case nil:
@@ -1364,7 +1399,6 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	oldGeojson, _ := json.Marshal(oldGeo)
 
 	for _, feature := range oldGeo.Features {
-
 		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
 	}
 
@@ -1391,20 +1425,24 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		})
 		return
 	}
+
 	GetPdata := getData{
 		TableName: LayerName,
 		ID:        dissolveResult.ID,
 	}
 	newGeo := GetGeo(GetPdata)
 	newGeoJson, _ := json.Marshal(newGeo)
-	RecordResult := models.GeoRecord{TableName: jsonData.LayerName,
+	RecordResult := models.GeoRecord{
+		TableName:    jsonData.LayerName,
 		Type:         "要素合并",
 		Date:         time.Now().Format("2006-01-02 15:04:05"),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeoJson,
-		DelObjectIDs: delObjJSON}
+		DelObjectIDs: delObjJSON,
+	}
 
 	DB.Create(&RecordResult)
+
 	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
@@ -1458,6 +1496,18 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 			"data":    "",
 		})
 		return
+	}
+
+	// 判断数据源类型，确定映射字段
+	fileExt := GetFileExt(LayerName)
+	var mappingField string
+	switch fileExt {
+	case ".shp":
+		mappingField = "objectid"
+	case ".gdb":
+		mappingField = "fid"
+	default:
+		mappingField = "" // 空字符串表示不需要额外的映射字段
 	}
 
 	// 开启事务
@@ -1577,7 +1627,7 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		}
 	}
 
-	// 5. 查询 id 和 objectid 的最大值
+	// 5. 查询 id 的最大值（所有情况都需要）
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
@@ -1590,11 +1640,14 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		return
 	}
 
-	var maxObjectID int32
-	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
-		// objectid 可能不存在，忽略错误
-		maxObjectID = 0
+	// 查询映射字段的最大值（如果需要）
+	var maxMappingID int32
+	if mappingField != "" {
+		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) as max_id FROM "%s"`, mappingField, LayerName)
+		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
+			// 如果字段不存在，忽略错误
+			maxMappingID = 0
+		}
 	}
 
 	// 6. 构建 explode CTE 的选择列
@@ -1603,18 +1656,18 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		explodeSelectCols += fmt.Sprintf(`, o."%s"`, col)
 	}
 
-	// 构建 INSERT 的列名（包括id）
+	// 构建 INSERT 的列名（包括id和映射字段）
 	insertCols := "id, geom"
 	for _, col := range additionalColumns {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
 
-	// 构建 SELECT 的列名（包括id的自增逻辑）
+	// 构建 SELECT 的列名（包括id的自增逻辑和映射字段的自增逻辑）
 	selectCols := fmt.Sprintf(`%d + ROW_NUMBER() OVER () AS id, geom`, maxID)
 	for _, col := range additionalColumns {
-		if col == "objectid" {
-			// 使用 ROW_NUMBER() 生成递增的 objectid
-			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxObjectID, col)
+		if mappingField != "" && col == mappingField {
+			// 使用 ROW_NUMBER() 生成递增的映射字段值
+			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxMappingID, col)
 		} else {
 			selectCols += fmt.Sprintf(`, "%s"`, col)
 		}
@@ -1709,14 +1762,7 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	explodedGeojson := GetGeos(getdata2)
 
 	// 构建原要素的 GeoJSON（用于记录）
-	type AllOriginalGeoms struct {
-		Type     string        `json:"type"`
-		Features []interface{} `json:"features"`
-	}
-	allOriginalGeoms := AllOriginalGeoms{
-		Type:     "FeatureCollection",
-		Features: []interface{}{},
-	}
+	allOriginalGeoms := geojson.FeatureCollection{}
 
 	// 获取所有原要素的 GeoJSON
 	for _, id := range jsonData.IDs {
@@ -1734,7 +1780,7 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	NewGeojson, _ := json.Marshal(explodedGeojson)
 
 	// 生成删除的对象IDs（可选，根据你的需求）
-	delObjJSON, _ := json.Marshal(jsonData.IDs)
+	delObjJSON := DelIDGen(allOriginalGeoms)
 
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
@@ -1801,6 +1847,18 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 		return
 	}
 
+	// 获取文件类型，确定映射字段
+	fileExt := GetFileExt(LayerName)
+	var mappingField string
+	switch fileExt {
+	case ".shp":
+		mappingField = "objectid"
+	case ".gdb":
+		mappingField = "fid"
+	default:
+		mappingField = "" // 无映射字段
+	}
+
 	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -1855,7 +1913,7 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 		}
 	}
 
-	// ========== 查询 id 和 objectid 的最大值 ==========
+	// ========== 查询 id 和映射字段的最大值 ==========
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
@@ -1868,14 +1926,17 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 		return
 	}
 
-	var maxObjectID int32
-	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
-		// objectid 可能不存在，忽略错误
-		maxObjectID = 0
+	var maxMappingID int32
+	if mappingField != "" {
+		// 查询映射字段的最大值
+		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) as max_id FROM "%s"`, mappingField, LayerName)
+		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
+			// 映射字段可能不存在，忽略错误
+			maxMappingID = 0
+		}
 	}
 
-	// ========== 构造环岛（使用 ST_DifferencePolygonPolygon 或 ST_Difference）==========
+	// ========== 构造环岛（使用 ST_Difference）==========
 	// 环岛 = 原多边形 - 内部多边形
 	// 需要验证内部多边形确实在原多边形内部
 	validateDonutSQL := fmt.Sprintf(`
@@ -1915,10 +1976,20 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 	// 构建SELECT的列名
 	selectCols := fmt.Sprintf(`%d + 1 AS id, geom`, maxID)
 	for _, col := range additionalColumns {
-		if col == "objectid" {
-			selectCols += fmt.Sprintf(`, %d + 1 AS "%s"`, maxObjectID, col)
+		if col == mappingField && mappingField != "" {
+			// 如果是映射字段，使用自增后的值
+			selectCols += fmt.Sprintf(`, %d + 1 AS "%s"`, maxMappingID, col)
 		} else {
+			// 其他字段直接复制
 			selectCols += fmt.Sprintf(`, "%s"`, col)
+		}
+	}
+
+	// 构建附加列的引用（用于WITH子句）
+	additionalColsRef := ""
+	if len(additionalColumns) > 0 {
+		for _, col := range additionalColumns {
+			additionalColsRef += fmt.Sprintf(`, o."%s"`, col)
 		}
 	}
 
@@ -1933,21 +2004,11 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 				%s
 			FROM original o
 		)
-		INSERT INTO "%s" (`+insertCols+`)
-		SELECT `+selectCols+`
+		INSERT INTO "%s" (%s)
+		SELECT %s
 		FROM donut_geom
 		RETURNING id
-	`, LayerName, jsonData.ID, donut,
-		func() string {
-			if len(additionalColumns) > 0 {
-				cols := ""
-				for _, col := range additionalColumns {
-					cols += fmt.Sprintf(`, o."%s"`, col)
-				}
-				return cols
-			}
-			return ""
-		}(), LayerName)
+	`, LayerName, jsonData.ID, donut, additionalColsRef, LayerName, insertCols, selectCols)
 
 	type InsertedID struct {
 		ID int32
@@ -2101,6 +2162,18 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 		return
 	}
 
+	// 获取文件扩展名，判断数据源类型
+	fileExt := GetFileExt(LayerName)
+	var mappingField string
+	switch fileExt {
+	case ".shp":
+		mappingField = "objectid"
+	case ".gdb":
+		mappingField = "fid"
+	default:
+		mappingField = "" // 空字符串表示不需要映射字段
+	}
+
 	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -2179,11 +2252,14 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 		return
 	}
 
-	// 查询 objectid 的最大值
-	var maxObjectID int32
-	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
-		// 如果查询失败，继续执行（某些表可能没有objectid字段）
+	// 查询映射字段的最大值（如果有映射字段）
+	var maxMappingID int32
+	if mappingField != "" {
+		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(%s), 0) FROM "%s"`, mappingField, LayerName)
+		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
+			// 如果查询失败，继续执行（某些表可能没有该字段）
+			maxMappingID = 0
+		}
 	}
 
 	// 4. 构建属性字段列表（排除id和geom）
@@ -2192,10 +2268,13 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 	for key, value := range originalFeature {
 		if key != "id" && key != "geom" {
 			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
-			if key == "objectid" {
-				columnValues = append(columnValues, fmt.Sprintf("%d", maxObjectID+1))
+
+			// 如果是映射字段，使用自增值
+			if mappingField != "" && key == mappingField {
+				columnValues = append(columnValues, fmt.Sprintf("%d", maxMappingID+1))
 				continue
 			}
+
 			// 根据值类型构建SQL值
 			switch v := value.(type) {
 			case nil:
@@ -2489,6 +2568,19 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
+	// ========== 新增：获取文件扩展名并确定映射字段 ==========
+	fileExt := GetFileExt(LayerName)
+	var idFieldName string
+
+	switch fileExt {
+	case ".shp":
+		idFieldName = "objectid"
+	case ".gdb":
+		idFieldName = "fid"
+	default:
+		idFieldName = "id"
+	}
+
 	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
@@ -2509,7 +2601,7 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 
 	// 1. 验证所有ID是否存在
 	var count int64
-	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
+	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IN (%s)`, LayerName, idFieldName, idsStr)
 	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -2542,8 +2634,8 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	// 获取要素的中心纬度，用于计算经度偏移
 	var centerLat float64
 	latSQL := fmt.Sprintf(`
-		SELECT AVG(ST_Y(ST_Centroid(geom))) FROM "%s" WHERE id IN (%s)
-	`, LayerName, idsStr)
+		SELECT AVG(ST_Y(ST_Centroid(geom))) FROM "%s" WHERE "%s" IN (%s)
+	`, LayerName, idFieldName, idsStr)
 
 	if err := tx.Raw(latSQL).Scan(&centerLat).Error; err != nil {
 		tx.Rollback()
@@ -2563,9 +2655,9 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	offsetSQL := fmt.Sprintf(`
 		UPDATE "%s"
 		SET geom = ST_Translate(geom, %f, %f)
-		WHERE id IN (%s)
-		RETURNING id, ST_AsGeoJSON(geom) AS geojson
-	`, LayerName, offsetLon, offsetLat, idsStr)
+		WHERE "%s" IN (%s)
+		RETURNING "%s", ST_AsGeoJSON(geom) AS geojson
+	`, LayerName, offsetLon, offsetLat, idFieldName, idsStr, idFieldName)
 
 	type OffsetResult struct {
 		ID      int32
@@ -2595,7 +2687,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	}
 
 	// 4. 删除MVT缓存
-
 	pgmvt.DelMVTALL(DB, jsonData.LayerName)
 
 	// 5. 提交事务
@@ -2615,7 +2706,11 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	}
 	newGeo := GetGeos(getdata3)
 	newGeojson, _ := json.Marshal(newGeo)
-
+	var DelObjectIDs []int32
+	for _, ff := range oldGeo.Features {
+		DelObjectIDs = append(DelObjectIDs, ff.Properties[idFieldName].(int32))
+	}
+	delObjectIDs, _ := json.Marshal(DelObjectIDs)
 	// 8. 记录操作
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
@@ -2623,7 +2718,7 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		Date:         time.Now().Format("2006-01-02 15:04:05"),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeojson,
-		DelObjectIDs: nil,
+		DelObjectIDs: delObjectIDs,
 	}
 
 	DB.Create(&RecordResult)
@@ -2638,6 +2733,7 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 			"offset_y_m": jsonData.YOffset,
 			"offset_lon": offsetLon,
 			"offset_lat": offsetLat,
+			"id_field":   idFieldName,
 		},
 	})
 }
@@ -2671,6 +2767,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 
 	DB := models.DB
 	LayerName := jsonData.LayerName
+	EXT := GetFileExt(LayerName)
 
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
@@ -2812,7 +2909,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
 	}
 
-	// ========== 5. 获取当前表的最大ID和最大objectid ==========
+	// ========== 5. 获取当前表的最大ID和对应的映射字段最大值 ==========
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
@@ -2825,11 +2922,26 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		return
 	}
 
-	var maxObjectID int32
-	getMaxObjectIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(objectid), 0) as max_id FROM "%s"`, LayerName)
-	if err := tx.Raw(getMaxObjectIDSQL).Scan(&maxObjectID).Error; err != nil {
-		// objectid 可能不存在，忽略错误
-		maxObjectID = 0
+	// 根据文件扩展名确定映射字段
+	var mappingField string
+	var maxMappingValue int32
+
+	if EXT == ".shp" {
+		mappingField = "objectid"
+	} else if EXT == ".gdb" {
+		mappingField = "fid"
+	}
+	var DelObjectIDs []int32
+	for _, ff := range oldGeo.Features {
+		DelObjectIDs = append(DelObjectIDs, ff.Properties[mappingField].(int32))
+	}
+	delObjectIDs, _ := json.Marshal(DelObjectIDs)
+	// 如果有映射字段，获取其最大值
+	if mappingField != "" {
+		getMaxMappingSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) FROM "%s"`, mappingField, LayerName)
+		if tx.Raw(getMaxMappingSQL).Scan(&maxMappingValue).Error != nil {
+			maxMappingValue = 0
+		}
 	}
 
 	// 6. 使用自定义函数进行叠加分析
@@ -2916,10 +3028,10 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 
 		// 添加所有附加列的值
 		for _, col := range additionalColumns {
-			if col == "objectid" {
-				// objectid 使用自增值
-				newObjectID := maxObjectID + int32(i) + 1
-				valueList += fmt.Sprintf(`, %d`, newObjectID)
+			if mappingField != "" && col == mappingField {
+				// 使用映射字段的自增值（objectid 或 fid）
+				newMappingValue := maxMappingValue + int32(i) + 1
+				valueList += fmt.Sprintf(`, %d`, newMappingValue)
 			} else {
 				// 其他属性从模板继承
 				if templateAttributes != nil {
@@ -3019,7 +3131,7 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		Date:         time.Now().Format("2006-01-02 15:04:05"),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeojson,
-		DelObjectIDs: nil,
+		DelObjectIDs: delObjectIDs,
 	}
 	DB.Create(&RecordResult)
 
@@ -3048,6 +3160,35 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 			"features":          returnData,
 		},
 	})
+}
+
+func GetFileExt(TableName string) string {
+	DB := models.DB
+	var Schema models.MySchema
+	if err := DB.Where("en = ?", TableName).First(&Schema).Error; err != nil {
+		return ""
+	}
+	var sourceConfigs []pgmvt.SourceConfig
+
+	if err := json.Unmarshal(Schema.Source, &sourceConfigs); err != nil {
+		return ""
+	}
+	sourceConfig := sourceConfigs[0]
+	// 判断源头文件是gdb还是shp
+	Soucepath := sourceConfig.SourcePath
+
+	// 获取文件扩展名
+	ext := strings.ToLower(filepath.Ext(Soucepath))
+
+	// 判断是否为GDB(GDB通常是文件夹,扩展名为.gdb)
+	isGDB := ext == ".gdb" || strings.HasSuffix(strings.ToLower(Soucepath), ".gdb")
+	isSHP := ext == ".shp"
+
+	if !isGDB && !isSHP {
+
+		return ""
+	}
+	return ext
 }
 
 // 同步编辑到文件
@@ -3093,11 +3234,7 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 	// 获取文件扩展名
 	ext := strings.ToLower(filepath.Ext(Soucepath))
 
-	// 判断是否为GDB(GDB通常是文件夹,扩展名为.gdb)
-	isGDB := ext == ".gdb" || strings.HasSuffix(strings.ToLower(Soucepath), ".gdb")
-	isSHP := ext == ".shp"
-
-	if !isGDB && !isSHP {
+	if ext != ".shp" && ext != ".gdb" {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    500,
 			"message": "不支持的文件格式,仅支持GDB和SHP",
@@ -3127,11 +3264,11 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 					var deletedCount int
 					var err error
 
-					if isSHP {
+					if ext == ".shp" {
 						// Shapefile删除
 						deletedCount, err = Gogeo.DeleteShapeFeaturesByFilter(Soucepath, whereClause)
-					} else if isGDB {
-						// GDB删除
+					}
+					if ext == ".gdb" {
 						deletedCount, err = Gogeo.DeleteFeaturesByFilter(Soucepath, SouceLayer, whereClause)
 					}
 
@@ -3175,10 +3312,11 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 					}
 
 					var insertErr error
-					if isSHP {
+					if ext == ".shp" {
 						// 插入到Shapefile
 						insertErr = Gogeo.InsertLayerToShapefile(gdalLayer, Soucepath, options)
-					} else if isGDB {
+					}
+					if ext == ".gdb" {
 						// 插入到GDB
 						insertErr = Gogeo.InsertLayerToGDB(gdalLayer, Soucepath, SouceLayer, options)
 					}
@@ -3211,7 +3349,7 @@ func (uc *UserController) SyncToFile(c *gin.Context) {
 		Table:    TableName,
 	}
 	if len(FieldRecord) >= 1 {
-		if isGDB {
+		if ext == ".gdb" {
 			for _, record := range FieldRecord {
 				if record.Type == "value" {
 					options := &Gogeo.SyncFieldOptions{
