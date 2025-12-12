@@ -2706,11 +2706,8 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	}
 	newGeo := GetGeos(getdata3)
 	newGeojson, _ := json.Marshal(newGeo)
-	var DelObjectIDs []int32
-	for _, ff := range oldGeo.Features {
-		DelObjectIDs = append(DelObjectIDs, ff.Properties[idFieldName].(int32))
-	}
-	delObjectIDs, _ := json.Marshal(DelObjectIDs)
+
+	delObjectIDs := DelIDGen(oldGeo)
 	// 8. 记录操作
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
@@ -2931,11 +2928,9 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 	} else if EXT == ".gdb" {
 		mappingField = "fid"
 	}
-	var DelObjectIDs []int32
-	for _, ff := range oldGeo.Features {
-		DelObjectIDs = append(DelObjectIDs, ff.Properties[mappingField].(int32))
-	}
-	delObjectIDs, _ := json.Marshal(DelObjectIDs)
+
+	delObjectIDs := DelIDGen(oldGeo)
+
 	// 如果有映射字段，获取其最大值
 	if mappingField != "" {
 		getMaxMappingSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) FROM "%s"`, mappingField, LayerName)
