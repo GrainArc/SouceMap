@@ -170,8 +170,8 @@ func getIPv4FromIfconfig() ([]string, error) {
 // GetAllLocalIPv4 获取所有符合条件的 IPv4 地址，支持备选方案
 func GetAllLocalIPv4() ([]string, error) {
 	// 首先尝试使用标准库方法
-	ipPrefixes, err := getIPv4FromInterfaces()
-	if err == nil {
+	ipPrefixes, _ := getIPv4FromInterfaces()
+	if len(ipPrefixes) == 0 {
 		return ipPrefixes, nil
 	}
 
