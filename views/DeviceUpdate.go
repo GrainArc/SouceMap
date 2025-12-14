@@ -175,7 +175,6 @@ func getIPv4FromIfconfigALL() ([]string, error) {
 	}
 
 	var ipPrefixes []string
-	seenPrefixes := make(map[string]bool)
 
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
@@ -187,11 +186,7 @@ func getIPv4FromIfconfigALL() ([]string, error) {
 				ip := parts[1]
 				ipParts := strings.Split(ip, ".")
 				if len(ipParts) == 4 {
-					prefix := strings.Join(ipParts[:4], ".")
-					if !seenPrefixes[prefix] {
-						seenPrefixes[prefix] = true
-						ipPrefixes = append(ipPrefixes, prefix)
-					}
+					ipPrefixes = append(ipPrefixes, ip)
 				}
 			}
 		}
