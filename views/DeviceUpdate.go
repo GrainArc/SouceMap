@@ -167,6 +167,43 @@ func getIPv4FromIfconfig() ([]string, error) {
 	return nil, fmt.Errorf("未找到有效的 IPv4 地址")
 }
 
+func getIPv4FromIfconfigALL() ([]string, error) {
+	cmd := exec.Command("ifconfig")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("执行 ifconfig 失败: %v", err)
+	}
+
+	var ipPrefixes []string
+	seenPrefixes := make(map[string]bool)
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 查找 inet 行，排除本地回环地址
+		if strings.Contains(line, "inet ") && !strings.Contains(line, "127.0.0.1") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				ip := parts[1]
+				ipParts := strings.Split(ip, ".")
+				if len(ipParts) == 4 {
+					prefix := strings.Join(ipParts[:4], ".")
+					if !seenPrefixes[prefix] {
+						seenPrefixes[prefix] = true
+						ipPrefixes = append(ipPrefixes, prefix)
+					}
+				}
+			}
+		}
+	}
+
+	if len(ipPrefixes) > 0 {
+		return ipPrefixes, nil
+	}
+
+	return nil, fmt.Errorf("未找到有效的 IPv4 地址")
+}
+
 // GetAllLocalIPv4 获取所有符合条件的 IPv4 地址，支持备选方案
 func GetAllLocalIPv4() ([]string, error) {
 	// 首先尝试使用标准库方法
@@ -235,6 +272,14 @@ type DeviceData struct {
 	DeviceName string
 }
 
+func contains(slice []string, target string) bool {
+	for _, v := range slice {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
 func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 	// 获取所有IP地址列表
 	Mainips, _ := GetAllLocalIPv4()
@@ -263,15 +308,14 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 	semaphore := make(chan struct{}, maxConcurrency) // 信号量通道，控制并发数
 
 	// 获取主路由器IP，用于过滤自身IP
-	mainRouterIP := strings.Split(config.MainRouter, ":")[0]
+	mainRouterIP, _ := getIPv4FromIfconfigALL()
 
 	// 遍历所有IP地址，为每个非主路由器IP启动goroutine
 	for _, ip := range ips {
 		// 跳过主路由器IP，避免自己请求自己
-		if ip == mainRouterIP {
+		if contains(mainRouterIP, ip) == true {
 			continue // 跳过当前循环，处理下一个IP
 		}
-
 		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
