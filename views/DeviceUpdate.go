@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"os/exec"
 	"runtime"
 
 	"fmt"
@@ -32,19 +33,19 @@ import (
 )
 
 // isValidInterface 判断接口名称是否为 WiFi 或以太网
+// isValidInterface 判断接口名称是否为 WiFi 或以太网
 func isValidInterface(name string) bool {
 	name = strings.ToLower(name)
 
 	switch runtime.GOOS {
 	case "windows":
-		// Windows 接口名称通常包含这些关键字
 		validPrefixes := []string{
 			"ethernet",
-			"eth", // 以太网
+			"eth",
 			"以太网",
-			"wi-fi",                 // WiFi
-			"wlan",                  // 无线网卡
-			"local area connection", // 本地连接
+			"wi-fi",
+			"wlan",
+			"local area connection",
 		}
 		for _, prefix := range validPrefixes {
 			if strings.Contains(name, prefix) {
@@ -53,15 +54,9 @@ func isValidInterface(name string) bool {
 		}
 
 	case "linux":
-		// Linux 接口名称通常是这些
 		validPrefixes := []string{
-			"eth",  // 以太网
-			"ens",  // 新版以太网命名
-			"enp",  // PCI 以太网
-			"eno",  // 板载以太网
-			"wlan", // 无线网卡
-			"wlp",  // PCI 无线网卡
-			"wlo",  // 板载无线网卡
+			"eth", "ens", "enp", "eno",
+			"wlan", "inet", "wlp", "wlo",
 			"以太网",
 		}
 		for _, prefix := range validPrefixes {
@@ -71,23 +66,18 @@ func isValidInterface(name string) bool {
 		}
 
 	case "darwin": // macOS
-		validPrefixes := []string{
-			"en", // 以太网和 WiFi 都是 en 开头
-		}
-		for _, prefix := range validPrefixes {
-			if strings.HasPrefix(name, prefix) {
-				return true
-			}
+		if strings.HasPrefix(name, "en") {
+			return true
 		}
 	}
 
 	return false
 }
 
-// GetAllLocalIPv4 获取所有符合条件的 IPv4 地址
-func GetAllLocalIPv4() ([]string, error) {
+// getIPv4FromInterfaces 从网络接口获取 IPv4 地址前缀
+func getIPv4FromInterfaces() ([]string, error) {
 	var ipPrefixes []string
-	seenPrefixes := make(map[string]bool) // 用于去重
+	seenPrefixes := make(map[string]bool)
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -95,6 +85,7 @@ func GetAllLocalIPv4() ([]string, error) {
 	}
 
 	for _, iface := range interfaces {
+		// 跳过未启用和回环接口
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
 			continue
 		}
@@ -118,13 +109,10 @@ func GetAllLocalIPv4() ([]string, error) {
 			}
 
 			if ip != nil && ip.To4() != nil {
-				// 提取前三个节点
 				ipStr := ip.String()
 				parts := strings.Split(ipStr, ".")
 				if len(parts) == 4 {
 					prefix := strings.Join(parts[:3], ".")
-
-					// 去重
 					if !seenPrefixes[prefix] {
 						seenPrefixes[prefix] = true
 						ipPrefixes = append(ipPrefixes, prefix)
@@ -134,11 +122,114 @@ func GetAllLocalIPv4() ([]string, error) {
 		}
 	}
 
-	if len(ipPrefixes) == 0 {
-		return nil, fmt.Errorf("未找到有效的 IPv4 地址")
+	if len(ipPrefixes) > 0 {
+		return ipPrefixes, nil
 	}
 
-	return ipPrefixes, nil
+	return nil, fmt.Errorf("未找到有效的 IPv4 地址")
+}
+
+// getIPv4FromIfconfig 通过 ifconfig 命令获取 IPv4 地址前缀（备选方案）
+func getIPv4FromIfconfig() ([]string, error) {
+	cmd := exec.Command("ifconfig")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("执行 ifconfig 失败: %v", err)
+	}
+
+	var ipPrefixes []string
+	seenPrefixes := make(map[string]bool)
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 查找 inet 行，排除本地回环地址
+		if strings.Contains(line, "inet ") && !strings.Contains(line, "127.0.0.1") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				ip := parts[1]
+				ipParts := strings.Split(ip, ".")
+				if len(ipParts) == 4 {
+					prefix := strings.Join(ipParts[:3], ".")
+					if !seenPrefixes[prefix] {
+						seenPrefixes[prefix] = true
+						ipPrefixes = append(ipPrefixes, prefix)
+					}
+				}
+			}
+		}
+	}
+
+	if len(ipPrefixes) > 0 {
+		return ipPrefixes, nil
+	}
+
+	return nil, fmt.Errorf("未找到有效的 IPv4 地址")
+}
+
+// GetAllLocalIPv4 获取所有符合条件的 IPv4 地址，支持备选方案
+func GetAllLocalIPv4() ([]string, error) {
+	// 首先尝试使用标准库方法
+	ipPrefixes, err := getIPv4FromInterfaces()
+	if err == nil {
+		return ipPrefixes, nil
+	}
+
+	// 如果失败，检查系统是否支持 ifconfig 命令
+	if _, err := exec.LookPath("ifconfig"); err == nil {
+		ipPrefixes, err := getIPv4FromIfconfig()
+		if err == nil {
+			return ipPrefixes, nil
+		}
+	}
+
+	// 如果都失败，尝试 Windows 的 ipconfig 命令
+	if runtime.GOOS == "windows" {
+		ipPrefixes, err := getIPv4FromIpconfig()
+		if err == nil {
+			return ipPrefixes, nil
+		}
+	}
+
+	return nil, fmt.Errorf("无法获取有效的 IPv4 地址，已尝试所有可用方法")
+}
+
+// getIPv4FromIpconfig Windows 专用方法
+func getIPv4FromIpconfig() ([]string, error) {
+	cmd := exec.Command("ipconfig")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("执行 ipconfig 失败: %v", err)
+	}
+
+	var ipPrefixes []string
+	seenPrefixes := make(map[string]bool)
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// 查找 IPv4 地址行
+		if strings.Contains(line, "IPv4 Address") || strings.Contains(line, "IPv4 地址") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				ip := strings.TrimSpace(parts[1])
+				ipParts := strings.Split(ip, ".")
+				if len(ipParts) == 4 {
+					prefix := strings.Join(ipParts[:3], ".")
+					if !seenPrefixes[prefix] {
+						seenPrefixes[prefix] = true
+						ipPrefixes = append(ipPrefixes, prefix)
+					}
+				}
+			}
+		}
+	}
+
+	if len(ipPrefixes) > 0 {
+		return ipPrefixes, nil
+	}
+
+	return nil, fmt.Errorf("未找到有效的 IPv4 地址")
 }
 
 // 获取当前能更新的设备
