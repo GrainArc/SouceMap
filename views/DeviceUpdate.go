@@ -171,16 +171,13 @@ func getIPv4FromIfconfig() ([]string, error) {
 func GetAllLocalIPv4() ([]string, error) {
 	// 首先尝试使用标准库方法
 	ipPrefixes, _ := getIPv4FromInterfaces()
-	if len(ipPrefixes) == 0 {
+	if len(ipPrefixes) != 0 {
 		return ipPrefixes, nil
 	}
 
-	// 如果失败，检查系统是否支持 ifconfig 命令
-	if _, err := exec.LookPath("ifconfig"); err == nil {
-		ipPrefixes, err := getIPv4FromIfconfig()
-		if err == nil {
-			return ipPrefixes, nil
-		}
+	ipPrefixes, err := getIPv4FromIfconfig()
+	if err == nil {
+		return ipPrefixes, nil
 	}
 
 	// 如果都失败，尝试 Windows 的 ipconfig 命令
@@ -275,7 +272,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 			continue // 跳过当前循环，处理下一个IP
 		}
 
-		wg.Add(1)            // 增加等待组计数
+		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
 
