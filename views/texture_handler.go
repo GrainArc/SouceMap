@@ -35,7 +35,7 @@ func (h *TextureHandler) Upload(c *gin.Context) {
 	}
 	ext := filepath.Ext(file.Filename)
 	name := strings.TrimSuffix(file.Filename, ext)
-	
+
 	description := c.PostForm("description")
 
 	// 调用服务层上传
@@ -212,4 +212,33 @@ func (h *TextureHandler) SetLayerTexture(c *gin.Context) {
 		"layer_name":     req.LayerName,
 		"attribute_name": req.AttName,
 	})
+}
+
+// GetLayerTexture 获取图层纹理设置
+// @Summary 获取图层纹理设置
+// @Accept json
+// @Produce json
+// @Param layer_name query string true "图层名称"
+
+func (h *TextureHandler) GetLayerTexture(c *gin.Context) {
+	layerName := c.Query("layer_name")
+
+	// 参数验证
+	if layerName == "" {
+		response.BadRequest(c, "图层名称不能为空")
+		return
+	}
+
+	// 调用服务层获取纹理设置
+	textureSetting, err := h.service.GetLayerTexture(layerName)
+	if err != nil {
+		if err.Error() == "未找到匹配的图层" {
+			response.NotFound(c, err.Error())
+			return
+		}
+		response.InternalError(c, "获取纹理设置失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, textureSetting)
 }

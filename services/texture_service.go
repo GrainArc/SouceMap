@@ -238,3 +238,33 @@ func (s *TextureService) SetLayerTexture(layerName string, textureSets []Texture
 
 	return nil
 }
+
+// GetLayerTexture 获取图层纹理设置
+func (s *TextureService) GetLayerTexture(layerName string) (*LayerTextureSetting, error) {
+	var mySchema models.MySchema
+
+	// 查询MySchema表
+	result := models.DB.Where("en = ?", layerName).First(&mySchema)
+
+	if result.Error != nil {
+		if result.Error.Error() == "record not found" {
+			return nil, errors.New("未找到匹配的图层")
+		}
+		return nil, fmt.Errorf("数据库查询失败: %w", result.Error)
+	}
+
+	// 解析TextureSet JSON数据
+	var textureSets []TextureSet
+	if len(mySchema.TextureSet) > 0 {
+		if err := json.Unmarshal(mySchema.TextureSet, &textureSets); err != nil {
+			return nil, fmt.Errorf("纹理数据解析失败: %w", err)
+		}
+	}
+
+	response := &LayerTextureSetting{
+		LayerName:   layerName,
+		TextureSets: textureSets,
+	}
+
+	return response, nil
+}

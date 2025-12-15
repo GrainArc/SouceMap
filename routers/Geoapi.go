@@ -188,6 +188,7 @@ func GeoRouters(r *gin.Engine) {
 		// DELETE删除纹理
 		api.DELETE("/:id", textureHandler.Delete)
 		api.POST("/set_layer_texture", textureHandler.SetLayerTexture)
+		api.GET("/get_layer_texture", textureHandler.GetLayerTexture)
 
 	}
 
