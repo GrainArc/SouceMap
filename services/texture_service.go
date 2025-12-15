@@ -2,7 +2,6 @@ package services
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"image"
 	"image/png"
@@ -10,8 +9,6 @@ import (
 	"mime/multipart"
 
 	"github.com/GrainArc/SouceMap/models"
-
-	"gorm.io/datatypes"
 )
 
 type TextureService struct{}
@@ -42,11 +39,6 @@ func (s *TextureService) ValidatePNG(file *multipart.FileHeader) error {
 	// 检查文件扩展名
 	if file.Filename[len(file.Filename)-4:] != ".png" {
 		return errors.New("文件扩展名必须为.png")
-	}
-
-	// 检查MIME类型
-	if file.Header.Get("Content-Type") != "image/png" {
-		return errors.New("文件类型必须为image/png")
 	}
 
 	// 打开文件验证PNG魔数
@@ -100,22 +92,24 @@ func (s *TextureService) Upload(req *UploadRequest) (*models.Texture, error) {
 	width := bounds.Max.X - bounds.Min.X
 	height := bounds.Max.Y - bounds.Min.Y
 
-	// Base64编码
-	base64Data := base64.StdEncoding.EncodeToString(imageBytes)
-
-	// 创建纹理记录
+	// 创建纹理数据
 	texture := &models.Texture{
 		Name:        req.Name,
 		MimeType:    "image/png",
 		Width:       width,
 		Height:      height,
-		ImageData:   datatypes.JSON([]byte(`"` + base64Data + `"`)),
+		ImageData:   imageBytes,
 		Description: req.Description,
 	}
 
-	// 保存到数据库
-	if err := models.GetDB().Create(texture).Error; err != nil {
-		return nil, errors.New("保存纹理失败: " + err.Error())
+	// 使用 Upsert（如果存在则更新，不存在则创建）
+	result := models.GetDB().
+		Where("name = ?", req.Name).
+		Assign(texture).
+		FirstOrCreate(texture)
+
+	if result.Error != nil {
+		return nil, errors.New("保存纹理失败: " + result.Error.Error())
 	}
 
 	return texture, nil
@@ -176,30 +170,7 @@ func (s *TextureService) GetImageData(id uint) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// 解析JSON中的Base64字符串
-	var base64Str string
-	if err := texture.ImageData.UnmarshalJSON([]byte(texture.ImageData)); err != nil {
-		// 直接尝试解码
-		base64Str = string(texture.ImageData)
-		// 去除可能的引号
-		if len(base64Str) >= 2 && base64Str[0] == '"' {
-			base64Str = base64Str[1 : len(base64Str)-1]
-		}
-	} else {
-		base64Str = string(texture.ImageData)
-		if len(base64Str) >= 2 && base64Str[0] == '"' {
-			base64Str = base64Str[1 : len(base64Str)-1]
-		}
-	}
-
-	// Base64解码
-	imageData, err := base64.StdEncoding.DecodeString(base64Str)
-	if err != nil {
-		return nil, errors.New("解码图片数据失败")
-	}
-
-	return imageData, nil
+	return texture.ImageData, nil
 }
 
 // Delete 删除纹理

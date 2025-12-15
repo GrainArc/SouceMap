@@ -33,11 +33,8 @@ func (h *TextureHandler) Upload(c *gin.Context) {
 		return
 	}
 
-	// 获取表单参数
-	name := c.PostForm("name")
-	if name == "" {
-		name = file.Filename // 默认使用文件名
-	}
+	name := file.Filename // 默认使用文件名
+
 	description := c.PostForm("description")
 
 	// 调用服务层上传

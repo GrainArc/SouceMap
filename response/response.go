@@ -29,7 +29,7 @@ func SuccessWithMessage(c *gin.Context, message string, data interface{}) {
 }
 
 func Error(c *gin.Context, code int, message string) {
-	c.JSON(code, Response{
+	c.JSON(200, Response{
 		Code:    code,
 		Message: message,
 	})
