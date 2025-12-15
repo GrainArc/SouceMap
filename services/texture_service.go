@@ -9,7 +9,6 @@ import (
 	"io"
 	"mime/multipart"
 
-	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/models"
 
 	"gorm.io/datatypes"
@@ -115,7 +114,7 @@ func (s *TextureService) Upload(req *UploadRequest) (*models.Texture, error) {
 	}
 
 	// 保存到数据库
-	if err := config.GetDB().Create(texture).Error; err != nil {
+	if err := models.GetDB().Create(texture).Error; err != nil {
 		return nil, errors.New("保存纹理失败: " + err.Error())
 	}
 
@@ -127,7 +126,7 @@ func (s *TextureService) List(page, pageSize int) ([]TextureListItem, int64, err
 	var textures []models.Texture
 	var total int64
 
-	db := config.GetDB()
+	db := models.GetDB()
 
 	// 获取总数
 	if err := db.Model(&models.Texture{}).Count(&total).Error; err != nil {
@@ -164,7 +163,7 @@ func (s *TextureService) List(page, pageSize int) ([]TextureListItem, int64, err
 func (s *TextureService) GetByID(id uint) (*models.Texture, error) {
 	var texture models.Texture
 
-	if err := config.GetDB().First(&texture, id).Error; err != nil {
+	if err := models.GetDB().First(&texture, id).Error; err != nil {
 		return nil, errors.New("纹理不存在")
 	}
 
@@ -205,7 +204,7 @@ func (s *TextureService) GetImageData(id uint) ([]byte, error) {
 
 // Delete 删除纹理
 func (s *TextureService) Delete(id uint) error {
-	result := config.GetDB().Delete(&models.Texture{}, id)
+	result := models.GetDB().Delete(&models.Texture{}, id)
 	if result.Error != nil {
 		return errors.New("删除失败: " + result.Error.Error())
 	}

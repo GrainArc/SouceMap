@@ -2,6 +2,9 @@ package models
 
 import (
 	"github.com/GrainArc/SouceMap/config"
+	"log"
+	"os"
+	"path/filepath"
 
 	"errors"
 	"fmt"
@@ -47,6 +50,44 @@ func makeTileIndex(DB *gorm.DB) {
 	}
 }
 
+var TextureDB *gorm.DB
+
+// InitDatabase 初始化SQLite数据库
+func InitDatabase() error {
+	// 确保目录存在
+	StoragePath := config.MainConfig.Download + "/Texture"
+	DBFileName := "texture.db"
+	if err := os.MkdirAll(StoragePath, os.ModePerm); err != nil {
+		log.Printf("创建存储目录失败: %v", err)
+		return err
+	}
+
+	dbPath := filepath.Join(StoragePath, DBFileName)
+	log.Printf("数据库路径: %s", dbPath)
+
+	var err error
+	TextureDB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
+	if err != nil {
+		log.Printf("连接数据库失败: %v", err)
+		return err
+	}
+
+	// 自动迁移，创建表结构
+	if err := TextureDB.AutoMigrate(&Texture{}); err != nil {
+		log.Printf("数据库迁移失败: %v", err)
+		return err
+	}
+
+	log.Println("数据库初始化成功")
+	return nil
+}
+
+func GetDB() *gorm.DB {
+	return TextureDB
+}
+
 func InitDB() {
 	DemDB, err = gorm.Open(sqlite.Open(config.Dem), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
@@ -86,7 +127,7 @@ func InitDB() {
 	DB.AutoMigrate(&ZDTPic{})
 	DB.AutoMigrate(&GeoRecord{})
 	DB.AutoMigrate(&Report{})
-	
+
 	user := LoginUser{}
 	user.Token = "0"
 	user.Name = "本地"
