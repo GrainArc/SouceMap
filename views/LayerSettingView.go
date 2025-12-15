@@ -292,7 +292,6 @@ func hsvToRGB(h, s, v float64) (int, int, int) {
 
 func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 	var jsonData ColorData
-
 	// 绑定并验证 JSON 数据
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -311,7 +310,10 @@ func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 	if len(invalidColors) > 0 {
 		log.Printf("Invalid color formats detected: %v", invalidColors)
 	}
-
+	if err := fixAttColorSequence(); err != nil {
+		log.Printf("警告：修复序列失败: %v", err)
+		// 不直接返回，继续执行（使用手动分配ID的方案）
+	}
 	// 使用事务处理数据库操作
 	tx := DB.Begin()
 	defer func() {
@@ -452,6 +454,35 @@ func buildAttColorRecords(colorMaps []CMap, layerName, attName string) []models.
 		data = append(data, attColor)
 	}
 	return data
+}
+
+// fixAttColorSequence 修复att_color表的自增序列
+func fixAttColorSequence() error {
+	DB := models.DB
+
+	// 获取当前最大ID
+	var maxID int64
+	err := DB.Model(&models.AttColor{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error
+	if err != nil {
+		return fmt.Errorf("查询最大ID失败: %v", err)
+	}
+
+	// 更新序列的下一个值（maxID + 1）
+	// 假设序列名称为 'att_color_id_seq'（PostgreSQL默认命名）
+	query := fmt.Sprintf("SELECT setval('att_color_id_seq', %d, true)", maxID+1)
+
+	err = DB.Exec(query).Error
+	if err != nil {
+		// 如果默认序列名不对，尝试其他可能的序列名
+		query = fmt.Sprintf("SELECT setval('att_color_id_seq', %d, true)", maxID+1)
+		err = DB.Exec(query).Error
+		if err != nil {
+			return fmt.Errorf("修复序列失败: %v", err)
+		}
+	}
+
+	log.Printf("已修复att_color序列，下一个ID将从%d开始", maxID+1)
+	return nil
 }
 
 // 检查表中是否存在指定的列
@@ -711,7 +742,10 @@ func (uc *UserController) AddUpdateCESet(c *gin.Context) {
 	}
 	// 预分配切片容量，避免动态扩展时的内存重分配
 	data := make([]models.ChineseProperty, 0, len(jsonData.CEMap))
-
+	err := fixChinesePropertySequence()
+	if err != nil {
+		fmt.Println(err)
+	}
 	// 遍历颜色映射数据，构建数据库记录
 	for _, colorItem := range jsonData.CEMap {
 		// 创建新的属性颜色记录
@@ -734,7 +768,53 @@ func (uc *UserController) AddUpdateCESet(c *gin.Context) {
 
 	c.JSON(http.StatusOK, jsonData)
 }
+func fixChinesePropertySequence() error {
+	DB := models.DB
 
+	// 获取当前最大ID
+	var maxID int64
+	err := DB.Model(&models.ChineseProperty{}).Select("COALESCE(MAX(id), 0)").Scan(&maxID).Error
+	if err != nil {
+		return fmt.Errorf("查询最大ID失败: %v", err)
+	}
+
+	// 尝试修复序列
+	// PostgreSQL序列通常命名为: 表名_id_seq
+	sequenceName := "chinese_property_id_seq"
+
+	// 检查序列是否存在
+	var exists bool
+	checkQuery := `
+        SELECT EXISTS (
+            SELECT 1 
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE c.relkind = 'S' 
+            AND c.relname = $1
+            AND n.nspname = 'public'
+        )
+    `
+
+	err = DB.Raw(checkQuery, sequenceName).Scan(&exists).Error
+	if err != nil {
+		return fmt.Errorf("检查序列存在性失败: %v", err)
+	}
+
+	if exists {
+		// 序列存在，修复它
+		fixQuery := fmt.Sprintf("SELECT setval('%s', %d, true)", sequenceName, maxID+1)
+		err = DB.Exec(fixQuery).Error
+		if err != nil {
+			return fmt.Errorf("修复序列失败: %v", err)
+		}
+		log.Printf("已修复%s序列，下一个ID将从%d开始", sequenceName, maxID+1)
+	} else {
+		// 序列不存在，记录警告
+		log.Printf("警告：序列%s不存在，可能是表结构问题", sequenceName)
+	}
+
+	return nil
+}
 func GetCEMap(LayerName string) map[string]string {
 	DB := models.DB
 

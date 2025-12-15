@@ -201,7 +201,7 @@ func (h *TextureHandler) SetLayerTexture(c *gin.Context) {
 	}
 
 	// 调用服务层设置纹理
-	err := h.service.SetLayerTexture(req.LayerName, req.TextureSets)
+	err := h.service.SetLayerTexture(req.LayerName, req)
 	if err != nil {
 		response.InternalError(c, "设置纹理失败: "+err.Error())
 		return

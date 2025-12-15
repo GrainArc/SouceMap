@@ -215,7 +215,7 @@ type TextureSet struct {
 	TextureName string `json:"texture_name"`
 }
 
-func (s *TextureService) SetLayerTexture(layerName string, textureSets []TextureSet) error {
+func (s *TextureService) SetLayerTexture(layerName string, textureSets LayerTextureSetting) error {
 	// 构建TextureSet JSON数据
 	textureSetJSON, err := json.Marshal(textureSets)
 	if err != nil {

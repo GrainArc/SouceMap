@@ -51,13 +51,12 @@ type DirectoryNode struct {
 
 // 配置表
 type LayerMXD struct {
-	ID      int64  `gorm:"primary_key;autoIncrement"`
-	EN      string `gorm:"type:varchar(255)"`
-	Main    string `gorm:"type:varchar(255)"`
-	CN      string `gorm:"type:varchar(255)"`
-	MXDName string `gorm:"type:varchar(255)"`
-	MXDUid  string `gorm:"type:varchar(255)"`
-
+	ID          int64  `gorm:"primary_key;autoIncrement"`
+	EN          string `gorm:"type:varchar(255)"`
+	Main        string `gorm:"type:varchar(255)"`
+	CN          string `gorm:"type:varchar(255)"`
+	MXDName     string `gorm:"type:varchar(255)"`
+	MXDUid      string `gorm:"type:varchar(255)"`
 	LayerSortID int64
 	Style       datatypes.JSON `gorm:"type:jsonb"`
 }
