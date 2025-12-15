@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"mime/multipart"
+	"strconv"
 )
 
 type TextureService struct{}
@@ -267,4 +268,87 @@ func (s *TextureService) GetLayerTexture(layerName string) (*LayerTextureSetting
 	}
 
 	return response, nil
+}
+
+// 在 services/texture.go 中添加以下方法
+
+// GetUsedTextures 获取所有已配置的纹理（从MySchema表的TextureSet中提取并去重）
+func (s *TextureService) GetUsedTextures() ([]TextureListItem, error) {
+	var schemas []models.MySchema
+
+	// 查询所有有TextureSet的记录
+	if err := models.DB.Where("texture_set IS NOT NULL AND texture_set != '[]' AND texture_set != 'null'").
+		Find(&schemas).Error; err != nil {
+		return nil, fmt.Errorf("查询MySchema失败: %w", err)
+	}
+
+	// 使用map去重TextureID
+	textureIDMap := make(map[uint]struct{})
+
+	for _, schema := range schemas {
+		if len(schema.TextureSet) == 0 {
+			continue
+		}
+
+		// 尝试解析为 LayerTextureSetting 格式
+		var setting LayerTextureSetting
+		if err := json.Unmarshal(schema.TextureSet, &setting); err == nil && len(setting.TextureSets) > 0 {
+			for _, ts := range setting.TextureSets {
+				if ts.TextureID != "" {
+					if id, err := strconv.ParseUint(ts.TextureID, 10, 64); err == nil {
+						textureIDMap[uint(id)] = struct{}{}
+					}
+				}
+			}
+			continue
+		}
+
+		// 尝试解析为 []TextureSet 格式
+		var textureSets []TextureSet
+		if err := json.Unmarshal(schema.TextureSet, &textureSets); err == nil {
+			for _, ts := range textureSets {
+				if ts.TextureID != "" {
+					if id, err := strconv.ParseUint(ts.TextureID, 10, 64); err == nil {
+						textureIDMap[uint(id)] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+
+	// 如果没有找到任何纹理ID
+	if len(textureIDMap) == 0 {
+		return []TextureListItem{}, nil
+	}
+
+	// 转换为ID切片
+	textureIDs := make([]uint, 0, len(textureIDMap))
+	for id := range textureIDMap {
+		textureIDs = append(textureIDs, id)
+	}
+
+	// 查询Texture表中存在的记录
+	var textures []models.Texture
+	if err := models.GetDB().
+		Select("id, name, mime_type, width, height, description").
+		Where("id IN ?", textureIDs).
+		Order("id DESC").
+		Find(&textures).Error; err != nil {
+		return nil, fmt.Errorf("查询Texture失败: %w", err)
+	}
+
+	// 转换为TextureListItem
+	items := make([]TextureListItem, len(textures))
+	for i, t := range textures {
+		items[i] = TextureListItem{
+			ID:          t.ID,
+			Name:        t.Name,
+			MimeType:    t.MimeType,
+			Width:       t.Width,
+			Height:      t.Height,
+			Description: t.Description,
+		}
+	}
+
+	return items, nil
 }

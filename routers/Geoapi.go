@@ -189,7 +189,7 @@ func GeoRouters(r *gin.Engine) {
 		api.DELETE("/:id", textureHandler.Delete)
 		api.POST("/set_layer_texture", textureHandler.SetLayerTexture)
 		api.GET("/get_layer_texture", textureHandler.GetLayerTexture)
-
+		api.GET("/get_used_textures", textureHandler.GetUsedTextures)
 	}
 
 }

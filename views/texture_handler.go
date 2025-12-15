@@ -242,3 +242,21 @@ func (h *TextureHandler) GetLayerTexture(c *gin.Context) {
 
 	response.Success(c, textureSetting)
 }
+
+// 在 views/texture.go 中添加以下方法
+
+// GetUsedTextures 获取所有已配置使用的纹理
+// @Summary 获取所有已配置使用的纹理（从图层配置中提取并去重）
+// @Produce json
+func (h *TextureHandler) GetUsedTextures(c *gin.Context) {
+	items, err := h.service.GetUsedTextures()
+	if err != nil {
+		response.InternalError(c, "获取已配置纹理失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"list":  items,
+		"total": len(items),
+	})
+}
