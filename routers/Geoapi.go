@@ -170,4 +170,24 @@ func GeoRouters(r *gin.Engine) {
 		// 获取根目录路径
 		fileGroup.GET("/root", fileController.GetRootPath)
 	}
+
+	// 创建处理器
+	textureHandler := views.NewTextureHandler()
+
+	// API路由组
+	api := r.Group("/textures")
+	{
+		//上传纹理
+		api.POST("/upload", textureHandler.Upload)
+		//获取纹理列表
+		api.GET("/list", textureHandler.List)
+		// 获取纹理详情（含Base64数据）
+		api.GET("/:id", textureHandler.Get)
+		//  获取原始PNG图片
+		api.GET("/:id/image", textureHandler.GetImage)
+		// DELETE删除纹理
+		api.DELETE("/:id", textureHandler.Delete)
+
+	}
+
 }
