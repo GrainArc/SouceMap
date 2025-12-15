@@ -36,6 +36,8 @@ func (s *FieldCalculatorService) CalculateField(req models.FieldCalculatorReques
 		sqlStatement, err = s.buildConcatSQL(req)
 	case "calculate":
 		sqlStatement, err = s.buildCalculateSQL(req)
+	case "round":
+		sqlStatement, err = s.buildRoundSQL(req)
 	default:
 		return nil, errors.New("不支持的操作类型")
 	}
@@ -57,6 +59,108 @@ func (s *FieldCalculatorService) CalculateField(req models.FieldCalculatorReques
 		AffectedRows:  result.RowsAffected,
 		SQLStatement:  sqlStatement,
 	}, nil
+}
+
+func (s *FieldCalculatorService) buildRoundSQL(req models.FieldCalculatorRequest) (string, error) {
+	// 验证必需参数
+	if req.DecimalPlaces == nil {
+		return "", errors.New("round操作需要指定decimal_places参数")
+	}
+
+	if *req.DecimalPlaces < 0 {
+		return "", errors.New("decimal_places必须大于等于0")
+	}
+
+	// 获取字段类型
+	fieldType, err := s.getFieldType(req.TableName, req.TargetField)
+	if err != nil {
+		return "", err
+	}
+
+	// 构建ROUND表达式，兼容float和char类型
+	var roundExpr string
+
+	// 判断字段类型
+	if s.isNumericType(fieldType) {
+		// 数值类型：直接使用ROUND函数
+		roundExpr = fmt.Sprintf("ROUND(%s::numeric, %d)", req.TargetField, *req.DecimalPlaces)
+	} else if s.isCharType(fieldType) {
+		// 字符类型：先转换为数值，再ROUND，最后转回字符串
+		// PostgreSQL 使用 :: 进行类型转换
+		roundExpr = fmt.Sprintf("ROUND(%s::numeric, %d)::text",
+			req.TargetField, *req.DecimalPlaces)
+	} else {
+		return "", fmt.Errorf("字段 %s 的类型 %s 不支持round操作", req.TargetField, fieldType)
+	}
+
+	// 构建UPDATE语句
+	sqlStatement := fmt.Sprintf("UPDATE %s SET %s = %s",
+		req.TableName,
+		req.TargetField,
+		roundExpr)
+
+	// 添加WHERE条件
+	if req.Condition != "" {
+		sqlStatement += " WHERE " + req.Condition
+	}
+
+	return sqlStatement, nil
+}
+
+// 4. 修改 getFieldType 方法以支持 PostgreSQL
+func (s *FieldCalculatorService) getFieldType(tableName, fieldName string) (string, error) {
+	var fieldType string
+
+	// PostgreSQL 使用 CURRENT_SCHEMA() 或 pg_catalog
+	query := `
+		SELECT data_type 
+		FROM information_schema.columns 
+		WHERE table_schema = CURRENT_SCHEMA() 
+		AND table_name = $1 
+		AND column_name = $2
+	`
+
+	err := models.DB.Raw(query, tableName, fieldName).Scan(&fieldType).Error
+	if err != nil {
+		return "", fmt.Errorf("获取字段类型失败: %v", err)
+	}
+	if fieldType == "" {
+		return "", fmt.Errorf("字段 %s 不存在于表 %s 中", fieldName, tableName)
+	}
+	return fieldType, nil
+}
+
+// 5. 修改 isNumericType 方法以支持 PostgreSQL 数据类型
+func (s *FieldCalculatorService) isNumericType(fieldType string) bool {
+	numericTypes := map[string]bool{
+		// PostgreSQL 数值类型
+		"smallint":         true,
+		"integer":          true,
+		"int":              true,
+		"bigint":           true,
+		"decimal":          true,
+		"numeric":          true,
+		"real":             true,
+		"double precision": true,
+		"smallserial":      true,
+		"serial":           true,
+		"bigserial":        true,
+		"money":            true,
+	}
+	return numericTypes[strings.ToLower(fieldType)]
+}
+
+// 6. 修改 isCharType 方法以支持 PostgreSQL 数据类型
+func (s *FieldCalculatorService) isCharType(fieldType string) bool {
+	charTypes := map[string]bool{
+		// PostgreSQL 字符类型
+		"character":         true,
+		"char":              true,
+		"character varying": true,
+		"varchar":           true,
+		"text":              true,
+	}
+	return charTypes[strings.ToLower(fieldType)]
 }
 
 // buildAssignSQL 构建直接赋值SQL

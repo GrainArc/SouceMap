@@ -43,9 +43,10 @@ type Response struct {
 type FieldCalculatorRequest struct {
 	TableName     string               `json:"table_name" binding:"required"`     // 表名
 	TargetField   string               `json:"target_field" binding:"required"`   // 目标字段
-	OperationType string               `json:"operation_type" binding:"required"` // 操作类型: assign, copy, concat, calculate
+	OperationType string               `json:"operation_type" binding:"required"` // 操作类型: assign, copy, concat, calculate, round
 	Expression    *CalculateExpression `json:"expression,omitempty"`              // 计算表达式
 	Condition     string               `json:"condition,omitempty"`               // 过滤条件 (WHERE子句)
+	DecimalPlaces *int                 `json:"decimal_places,omitempty"`          // 小数位数 (用于round操作)
 }
 
 // CalculateExpression 计算表达式
