@@ -2,13 +2,15 @@ package services
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/GrainArc/SouceMap/models"
+	"gorm.io/datatypes"
 	"image"
 	"image/png"
 	"io"
 	"mime/multipart"
-
-	"github.com/GrainArc/SouceMap/models"
 )
 
 type TextureService struct{}
@@ -198,4 +200,41 @@ func (s *TextureService) GetRawImage(id uint) (image.Image, error) {
 	}
 
 	return img, nil
+}
+
+// SetLayerTexture 设置图层纹理
+
+type LayerTextureSetting struct {
+	LayerName   string       `json:"layer_name"`
+	AttName     string       `json:"attribute_name"`
+	TextureSets []TextureSet `json:"texture_sets"`
+}
+type TextureSet struct {
+	Property    string `json:"property"`
+	TextureID   string `json:"texture_id"`
+	TextureName string `json:"texture_name"`
+}
+
+func (s *TextureService) SetLayerTexture(layerName string, textureSets []TextureSet) error {
+	// 构建TextureSet JSON数据
+	textureSetJSON, err := json.Marshal(textureSets)
+	if err != nil {
+		return fmt.Errorf("纹理数据序列化失败: %w", err)
+	}
+	DB := models.DB
+	// 更新MySchema表中的TextureSet字段
+	// 根据Main字段（图层名称）和Type字段（属性名称）来更新
+	result := DB.Model(&models.MySchema{}).
+		Where("en = ?", layerName).
+		Update("texture_set", datatypes.JSON(textureSetJSON))
+
+	if result.Error != nil {
+		return fmt.Errorf("更新数据库失败: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("未找到匹配的图层或属性")
+	}
+
+	return nil
 }

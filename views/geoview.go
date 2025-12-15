@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mozillazg/go-pinyin"
 	"github.com/paulmach/orb/geojson"
+	"gorm.io/datatypes"
 	"log"
 	"net/http"
 	"net/url"
@@ -170,18 +171,19 @@ func (uc *UserController) GeodesicArea(c *gin.Context) {
 
 // 表名获取
 type LayerSchema struct {
-	ID        int64
-	Main      string
-	CN        string
-	EN        string
-	LineWidth string
-	Date      string
-	Type      string
-	Opacity   string
-	FillType  string
-	LineColor string
-	Color     string    `json:"Color"`
-	ColorSet  ColorData `json:"ColorSet"`
+	ID         int64
+	Main       string
+	CN         string
+	EN         string
+	LineWidth  string
+	Date       string
+	Type       string
+	Opacity    string
+	FillType   string
+	LineColor  string
+	Color      string    `json:"Color"`
+	ColorSet   ColorData `json:"ColorSet"`
+	TextureSet datatypes.JSON
 }
 
 // 提取字符串中的数字
@@ -323,31 +325,33 @@ func (uc *UserController) GetSchema(c *gin.Context) {
 		C := GetColor(value.EN)
 		if len(C) > 0 {
 			data = append(data, LayerSchema{
-				ID:        value.ID,
-				Main:      value.Main,
-				CN:        value.CN,
-				EN:        value.EN,
-				LineWidth: value.LineWidth,
-				FillType:  value.FillType,
-				LineColor: value.LineColor,
-				Type:      value.Type,
-				Date:      value.UpdatedDate,
-				Opacity:   value.Opacity,
-				ColorSet:  C[0],
+				ID:         value.ID,
+				Main:       value.Main,
+				CN:         value.CN,
+				EN:         value.EN,
+				LineWidth:  value.LineWidth,
+				FillType:   value.FillType,
+				LineColor:  value.LineColor,
+				Type:       value.Type,
+				Date:       value.UpdatedDate,
+				Opacity:    value.Opacity,
+				ColorSet:   C[0],
+				TextureSet: value.TextureSet,
 			})
 		} else {
 			data = append(data, LayerSchema{
-				ID:        value.ID,
-				Main:      value.Main,
-				CN:        value.CN,
-				EN:        value.EN,
-				LineWidth: value.LineWidth,
-				Date:      value.UpdatedDate,
-				FillType:  value.FillType,
-				LineColor: value.LineColor,
-				Type:      value.Type,
-				Opacity:   value.Opacity,
-				Color:     value.Color,
+				ID:         value.ID,
+				Main:       value.Main,
+				CN:         value.CN,
+				EN:         value.EN,
+				LineWidth:  value.LineWidth,
+				Date:       value.UpdatedDate,
+				FillType:   value.FillType,
+				LineColor:  value.LineColor,
+				Type:       value.Type,
+				Opacity:    value.Opacity,
+				Color:      value.Color,
+				TextureSet: value.TextureSet,
 			})
 		}
 

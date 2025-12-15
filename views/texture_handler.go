@@ -1,10 +1,11 @@
 package views
 
 import (
-	"strconv"
-
 	"github.com/GrainArc/SouceMap/response"
 	"github.com/GrainArc/SouceMap/services"
+	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,9 +33,9 @@ func (h *TextureHandler) Upload(c *gin.Context) {
 		response.BadRequest(c, "请选择要上传的文件")
 		return
 	}
-
-	name := file.Filename // 默认使用文件名
-
+	ext := filepath.Ext(file.Filename)
+	name := strings.TrimSuffix(file.Filename, ext)
+	
 	description := c.PostForm("description")
 
 	// 调用服务层上传
@@ -147,4 +148,68 @@ func (h *TextureHandler) Delete(c *gin.Context) {
 	}
 
 	response.SuccessWithMessage(c, "删除成功", nil)
+}
+
+// SetLayerTexture 设置图层纹理
+// @Summary 设置图层纹理
+// @Accept json
+// @Produce json
+// @Param request body LayerTextureSetting true "纹理设置参数"
+// @Success 200 {object} response.Response
+// @Failure 400 {object} response.Response
+// @Failure 500 {object} response.Response
+func (h *TextureHandler) SetLayerTexture(c *gin.Context) {
+	var req services.LayerTextureSetting
+
+	// 解析请求体
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, "请求参数格式错误: "+err.Error())
+		return
+	}
+
+	// 参数验证
+	if req.LayerName == "" {
+		response.BadRequest(c, "图层名称不能为空")
+		return
+	}
+	if req.AttName == "" {
+		response.BadRequest(c, "属性名称不能为空")
+		return
+	}
+	if len(req.TextureSets) == 0 {
+		response.BadRequest(c, "纹理集合不能为空")
+		return
+	}
+
+	// 验证TextureID是否存在
+	for _, ts := range req.TextureSets {
+		if ts.TextureID == "" {
+			response.BadRequest(c, "纹理ID不能为空")
+			return
+		}
+		textureID, err := strconv.ParseUint(ts.TextureID, 10, 64)
+		if err != nil {
+			response.BadRequest(c, "无效的纹理ID: "+ts.TextureID)
+			return
+		}
+		// 检查纹理是否存在
+		_, err = h.service.GetByID(uint(textureID))
+		if err != nil {
+			response.NotFound(c, "纹理不存在: "+ts.TextureID)
+			return
+		}
+	}
+
+	// 调用服务层设置纹理
+	err := h.service.SetLayerTexture(req.LayerName, req.TextureSets)
+	if err != nil {
+		response.InternalError(c, "设置纹理失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"message":        "纹理设置成功",
+		"layer_name":     req.LayerName,
+		"attribute_name": req.AttName,
+	})
 }
