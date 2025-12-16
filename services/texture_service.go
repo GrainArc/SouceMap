@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"io"
 	"mime/multipart"
+	"net/url"
 	"strconv"
 )
 
@@ -35,6 +36,7 @@ type TextureListItem struct {
 	Width       int    `json:"width"`
 	Height      int    `json:"height"`
 	Description string `json:"description"`
+	Url         string `json:"url"`
 }
 
 // ValidatePNG 验证文件是否为PNG格式
@@ -273,7 +275,7 @@ func (s *TextureService) GetLayerTexture(layerName string) (*LayerTextureSetting
 // 在 services/texture.go 中添加以下方法
 
 // GetUsedTextures 获取所有已配置的纹理（从MySchema表的TextureSet中提取并去重）
-func (s *TextureService) GetUsedTextures() ([]TextureListItem, error) {
+func (s *TextureService) GetUsedTextures(host string) ([]TextureListItem, error) {
 	var schemas []models.MySchema
 
 	// 查询所有有TextureSet的记录
@@ -340,6 +342,11 @@ func (s *TextureService) GetUsedTextures() ([]TextureListItem, error) {
 	// 转换为TextureListItem
 	items := make([]TextureListItem, len(textures))
 	for i, t := range textures {
+		url := &url.URL{
+			Scheme: "http",
+			Host:   host,
+			Path:   fmt.Sprintf("/textures/%d/image", t.ID),
+		}
 		items[i] = TextureListItem{
 			ID:          t.ID,
 			Name:        t.Name,
@@ -347,6 +354,7 @@ func (s *TextureService) GetUsedTextures() ([]TextureListItem, error) {
 			Width:       t.Width,
 			Height:      t.Height,
 			Description: t.Description,
+			Url:         url.String(),
 		}
 	}
 
