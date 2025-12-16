@@ -220,6 +220,7 @@ type TextureSet struct {
 
 func (s *TextureService) SetLayerTexture(layerName string, textureSets LayerTextureSetting) error {
 	// 构建TextureSet JSON数据
+	fmt.Println(textureSets)
 	textureSetJSON, err := json.Marshal(textureSets)
 	if err != nil {
 		return fmt.Errorf("纹理数据序列化失败: %w", err)
@@ -257,19 +258,15 @@ func (s *TextureService) GetLayerTexture(layerName string) (*LayerTextureSetting
 	}
 
 	// 解析TextureSet JSON数据
-	var textureSets []TextureSet
+	var textureSets LayerTextureSetting
+
 	if len(mySchema.TextureSet) > 0 {
 		if err := json.Unmarshal(mySchema.TextureSet, &textureSets); err != nil {
 			return nil, fmt.Errorf("纹理数据解析失败: %w", err)
 		}
 	}
 
-	response := &LayerTextureSetting{
-		LayerName:   layerName,
-		TextureSets: textureSets,
-	}
-
-	return response, nil
+	return &textureSets, nil
 }
 
 // 在 services/texture.go 中添加以下方法
