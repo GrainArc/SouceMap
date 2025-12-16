@@ -8,6 +8,7 @@ import (
 	"github.com/GrainArc/SouceMap/models"
 	"gorm.io/datatypes"
 	"image"
+	"image/color"
 	"image/png"
 	"io"
 	"mime/multipart"
@@ -97,13 +98,65 @@ func (s *TextureService) Upload(req *UploadRequest) (*models.Texture, error) {
 	width := bounds.Max.X - bounds.Min.X
 	height := bounds.Max.Y - bounds.Min.Y
 
+	// 获取最小的宽高（强制转换为正方形）
+	minSize := width
+	if height < minSize {
+		minSize = height
+	}
+
+	// 调整为2的倍数
+	if minSize%2 != 0 {
+		minSize--
+	}
+
+	// 重新调整图片大小并编码
+	resizedImg := s.resizeImage(img, minSize, minSize)
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, resizedImg); err != nil {
+		return nil, errors.New("无法编码PNG图片")
+	}
+
+	resizedImageBytes := buf.Bytes()
+
+	// 检查文件大小，如果超过1MB则逐步压缩
+	const maxSize = 1024 * 1024
+	currentSize := minSize
+
+	for len(resizedImageBytes) > maxSize && currentSize > 2 {
+		// 按比例缩小尺寸（每次缩小到80%）
+		currentSize = int(float64(currentSize) * 0.8)
+
+		// 确保是2的倍数
+		if currentSize%2 != 0 {
+			currentSize--
+		}
+
+		// 最小尺寸不能小于2
+		if currentSize < 2 {
+			currentSize = 2
+		}
+
+		// 重新调整和编码
+		resizedImg = s.resizeImage(img, currentSize, currentSize)
+		buf.Reset()
+		if err := png.Encode(&buf, resizedImg); err != nil {
+			return nil, errors.New("无法编码PNG图片")
+		}
+		resizedImageBytes = buf.Bytes()
+	}
+
+	// 如果仍然超过1MB，返回错误
+	if len(resizedImageBytes) > maxSize {
+		return nil, errors.New("无法将文件压缩到1MB以内，请上传更小的原始图片")
+	}
+
 	// 创建纹理数据
 	texture := &models.Texture{
 		Name:        req.Name,
 		MimeType:    "image/png",
-		Width:       width,
-		Height:      height,
-		ImageData:   imageBytes,
+		Width:       currentSize,
+		Height:      currentSize,
+		ImageData:   resizedImageBytes,
 		Description: req.Description,
 	}
 
@@ -118,6 +171,46 @@ func (s *TextureService) Upload(req *UploadRequest) (*models.Texture, error) {
 	}
 
 	return texture, nil
+}
+
+// resizeImage 调整图片大小（使用简单的最近邻插值）
+func (s *TextureService) resizeImage(src image.Image, width, height int) image.Image {
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	srcBounds := src.Bounds()
+	srcWidth := srcBounds.Max.X - srcBounds.Min.X
+	srcHeight := srcBounds.Max.Y - srcBounds.Min.Y
+
+	// 计算缩放因子
+	xRatio := float64(srcWidth) / float64(width)
+	yRatio := float64(srcHeight) / float64(height)
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			// 最近邻插值
+			srcX := int(float64(x) * xRatio)
+			srcY := int(float64(y) * yRatio)
+
+			// 确保不超过源图片边界
+			if srcX >= srcWidth {
+				srcX = srcWidth - 1
+			}
+			if srcY >= srcHeight {
+				srcY = srcHeight - 1
+			}
+
+			r, g, b, a := src.At(srcBounds.Min.X+srcX, srcBounds.Min.Y+srcY).RGBA()
+			// RGBA() 返回的是预乘的颜色值（0-65535范围），需要转换为8位（0-255）
+			dst.SetRGBA(x, y, color.RGBA{
+				R: uint8(r >> 8),
+				G: uint8(g >> 8),
+				B: uint8(b >> 8),
+				A: uint8(a >> 8),
+			})
+		}
+	}
+
+	return dst
 }
 
 // List 获取纹理列表（不包含图片数据）
