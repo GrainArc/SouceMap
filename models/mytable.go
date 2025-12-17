@@ -31,7 +31,7 @@ type MySchema struct {
 	CN          string         `gorm:"type:varchar(255)"`
 	EN          string         `gorm:"type:varchar(255)"`
 	Type        string         `gorm:"type:varchar(255)"`
-	Opacity     string         `gorm:"type:varchar(254)"`
+	Opacity     string         `gorm:"type:varchar(254);default:1"`
 	Color       string         `gorm:"type:varchar(255)"`
 	LineWidth   string         `gorm:"type:varchar(55)"`
 	FillType    string         `gorm:"type:varchar(255)"`
