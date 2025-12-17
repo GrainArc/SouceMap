@@ -12,6 +12,7 @@ func GeoRouters(r *gin.Engine) {
 	mapRouter := r.Group("/geo")
 	{
 		mapRouter.GET(":tablename/:z/:x/:y.pbf", UserController.OutMVT)
+		mapRouter.GET("/TileSizeChange", UserController.TileSizeChange)
 		mapRouter.GET("/GetColorSet", UserController.GetColorSet)
 		mapRouter.GET("/GetSchema", UserController.GetSchema)
 		mapRouter.GET("/SchemaToExcel", UserController.SchemaToExcel)
@@ -187,9 +188,12 @@ func GeoRouters(r *gin.Engine) {
 		api.GET("/:id/image", textureHandler.GetImage)
 		// DELETE删除纹理
 		api.DELETE("/:id", textureHandler.Delete)
+		api.GET("/search", textureHandler.Search)
+
 		api.POST("/set_layer_texture", textureHandler.SetLayerTexture)
 		api.GET("/get_layer_texture", textureHandler.GetLayerTexture)
 		api.GET("/get_used_textures", textureHandler.GetUsedTextures)
+
 	}
 
 }

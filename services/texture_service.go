@@ -450,3 +450,70 @@ func (s *TextureService) GetUsedTextures(host string) ([]TextureListItem, error)
 
 	return items, nil
 }
+
+// Search 搜索纹理（支持ID、名称、描述的模糊匹配）
+func (s *TextureService) Search(query string, page, pageSize int, host string) ([]TextureListItem, int64, error) {
+	var textures []models.Texture
+	var total int64
+
+	db := models.GetDB()
+
+	// 构建查询条件
+	searchQuery := db.Model(&models.Texture{})
+
+	if query != "" {
+		// 尝试将查询字符串转换为数字（用于ID搜索）
+		if id, err := strconv.ParseUint(query, 10, 64); err == nil {
+			// 如果能转换为数字，则同时搜索ID、名称和描述
+			searchQuery = searchQuery.Where(
+				"id = ? OR name LIKE ? OR description LIKE ?",
+				id,
+				"%"+query+"%",
+				"%"+query+"%",
+			)
+		} else {
+			// 如果不能转换为数字，则只搜索名称和描述
+			searchQuery = searchQuery.Where(
+				"name LIKE ? OR description LIKE ?",
+				"%"+query+"%",
+				"%"+query+"%",
+			)
+		}
+	}
+
+	// 获取总数
+	if err := searchQuery.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 分页查询，只选择需要的字段（不包含image_data）
+	offset := (page - 1) * pageSize
+	if err := searchQuery.Select("id, name, mime_type, width, height, description").
+		Order("id DESC").
+		Offset(offset).
+		Limit(pageSize).
+		Find(&textures).Error; err != nil {
+		return nil, 0, err
+	}
+
+	// 转换为列表项
+	items := make([]TextureListItem, len(textures))
+	for i, t := range textures {
+		url := &url.URL{
+			Scheme: "http",
+			Host:   host,
+			Path:   fmt.Sprintf("/textures/%d/image", t.ID),
+		}
+		items[i] = TextureListItem{
+			ID:          t.ID,
+			Name:        t.Name,
+			MimeType:    t.MimeType,
+			Width:       t.Width,
+			Height:      t.Height,
+			Description: t.Description,
+			Url:         url.String(),
+		}
+	}
+
+	return items, total, nil
+}

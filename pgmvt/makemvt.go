@@ -2,11 +2,10 @@ package pgmvt
 
 import (
 	"fmt"
-	"github.com/GrainArc/SouceMap/methods"
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/paulmach/orb"
 	"gorm.io/gorm"
 	"log"
-	"reflect"
 	"strings"
 	"unicode"
 )
@@ -45,67 +44,6 @@ func GetTableColumns(db *gorm.DB, tableName string) ([]string, error) {
 	return newData, nil
 }
 
-func MakeMvt(x int, y int, z int, items interface{}, db *gorm.DB, TempModel interface{}) []byte {
-
-	db.Where("X = ? AND Y = ? AND Z = ?", x, y, z).Find(&TempModel)
-
-	rt := reflect.TypeOf(items)
-	if rt.Kind() == reflect.Ptr {
-		rt = rt.Elem()
-	}
-	tableName := methods.CamelCaseToUnderscore(rt.Name()) //查询表名
-
-	fieldNames, _ := GetTableColumns(db, tableName)
-	result := strings.Join(fieldNames, ",")
-	//映射TempModel
-	v := reflect.ValueOf(TempModel)
-	t := reflect.TypeOf(TempModel)
-	var sliceValue reflect.Value
-	if t.Kind().String() == "slice" {
-		sliceValue = v
-	}
-
-	if sliceValue.Len() == 1 {
-		t := sliceValue.Index(0).Interface()
-		value := reflect.ValueOf(t)
-		var mvt_bytes []byte
-		mvt_bytes = value.FieldByName("Byte").Interface().([]byte)
-		return mvt_bytes
-
-	} else if sliceValue.Len() > 1 {
-		for i := 1; i < sliceValue.Len(); i++ {
-			t := sliceValue.Index(i).Interface() //获取切片对应项
-			id := reflect.ValueOf(t).FieldByName("ID").Interface()
-			db.Delete(&TempModel, id)
-		}
-		value := reflect.ValueOf(sliceValue.Index(0).Interface())
-		var mvt_bytes []byte
-		mvt_bytes = value.FieldByName("Byte").Interface().([]byte)
-		return mvt_bytes
-	} else {
-		boundbox_min := XyzLonLat(float64(x), float64(y), float64(z))
-		boundbox_max := XyzLonLat(float64(x)+1, float64(y)+1, float64(z))
-		sql := fmt.Sprintf("SELECT ST_AsMVT(P, 'polygon', 256, 'geom') AS \"mvt\" "+
-			"FROM (SELECT ST_AsMVTGeom(ST_Simplify(ST_Transform(geom, 3857), 0.1), ST_Transform(ST_MakeEnvelope(%v, %v, %v, %v, 4326), 3857), 256, 64, TRUE) AS geom, %s "+
-			"FROM \"%s\" WHERE \"geom\" && ST_MakeEnvelope(%v, %v, %v, %v, 4326)) AS P", boundbox_min[0], boundbox_min[1], boundbox_max[0], boundbox_max[1], result, tableName, boundbox_min[0], boundbox_min[1], boundbox_max[0], boundbox_max[1])
-
-		var mvttile MVTTile
-		db.Raw(sql).Scan(&mvttile)
-		if len(mvttile.MVT) != 0 {
-			TempAttr := map[string]interface{}{
-				"x":    x,
-				"y":    y,
-				"z":    z,
-				"byte": mvttile.MVT,
-			}
-			db.Model(&TempModel).Create(TempAttr)
-			return mvttile.MVT
-		} else {
-			return nil
-		}
-
-	}
-}
 func isEndWithNumber(s string) bool {
 	for _, char := range s {
 		if unicode.IsDigit(char) && s[len(s)-1] == byte(char) {
@@ -130,7 +68,12 @@ func MakeMvtNew(x int, y int, z int, tableName string, db *gorm.DB) []byte {
 	} else {
 		TempModelName = tableName + "mvt"
 	}
-
+	var Tb models.MySchema
+	db.Where("en = ?", tableName).First(&Tb)
+	var tileSize int64
+	if Tb.TileSize != 0 {
+		tileSize = Tb.TileSize
+	}
 	var TempModel []map[string]interface{}
 
 	query := fmt.Sprintf("SELECT * FROM %s WHERE x = ? AND y = ? AND z = ?", TempModelName)
@@ -159,9 +102,9 @@ func MakeMvtNew(x int, y int, z int, tableName string, db *gorm.DB) []byte {
 	} else {
 		boundbox_min := XyzLonLat(float64(x), float64(y), float64(z))
 		boundbox_max := XyzLonLat(float64(x)+1, float64(y)+1, float64(z))
-		sql := fmt.Sprintf("SELECT ST_AsMVT(P, 'polygon', 512, 'geom') AS \"mvt\" "+
-			"FROM (SELECT ST_AsMVTGeom(ST_Simplify(ST_Transform(geom, 3857), 0.1), ST_Transform(ST_MakeEnvelope(%v, %v, %v, %v, 4326), 3857), 512, 64, TRUE) AS geom, %s "+
-			"FROM \"%s\" WHERE \"geom\" && ST_MakeEnvelope(%v, %v, %v, %v, 4326)) AS P", boundbox_min[0], boundbox_min[1], boundbox_max[0], boundbox_max[1], result, tableName, boundbox_min[0], boundbox_min[1], boundbox_max[0], boundbox_max[1])
+		sql := fmt.Sprintf("SELECT ST_AsMVT(P, 'polygon', %d, 'geom') AS \"mvt\" "+
+			"FROM (SELECT ST_AsMVTGeom(ST_Simplify(ST_Transform(geom, 3857), 0.1), ST_Transform(ST_MakeEnvelope(%v, %v, %v, %v, 4326), 3857), %d, 32, TRUE) AS geom, %s "+
+			"FROM \"%s\" WHERE \"geom\" && ST_MakeEnvelope(%v, %v, %v, %v, 4326)) AS P", tileSize, boundbox_min[0], boundbox_min[1], boundbox_max[0], boundbox_max[1], tileSize, result, tableName, boundbox_min[0], boundbox_min[1], boundbox_max[0], boundbox_max[1])
 
 		var mvttile MVTTile
 		db.Raw(sql).Scan(&mvttile)

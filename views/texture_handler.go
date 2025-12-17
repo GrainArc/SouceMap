@@ -261,3 +261,43 @@ func (h *TextureHandler) GetUsedTextures(c *gin.Context) {
 		"total": len(items),
 	})
 }
+
+// Search 搜索纹理
+// @Summary 搜索纹理（支持ID、名称、描述的模糊匹配）
+// @Param q query string true "搜索关键词"
+// @Param page query int false "页码" default(1)
+// @Param page_size query int false "每页数量" default(10)
+func (h *TextureHandler) Search(c *gin.Context) {
+	// 获取搜索参数
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		response.BadRequest(c, "搜索关键词不能为空")
+		return
+	}
+
+	// 获取分页参数
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "10"))
+
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 10
+	}
+
+	// 调用服务层搜索
+	items, total, err := h.service.Search(query, page, pageSize, c.Request.Host)
+	if err != nil {
+		response.InternalError(c, "搜索失败: "+err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{
+		"list":      items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"query":     query,
+	})
+}

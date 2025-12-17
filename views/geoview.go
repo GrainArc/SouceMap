@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"gitee.com/gooffice/gooffice/document"
 	"github.com/GrainArc/SouceMap/Transformer"
@@ -12,11 +13,14 @@ import (
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
+	"github.com/GrainArc/SouceMap/response"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/mozillazg/go-pinyin"
 	"github.com/paulmach/orb/geojson"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
+
 	"log"
 	"net/http"
 	"net/url"
@@ -1458,6 +1462,74 @@ func (uc *UserController) OutMVT(c *gin.Context) {
 	} else {
 		c.String(http.StatusOK, "err")
 	}
+}
+
+func (uc *UserController) TileSizeChange(c *gin.Context) {
+	// 获取并验证table_name参数，转换为小写用于数据库查询
+	dbname := strings.ToLower(c.Query("table_name"))
+	if dbname == "" { // 验证table_name参数不能为空
+		response.Error(c, 500, "table_name参数不能为空")
+		return
+	}
+
+	// 获取tile_size参数字符串
+	tileSizeStr := c.Query("tile_size")
+	if tileSizeStr == "" { // 验证tile_size参数不能为空
+		response.Error(c, 500, "tile_size参数不能为空")
+		return
+	}
+
+	// 将tile_size字符串转换为整数，并处理转换错误
+	tileSize, err := strconv.Atoi(tileSizeStr)
+	if err != nil { // 处理字符串转整数的错误
+		response.Error(c, 500, "tile_size参数格式错误")
+		return
+	}
+
+	// 验证tile_size的取值范围（假设合理范围为1-10000）
+	if tileSize <= 0 || tileSize > 10000 {
+		response.Error(c, 500, "tile_size参数超出有效范围(1-10000)")
+		return
+	}
+
+	// 将验证后的tile_size转换为int64类型，匹配数据库字段类型
+	tileSizeInt64 := int64(tileSize)
+
+	// 获取数据库连接实例
+	DB := models.DB
+
+	// 定义数据库表结构变量
+	var TB models.MySchema
+
+	// 根据en字段查询数据库记录，并处理查询错误
+	result := DB.Where("en = ?", dbname).First(&TB)
+	if result.Error != nil { // 处理数据库查询错误
+		if errors.Is(result.Error, gorm.ErrRecordNotFound) { // 特别处理记录不存在的情况
+			response.Error(c, 500, "未找到对应的表记录")
+		} else { // 处理其他数据库错误
+			response.Error(c, 500, "数据库查询失败")
+		}
+		return
+	}
+
+	// 比较当前tile_size与数据库中的值，如果相同则无需更新
+	if tileSizeInt64 == TB.TileSize {
+		response.SuccessWithMessage(c, "无需更新", nil) // 返回成功响应，提示无需更新
+		return
+	}
+
+	// 更新TB结构体中的TileSize字段为新值
+	TB.TileSize = tileSizeInt64
+
+	// 保存更新后的记录到数据库，并处理保存错误
+	if err := DB.Save(&TB).Error; err != nil {
+		response.Error(c, 500, "数据库保存错误")
+		return
+	}
+	//清空缓存
+	pgmvt.DelMVTALL(DB, dbname)
+	// 返回成功响应，提示更新完成
+	response.SuccessWithMessage(c, "更新成功", nil)
 }
 
 // 获取图层的范围 - 返回GeoJSON格式
