@@ -595,11 +595,10 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 func (uc *UserController) ChangeSchema(c *gin.Context) {
 	CN := c.PostForm("CN")
 	Main := c.PostForm("Main")
-	ID := c.PostForm("ID")
-	id, _ := strconv.Atoi(ID)
+	EN := c.PostForm("EN")
 	var Schemas models.MySchema
 	DB := models.DB
-	DB.Where("ID = ?", id).Find(&Schemas)
+	DB.Where("en = ?", EN).Find(&Schemas)
 	Schemas.CN = CN
 	Schemas.Main = Main
 	DB.Save(&Schemas)
