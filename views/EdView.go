@@ -1714,18 +1714,6 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		return
 	}
 
-	// 8. 更新缓存库（对所有原要素进行清缓存）
-	for _, id := range jsonData.IDs {
-		GetPdata := getData{
-			TableName: LayerName,
-			ID:        id,
-		}
-		geom := GetGeo(GetPdata)
-		if len(geom.Features) > 0 {
-			pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
-		}
-	}
-
 	// 9. 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE %s`, LayerName, idCondition)
 	if err := tx.Exec(deleteSQL, idInterfaces...).Error; err != nil {
@@ -2445,10 +2433,6 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 	oldGeo := GetGeos(getdata2)
 	oldGeojson, _ := json.Marshal(oldGeo)
 
-	for _, feature := range oldGeo.Features {
-		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
-	}
-
 	delObjJSON := DelIDGen(oldGeo)
 
 	// 6. 删除原要素
@@ -2902,8 +2886,12 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 	oldGeojson, _ := json.Marshal(oldGeo)
 
 	// 删除MVT缓存（原要素）
-	for _, feature := range oldGeo.Features {
-		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
+	if len(oldGeo.Features) >= 10 {
+		pgmvt.DelMVTALL(DB, jsonData.LayerName)
+	} else {
+		for _, feature := range oldGeo.Features {
+			pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
+		}
 	}
 
 	// ========== 5. 获取当前表的最大ID和对应的映射字段最大值 ==========

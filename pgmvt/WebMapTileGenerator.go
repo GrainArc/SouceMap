@@ -39,7 +39,7 @@ func TileGenerate(xmin, ymin, xmax, ymax float64) []tile {
 	south := float64(ymin)
 	north := float64(ymax)
 	tile := make([]tile, 0)
-	for i := int64(6); i <= int64(22); i++ {
+	for i := int64(6); i <= int64(19); i++ {
 		zoomLevel := i
 		if zoomLevel < 0 {
 			zoomLevel = 0
