@@ -6,6 +6,7 @@ import (
 	"fmt"
 	Tin2 "github.com/GrainArc/SouceMap/Tin"
 	"github.com/GrainArc/SouceMap/Transformer"
+	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
@@ -13,6 +14,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"image"
 	"image/color"
 	"log"
@@ -118,10 +122,25 @@ type FillData struct {
 func (uc *UserController) GetExcavationFillVolume(c *gin.Context) {
 	var jsonData FillData
 	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
-
+	type efData struct {
+		Excavation float64
+		Fill       float64
+	}
 	tile := pgmvt.Bounds(jsonData.Geojson.Features[0].Geometry)
 
-	DB := models.DemDB
+	DB, err := gorm.Open(sqlite.Open(config.Dem), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		c.JSON(http.StatusOK, efData{
+			Excavation: 0,
+			Fill:       0,
+		})
+		return
+	}
+	defer func() {
+		if DB, err := DB.DB(); err == nil {
+			DB.Close()
+		}
+	}()
 	//获取最大层级
 	var maxZoom int64
 	DB.Model(&models.Tile{}).Select("MAX(zoom_level)").Scan(&maxZoom)
@@ -187,10 +206,7 @@ func (uc *UserController) GetExcavationFillVolume(c *gin.Context) {
 			Fill += volume
 		}
 	}
-	type efData struct {
-		Excavation float64
-		Fill       float64
-	}
+
 	var result efData
 	result.Excavation = math.Abs(Excavation)
 	result.Fill = math.Abs(Fill)
@@ -357,7 +373,18 @@ func (uc *UserController) GetHeightFromDEM(c *gin.Context) {
 
 	tile := pgmvt.GetPointTile(jsonData.X, jsonData.Y)
 
-	DB := models.DemDB
+	DB, err := gorm.Open(sqlite.Open(config.Dem), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"Height": -999,
+		})
+		return
+	}
+	defer func() {
+		if DB, err := DB.DB(); err == nil {
+			DB.Close()
+		}
+	}()
 	//获取最大层级
 	var maxZoom int64
 	DB.Model(&models.Tile{}).Select("MAX(zoom_level)").Scan(&maxZoom)

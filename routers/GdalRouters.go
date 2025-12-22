@@ -64,6 +64,10 @@ func GDALRouters(r *gin.Engine) {
 		mapRouter.POST("/RasterTile/start", UserController.StartRasterTile)
 		mapRouter.GET("/RasterTile/ws/:taskId", UserController.RasterTileWebSocket)
 		mapRouter.GET("/RasterTile/status/:taskId", UserController.GetRasterTileTaskStatus)
+		//地形切片view
+		mapRouter.POST("/TerrainTile/start", UserController.StartTerrainTile)
+		mapRouter.GET("/TerrainTile/ws/:taskId", UserController.TerrainTileWebSocket)
+		mapRouter.GET("/TerrainTile/status/:taskId", UserController.GetTerrainTileTaskStatus)
 	}
 
 	{

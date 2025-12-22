@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -49,7 +50,16 @@ func (uc *UserController) Dem(c *gin.Context) {
 	x, _ := strconv.Atoi(c.Param("x"))
 	y, _ := strconv.Atoi(strings.TrimSuffix(c.Param("y.webp"), ".webp"))
 	z, _ := strconv.Atoi(c.Param("z"))
-	DB := models.DemDB
+	DB, err := gorm.Open(sqlite.Open(config.Dem), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		c.String(http.StatusOK, "err")
+		return
+	}
+	defer func() {
+		if DB, err := DB.DB(); err == nil {
+			DB.Close()
+		}
+	}()
 	var TempModel models.Tile
 	DB.Where("tile_column = ? AND tile_row = ? AND zoom_level = ?", x, y, z).First(&TempModel)
 	c.Header("Cache-Control", "public, max-age=0")

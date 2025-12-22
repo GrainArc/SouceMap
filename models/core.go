@@ -18,9 +18,6 @@ import (
 
 var DB *gorm.DB
 
-var DemDB *gorm.DB
-var err error
-
 func makeTileIndex(DB *gorm.DB) {
 	// 查询索引是否已存在
 	var exists bool
@@ -89,13 +86,17 @@ func GetDB() *gorm.DB {
 }
 
 func InitDB() {
-	DemDB, err = gorm.Open(sqlite.Open(config.Dem), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	DemDB, err := gorm.Open(sqlite.Open(config.Dem), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		fmt.Println(err)
 	} else {
 		makeTileIndex(DemDB)
 	}
-
+	defer func() {
+		if eDB, err := DemDB.DB(); err == nil {
+			eDB.Close()
+		}
+	}()
 	DB, err = gorm.Open(postgres.Open(config.DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		fmt.Println(err)
