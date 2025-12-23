@@ -47,6 +47,16 @@ type FieldCalculatorRequest struct {
 	Expression    *CalculateExpression `json:"expression,omitempty"`              // 计算表达式
 	Condition     string               `json:"condition,omitempty"`               // 过滤条件 (WHERE子句)
 	DecimalPlaces *int                 `json:"decimal_places,omitempty"`          // 小数位数 (用于round操作)
+	ReplaceConfig *ReplaceConfig       `json:"replace_config,omitempty"`          // 替换配置 (用于replace操作)
+}
+
+// ReplaceConfig 字符串替换配置
+type ReplaceConfig struct {
+	Mode        string `json:"mode" binding:"required"` // 替换模式: "normal" 普通替换, "regex" 正则替换
+	SearchValue string `json:"search_value"`            // 要查找的值（普通模式）或正则表达式（正则模式）
+	ReplaceWith string `json:"replace_with"`            // 替换后的值
+	GlobalFlag  bool   `json:"global_flag"`             // 是否全局替换（替换所有匹配项），默认true
+	CaseIgnore  bool   `json:"case_ignore"`             // 是否忽略大小写，默认false
 }
 
 // CalculateExpression 计算表达式

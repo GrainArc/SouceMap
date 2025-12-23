@@ -38,6 +38,8 @@ func (s *FieldCalculatorService) CalculateField(req models.FieldCalculatorReques
 		sqlStatement, err = s.buildCalculateSQL(req)
 	case "round":
 		sqlStatement, err = s.buildRoundSQL(req)
+	case "replace":
+		sqlStatement, err = s.buildReplaceSQL(req)
 	default:
 		return nil, errors.New("不支持的操作类型")
 	}
@@ -59,6 +61,197 @@ func (s *FieldCalculatorService) CalculateField(req models.FieldCalculatorReques
 		AffectedRows:  result.RowsAffected,
 		SQLStatement:  sqlStatement,
 	}, nil
+}
+
+// buildReplaceSQL 构建字符串替换SQL
+func (s *FieldCalculatorService) buildReplaceSQL(req models.FieldCalculatorRequest) (string, error) {
+	// 验证替换配置
+	if req.ReplaceConfig == nil {
+		return "", errors.New("replace操作需要提供replace_config配置")
+	}
+
+	config := req.ReplaceConfig
+
+	// 验证模式
+	if config.Mode != "normal" && config.Mode != "regex" {
+		return "", errors.New("replace_config.mode 必须是 'normal' 或 'regex'")
+	}
+
+	// 获取字段类型
+	fieldType, err := s.getFieldType(req.TableName, req.TargetField)
+	if err != nil {
+		return "", err
+	}
+
+	// 构建替换表达式
+	var replaceExpr string
+
+	switch config.Mode {
+	case "normal":
+		replaceExpr, err = s.buildNormalReplaceExpr(req.TargetField, fieldType, config)
+	case "regex":
+		replaceExpr, err = s.buildRegexReplaceExpr(req.TargetField, fieldType, config)
+	}
+
+	if err != nil {
+		return "", err
+	}
+
+	// 构建UPDATE语句
+	sqlStatement := fmt.Sprintf(`UPDATE "%s" SET "%s" = %s`,
+		req.TableName,
+		req.TargetField,
+		replaceExpr)
+
+	// 添加WHERE条件
+	if req.Condition != "" {
+		sqlStatement += " WHERE " + req.Condition
+	}
+
+	return sqlStatement, nil
+}
+
+// buildNormalReplaceExpr 构建普通替换表达式
+func (s *FieldCalculatorService) buildNormalReplaceExpr(fieldName, fieldType string, config *models.ReplaceConfig) (string, error) {
+	// 转义单引号
+	searchValue := strings.ReplaceAll(config.SearchValue, "'", "''")
+	replaceWith := strings.ReplaceAll(config.ReplaceWith, "'", "''")
+
+	var expr string
+
+	if s.isNumericType(fieldType) {
+		// 数值类型：先转为text，替换后再转回原类型
+		if config.CaseIgnore {
+			// 忽略大小写 - 使用正则替换实现
+			flags := "gi"
+			if !config.GlobalFlag {
+				flags = "i"
+			}
+			// 对搜索值进行正则转义
+			escapedSearch := s.escapeRegexSpecialChars(searchValue)
+			expr = fmt.Sprintf(
+				`CAST(REGEXP_REPLACE("%s"::text, '%s', '%s', '%s') AS %s)`,
+				fieldName, escapedSearch, replaceWith, flags, s.getNumericCastType(fieldType))
+		} else {
+			if config.GlobalFlag {
+				expr = fmt.Sprintf(
+					`CAST(REPLACE("%s"::text, '%s', '%s') AS %s)`,
+					fieldName, searchValue, replaceWith, s.getNumericCastType(fieldType))
+			} else {
+				// 只替换第一个匹配 - 使用正则
+				escapedSearch := s.escapeRegexSpecialChars(searchValue)
+				expr = fmt.Sprintf(
+					`CAST(REGEXP_REPLACE("%s"::text, '%s', '%s') AS %s)`,
+					fieldName, escapedSearch, replaceWith, s.getNumericCastType(fieldType))
+			}
+		}
+	} else {
+		// 字符类型
+		if config.CaseIgnore {
+			// 忽略大小写 - 使用正则替换实现
+			flags := "gi"
+			if !config.GlobalFlag {
+				flags = "i"
+			}
+			escapedSearch := s.escapeRegexSpecialChars(searchValue)
+			expr = fmt.Sprintf(
+				`REGEXP_REPLACE("%s", '%s', '%s', '%s')`,
+				fieldName, escapedSearch, replaceWith, flags)
+		} else {
+			if config.GlobalFlag {
+				expr = fmt.Sprintf(
+					`REPLACE("%s", '%s', '%s')`,
+					fieldName, searchValue, replaceWith)
+			} else {
+				// 只替换第一个匹配
+				escapedSearch := s.escapeRegexSpecialChars(searchValue)
+				expr = fmt.Sprintf(
+					`REGEXP_REPLACE("%s", '%s', '%s')`,
+					fieldName, escapedSearch, replaceWith)
+			}
+		}
+	}
+
+	return expr, nil
+}
+
+// buildRegexReplaceExpr 构建正则替换表达式
+func (s *FieldCalculatorService) buildRegexReplaceExpr(fieldName, fieldType string, config *models.ReplaceConfig) (string, error) {
+	// 转义单引号（正则表达式本身不转义，由用户负责正确性）
+	regexPattern := strings.ReplaceAll(config.SearchValue, "'", "''")
+	replaceWith := strings.ReplaceAll(config.ReplaceWith, "'", "''")
+
+	// 构建flags
+	var flags string
+	if config.GlobalFlag {
+		flags = "g"
+	}
+	if config.CaseIgnore {
+		flags += "i"
+	}
+	if flags == "" {
+		flags = "" // PostgreSQL REGEXP_REPLACE 默认只替换第一个
+	}
+
+	var expr string
+
+	if s.isNumericType(fieldType) {
+		// 数值类型：先转为text，替换后再转回原类型
+		if flags != "" {
+			expr = fmt.Sprintf(
+				`CAST(REGEXP_REPLACE("%s"::text, '%s', '%s', '%s') AS %s)`,
+				fieldName, regexPattern, replaceWith, flags, s.getNumericCastType(fieldType))
+		} else {
+			expr = fmt.Sprintf(
+				`CAST(REGEXP_REPLACE("%s"::text, '%s', '%s') AS %s)`,
+				fieldName, regexPattern, replaceWith, s.getNumericCastType(fieldType))
+		}
+	} else {
+		// 字符类型
+		if flags != "" {
+			expr = fmt.Sprintf(
+				`REGEXP_REPLACE("%s", '%s', '%s', '%s')`,
+				fieldName, regexPattern, replaceWith, flags)
+		} else {
+			expr = fmt.Sprintf(
+				`REGEXP_REPLACE("%s", '%s', '%s')`,
+				fieldName, regexPattern, replaceWith)
+		}
+	}
+
+	return expr, nil
+}
+
+// escapeRegexSpecialChars 转义正则表达式特殊字符（用于普通替换模式）
+func (s *FieldCalculatorService) escapeRegexSpecialChars(str string) string {
+	// PostgreSQL 正则特殊字符
+	specialChars := []string{"\\", ".", "*", "+", "?", "^", "$", "{", "}", "[", "]", "(", ")", "|"}
+	result := str
+	for _, char := range specialChars {
+		result = strings.ReplaceAll(result, char, "\\"+char)
+	}
+	return result
+}
+
+// getNumericCastType 获取数值类型的CAST目标类型
+func (s *FieldCalculatorService) getNumericCastType(fieldType string) string {
+	fieldTypeLower := strings.ToLower(fieldType)
+	switch fieldTypeLower {
+	case "smallint":
+		return "smallint"
+	case "integer", "int":
+		return "integer"
+	case "bigint":
+		return "bigint"
+	case "real":
+		return "real"
+	case "double precision":
+		return "double precision"
+	case "numeric", "decimal":
+		return "numeric"
+	default:
+		return "numeric"
+	}
 }
 
 func (s *FieldCalculatorService) buildRoundSQL(req models.FieldCalculatorRequest) (string, error) {
