@@ -76,12 +76,13 @@ type LayerSymbolSetting struct {
 }
 
 type SymbolSet struct {
-	AttValue string  `json:"att_value"`
-	SymbolID string  `json:"symbol_id"`
-	Scale    float64 `json:"scale,omitempty"`    // 图标缩放比例
-	Rotation float64 `json:"rotation,omitempty"` // 图标旋转角度
-	OffsetX  float64 `json:"offset_x,omitempty"` // X偏移
-	OffsetY  float64 `json:"offset_y,omitempty"` // Y偏移
+	AttValue   string  `json:"att_value"`
+	SymbolID   string  `json:"symbol_id"`
+	SymbolName string  `json:"symbol_name"`
+	Scale      float64 `json:"scale,omitempty"`    // 图标缩放比例
+	Rotation   float64 `json:"rotation,omitempty"` // 图标旋转角度
+	OffsetX    float64 `json:"offset_x,omitempty"` // X偏移
+	OffsetY    float64 `json:"offset_y,omitempty"` // Y偏移
 }
 
 // Upload 上传图标
@@ -277,6 +278,7 @@ func (s *SymbolService) SetLayerSymbol(layerName string, setting LayerSymbolSett
 		return fmt.Errorf("数据序列化失败: %w", err)
 	}
 	DB := models.DB
+
 	// 更新MySchema表中的TextureSet字段
 	// 根据Main字段（图层名称）和Type字段（属性名称）来更新
 	result := DB.Model(&models.MySchema{}).
