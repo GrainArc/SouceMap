@@ -314,7 +314,6 @@ type TextureSet struct {
 
 func (s *TextureService) SetLayerTexture(layerName string, textureSets LayerTextureSetting) error {
 	// 构建TextureSet JSON数据
-	fmt.Println(textureSets)
 	textureSetJSON, err := json.Marshal(textureSets)
 	if err != nil {
 		return fmt.Errorf("纹理数据序列化失败: %w", err)

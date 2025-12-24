@@ -3,20 +3,22 @@ package services
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/GrainArc/SouceMap/models"
+	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
 	"mime/multipart"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/GrainArc/SouceMap/models"
-	"gorm.io/gorm"
 )
 
 type SymbolService struct {
@@ -270,50 +272,126 @@ func (s *SymbolService) Update(id uint, name, description, category string) erro
 
 // SetLayerSymbol 设置图层图标
 func (s *SymbolService) SetLayerSymbol(layerName string, setting LayerSymbolSetting) error {
-	// 这里实现保存图层图标配置的逻辑
-	// 可以保存到数据库或配置文件中
-	// 示例：保存到JSON配置文件或数据库表
+	SymbolSetJSON, err := json.Marshal(setting)
+	if err != nil {
+		return fmt.Errorf("数据序列化失败: %w", err)
+	}
+	DB := models.DB
+	// 更新MySchema表中的TextureSet字段
+	// 根据Main字段（图层名称）和Type字段（属性名称）来更新
+	result := DB.Model(&models.MySchema{}).
+		Where("en = ?", layerName).
+		Update("symbol_set", datatypes.JSON(SymbolSetJSON))
 
-	// TODO: 根据实际需求实现配置存储逻辑
+	if result.Error != nil {
+		return fmt.Errorf("更新数据库失败: %w", result.Error)
+	}
+
+	if result.RowsAffected == 0 {
+		return fmt.Errorf("未找到匹配的图层或属性")
+	}
+
 	return nil
 }
 
 // GetLayerSymbol 获取图层图标设置
 func (s *SymbolService) GetLayerSymbol(layerName string) (*LayerSymbolSetting, error) {
-	// 这里实现获取图层图标配置的逻辑
-	// TODO: 根据实际需求实现配置读取逻辑
-
-	return nil, errors.New("未找到匹配的图层")
+	var mySchema models.MySchema
+	result := models.DB.Where("en = ?", layerName).First(&mySchema)
+	if result.Error != nil {
+		if result.Error.Error() == "record not found" {
+			return nil, errors.New("未找到匹配的图层")
+		}
+		return nil, fmt.Errorf("数据库查询失败: %w", result.Error)
+	}
+	var SymbolSets LayerSymbolSetting
+	if len(mySchema.SymbolSet) > 0 {
+		if err := json.Unmarshal(mySchema.SymbolSet, &SymbolSets); err != nil {
+			return nil, fmt.Errorf("纹理数据解析失败: %w", err)
+		}
+	}
+	return &SymbolSets, nil
 }
 
 // GetUsedSymbols 获取所有已配置使用的图标
 func (s *SymbolService) GetUsedSymbols(host string) ([]SymbolListItem, error) {
-	// 这里实现获取已使用图标的逻辑
-	// TODO: 根据实际需求实现
+	var schemas []models.MySchema
+	if err := models.DB.Where("symbol_set IS NOT NULL AND symbol_set != '[]' AND symbol_set != 'null'").
+		Find(&schemas).Error; err != nil {
+		return nil, fmt.Errorf("查询MySchema失败: %w", err)
+	}
+	symbolIDMap := make(map[uint]struct{})
+	for _, schema := range schemas {
+		if len(schema.TextureSet) == 0 {
+			continue
+		}
 
-	var symbols []models.Symbol
-	if err := s.db.Select("id, name, mime_type, width, height, description, category, created_at, updated_at").
-		Find(&symbols).Error; err != nil {
-		return nil, err
+		// 尝试解析为 LayerSymbolSetting 格式
+		var setting LayerSymbolSetting
+		if err := json.Unmarshal(schema.SymbolSet, &setting); err == nil && len(setting.SymbolSets) > 0 {
+			for _, ts := range setting.SymbolSets {
+				if ts.SymbolID != "" {
+					if id, err := strconv.ParseUint(ts.SymbolID, 10, 64); err == nil {
+						symbolIDMap[uint(id)] = struct{}{}
+					}
+				}
+			}
+			continue
+		}
+		var symbolSets []SymbolSet
+		if err := json.Unmarshal(schema.TextureSet, &symbolSets); err == nil {
+			for _, ts := range symbolSets {
+				if ts.SymbolID != "" {
+					if id, err := strconv.ParseUint(ts.SymbolID, 10, 64); err == nil {
+						symbolIDMap[uint(id)] = struct{}{}
+					}
+				}
+			}
+		}
 	}
 
+	// 如果没有找到任何纹理ID
+	if len(symbolIDMap) == 0 {
+		return []SymbolListItem{}, nil
+	}
+
+	// 转换为ID切片
+	symbolIDs := make([]uint, 0, len(symbolIDMap))
+	for id := range symbolIDMap {
+		symbolIDs = append(symbolIDs, id)
+	}
+
+	// 查询symbol表中存在的记录
+	var symbols []models.Symbol
+	if err := models.GetDB().
+		Select("id, name, mime_type, width, height, description").
+		Where("id IN ?", symbolIDs).
+		Order("id DESC").
+		Find(&symbols).Error; err != nil {
+		return nil, fmt.Errorf("查询Texture失败: %w", err)
+	}
+
+	// 转换为TextureListItem
 	items := make([]SymbolListItem, len(symbols))
-	for i, sym := range symbols {
+	for i, t := range symbols {
+		url := &url.URL{
+			Scheme: "http",
+			Host:   host,
+			Path:   fmt.Sprintf("/symbols/%d/image", t.ID),
+		}
 		items[i] = SymbolListItem{
-			ID:          sym.ID,
-			Name:        sym.Name,
-			MimeType:    sym.MimeType,
-			Width:       sym.Width,
-			Height:      sym.Height,
-			Description: sym.Description,
-			Category:    sym.Category,
-			ImageURL:    fmt.Sprintf("http://%s/symbols/%d/image", host, sym.ID),
-			CreatedAt:   sym.CreatedAt,
-			UpdatedAt:   sym.UpdatedAt,
+			ID:          t.ID,
+			Name:        t.Name,
+			MimeType:    t.MimeType,
+			Width:       t.Width,
+			Height:      t.Height,
+			Description: t.Description,
+			ImageURL:    url.String(),
 		}
 	}
 
 	return items, nil
+
 }
 
 // Search 搜索图标

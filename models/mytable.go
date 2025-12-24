@@ -39,6 +39,7 @@ type MySchema struct {
 	UpdatedDate string         `gorm:"type:varchar(255)"`
 	TileSize    int64          `gorm:"default:256"`
 	TextureSet  datatypes.JSON `gorm:"type:jsonb"`
+	SymbolSet   datatypes.JSON `gorm:"type:jsonb"`
 	Source      datatypes.JSON `gorm:"type:jsonb"`
 	Userunits   string         `gorm:"type:varchar(255)"`
 }
