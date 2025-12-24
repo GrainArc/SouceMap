@@ -15,6 +15,7 @@ import (
 	"mime/multipart"
 	"net/url"
 	"strconv"
+	"strings"
 )
 
 type TextureService struct{}
@@ -41,58 +42,67 @@ type TextureListItem struct {
 	Url         string `json:"url"`
 }
 
-// ValidatePNG 验证文件是否为PNG格式
-func (s *TextureService) ValidatePNG(file *multipart.FileHeader) error {
+func (s *TextureService) ConvertToPNG(file *multipart.FileHeader) ([]byte, error) {
+	// 支持的图片格式
+	supportedExts := []string{".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"}
+
 	// 检查文件扩展名
-	if file.Filename[len(file.Filename)-4:] != ".png" {
-		return errors.New("文件扩展名必须为.png")
+	filename := strings.ToLower(file.Filename)
+	isSupported := false
+	for _, ext := range supportedExts {
+		if strings.HasSuffix(filename, ext) {
+			isSupported = true
+			break
+		}
 	}
 
-	// 打开文件验证PNG魔数
-	f, err := file.Open()
-	if err != nil {
-		return errors.New("无法打开文件")
-	}
-	defer f.Close()
-
-	// PNG文件魔数: 89 50 4E 47 0D 0A 1A 0A
-	header := make([]byte, 8)
-	if _, err := f.Read(header); err != nil {
-		return errors.New("无法读取文件头")
-	}
-
-	pngMagic := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
-	if !bytes.Equal(header, pngMagic) {
-		return errors.New("文件不是有效的PNG格式")
-	}
-
-	return nil
-}
-
-// Upload 上传纹理图片
-func (s *TextureService) Upload(req *UploadRequest) (*models.Texture, error) {
-	// 验证PNG格式
-	if err := s.ValidatePNG(req.File); err != nil {
-		return nil, err
+	if !isSupported {
+		return nil, errors.New("不支持的图片格式，支持的格式: PNG, JPG, JPEG, GIF, BMP, WEBP")
 	}
 
 	// 打开文件
-	file, err := req.File.Open()
+	f, err := file.Open()
 	if err != nil {
-		return nil, errors.New("无法打开上传文件")
+		return nil, errors.New("无法打开文件")
 	}
-	defer file.Close()
+	defer f.Close()
 
 	// 读取文件内容
-	imageBytes, err := io.ReadAll(file)
+	fileBytes, err := io.ReadAll(f)
 	if err != nil {
 		return nil, errors.New("无法读取文件内容")
 	}
 
-	// 解码PNG获取尺寸
-	img, err := png.Decode(bytes.NewReader(imageBytes))
+	// 使用image.Decode自动检测并解码图片格式
+	img, format, err := image.Decode(bytes.NewReader(fileBytes))
 	if err != nil {
-		return nil, errors.New("无法解析PNG图片")
+		return nil, errors.New("无法解析图片文件，请确保文件是有效的图片格式")
+	}
+
+	// 记录原始格式（可选，用于日志）
+	_ = format // png, jpeg, gif 等
+
+	// 将图片编码为PNG格式
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		return nil, errors.New("无法将图片转换为PNG格式")
+	}
+
+	return buf.Bytes(), nil
+}
+
+// Upload 上传纹理图片
+func (s *TextureService) Upload(req *UploadRequest) (*models.Texture, error) {
+	// 转换为PNG格式
+	pngBytes, err := s.ConvertToPNG(req.File)
+	if err != nil {
+		return nil, err
+	}
+
+	// 解码PNG获取尺寸
+	img, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		return nil, errors.New("无法解析转换后的PNG图片")
 	}
 
 	bounds := img.Bounds()
