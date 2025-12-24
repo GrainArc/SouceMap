@@ -195,5 +195,33 @@ func GeoRouters(r *gin.Engine) {
 		api.GET("/get_used_textures", textureHandler.GetUsedTextures)
 
 	}
+	symbolHandler := views.NewSymbolHandler()
 
+	// API路由组
+	api2 := r.Group("/symbols")
+	{
+		// 上传图标
+		api2.POST("/upload", symbolHandler.Upload)
+		// 批量上传图标
+		api2.POST("/batch_upload", symbolHandler.BatchUpload)
+		// 获取图标列表
+		api2.GET("/list", symbolHandler.List)
+		// 搜索图标
+		api2.GET("/search", symbolHandler.Search)
+		// 获取所有分类
+		api2.GET("/categories", symbolHandler.GetCategories)
+		// 获取图标详情（含Base64数据）
+		api2.GET("/:id", symbolHandler.Get)
+		// 获取原始图片
+		api2.GET("/:id/image", symbolHandler.GetImage)
+		// 更新图标信息
+		api2.PUT("/:id", symbolHandler.Update)
+		// 删除图标
+		api2.DELETE("/:id", symbolHandler.Delete)
+
+		// 图层图标配置
+		api2.POST("/set_layer_symbol", symbolHandler.SetLayerSymbol)
+		api2.GET("/get_layer_symbol", symbolHandler.GetLayerSymbol)
+		api2.GET("/get_used_symbols", symbolHandler.GetUsedSymbols)
+	}
 }

@@ -76,6 +76,10 @@ func InitDatabase() error {
 		log.Printf("数据库迁移失败: %v", err)
 		return err
 	}
+	if err := TextureDB.AutoMigrate(&Symbol{}); err != nil {
+		log.Printf("数据库迁移失败: %v", err)
+		return err
+	}
 
 	log.Println("数据库初始化成功")
 	return nil
