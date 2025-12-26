@@ -218,7 +218,7 @@ func reindexTable(db *gorm.DB, tableName string) error {
 	return db.Exec(sql).Error
 }
 
-//  确保模型定义的索引都存在
+// 确保模型定义的索引都存在
 func ensureModelIndexes(db *gorm.DB, model interface{}) error {
 	stmt := &gorm.Statement{DB: db}
 	if err := stmt.Parse(model); err != nil {

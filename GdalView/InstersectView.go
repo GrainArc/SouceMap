@@ -454,6 +454,8 @@ func addLayerSchema(DB *gorm.DB, inputLayerName, cn, en string) {
 		EN:          en,
 		Userunits:   inputLayer.Userunits,
 		Type:        inputLayer.Type,
+		TextureSet:  inputLayer.TextureSet,
+		SymbolSet:   inputLayer.SymbolSet,
 		ID:          maxID + 1,
 		UpdatedDate: time.Now().Format("2006-01-02 15:04:05"),
 	}
