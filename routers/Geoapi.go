@@ -229,5 +229,11 @@ func GeoRouters(r *gin.Engine) {
 	api3 := r.Group("/network_map")
 	{
 		tileProxyService.RegisterRoutes(api3)
+		api3.POST("/CreateNetMap", UserController.CreateNetMap)
+		api3.GET("/ListNetMaps", UserController.ListNetMaps)
+		api3.GET("/:id", UserController.GetNetMapByID)
+		api3.PUT("/:id", UserController.UpdateNetMap)
+		api3.DELETE("/:id", UserController.DeleteNetMap)
+		api3.POST("/batch-delete", UserController.BatchDeleteNetMaps)
 	}
 }
