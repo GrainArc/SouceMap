@@ -150,6 +150,7 @@ func migrateAllTables(db *gorm.DB) error {
 		&ZDTPic{},
 		&GeoRecord{},
 		&Report{},
+		&NetMap{},
 	}
 
 	return db.AutoMigrate(models...)

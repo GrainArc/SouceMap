@@ -3,6 +3,7 @@ package routers
 import (
 	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/services"
+	"github.com/GrainArc/SouceMap/tile_proxy"
 	"github.com/GrainArc/SouceMap/views"
 	"github.com/gin-gonic/gin"
 )
@@ -223,5 +224,10 @@ func GeoRouters(r *gin.Engine) {
 		api2.POST("/set_layer_symbol", symbolHandler.SetLayerSymbol)
 		api2.GET("/get_layer_symbol", symbolHandler.GetLayerSymbol)
 		api2.GET("/get_used_symbols", symbolHandler.GetUsedSymbols)
+	}
+	tileProxyService := tile_proxy.NewTileProxyService()
+	api3 := r.Group("/network_map")
+	{
+		tileProxyService.RegisterRoutes(api3)
 	}
 }
