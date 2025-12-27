@@ -1,3 +1,4 @@
+// tile_utils.go
 package tile_proxy
 
 import (
@@ -5,7 +6,6 @@ import (
 )
 
 const (
-	TileSize    = 256
 	EarthRadius = 6378137.0
 	OriginShift = math.Pi * EarthRadius // 20037508.342789244
 )
@@ -39,6 +39,16 @@ type TileRange struct {
 	MaxY int
 }
 
+// TileConfig 瓦片配置
+type TileConfig struct {
+	TileSize int // 瓦片大小，如256或512
+}
+
+// DefaultTileConfig 默认瓦片配置
+func DefaultTileConfig() *TileConfig {
+	return &TileConfig{TileSize: 256}
+}
+
 // GetTileBoundsWGS84 获取瓦片的WGS84边界
 func GetTileBoundsWGS84(z, x, y int) TileBounds {
 	n := math.Pow(2, float64(z))
@@ -61,38 +71,67 @@ func GetTileBoundsWGS84(z, x, y int) TileBounds {
 }
 
 // LonLatToGlobalPixel 经纬度转全局像素坐标
-func LonLatToGlobalPixel(lon, lat float64, z int) PixelCoord {
+func LonLatToGlobalPixel(lon, lat float64, z int, tileSize int) PixelCoord {
 	n := math.Pow(2, float64(z))
 
-	x := (lon + 180.0) / 360.0 * n * TileSize
+	x := (lon + 180.0) / 360.0 * n * float64(tileSize)
 
 	latRad := lat * math.Pi / 180.0
-	y := (1.0 - math.Log(math.Tan(latRad)+1.0/math.Cos(latRad))/math.Pi) / 2.0 * n * TileSize
+	y := (1.0 - math.Log(math.Tan(latRad)+1.0/math.Cos(latRad))/math.Pi) / 2.0 * n * float64(tileSize)
 
 	return PixelCoord{X: x, Y: y}
 }
 
 // GlobalPixelToTile 全局像素坐标转瓦片坐标
-func GlobalPixelToTile(px, py float64) (tileX, tileY int, offsetX, offsetY float64) {
-	tileX = int(math.Floor(px / TileSize))
-	tileY = int(math.Floor(py / TileSize))
-	offsetX = px - float64(tileX)*TileSize
-	offsetY = py - float64(tileY)*TileSize
+func GlobalPixelToTile(px, py float64, tileSize int) (tileX, tileY int, offsetX, offsetY float64) {
+	tileX = int(math.Floor(px / float64(tileSize)))
+	tileY = int(math.Floor(py / float64(tileSize)))
+	offsetX = px - float64(tileX)*float64(tileSize)
+	offsetY = py - float64(tileY)*float64(tileSize)
 	return
 }
 
-// CalculateRequiredTiles 计算需要请求的瓦片范围
-func CalculateRequiredTiles(topLeftPixel, bottomRightPixel PixelCoord) (TileRange, PixelCoord) {
-	minTileX, minTileY, offsetX, offsetY := GlobalPixelToTile(topLeftPixel.X, topLeftPixel.Y)
-	maxTileX := int(math.Floor(bottomRightPixel.X / TileSize))
-	maxTileY := int(math.Floor(bottomRightPixel.Y / TileSize))
+// CalculateRequiredTilesAndCrop 计算需要请求的瓦片范围和裁剪信息
+type CropInfo struct {
+	// 在拼接画布上的裁剪起点
+	CropX float64
+	CropY float64
+	// 裁剪宽高
+	CropWidth  float64
+	CropHeight float64
+}
+
+// CalculateRequiredTilesWithCrop 计算需要请求的瓦片范围和精确裁剪信息
+func CalculateRequiredTilesWithCrop(
+	topLeftPixel, bottomRightPixel PixelCoord,
+	tileSize int,
+) (TileRange, CropInfo) {
+	// 计算瓦片范围
+	minTileX := int(math.Floor(topLeftPixel.X / float64(tileSize)))
+	minTileY := int(math.Floor(topLeftPixel.Y / float64(tileSize)))
+	maxTileX := int(math.Floor(bottomRightPixel.X / float64(tileSize)))
+	maxTileY := int(math.Floor(bottomRightPixel.Y / float64(tileSize)))
+
+	// 计算裁剪信息
+	// 裁剪起点 = 目标像素坐标 - 瓦片范围起点的像素坐标
+	cropX := topLeftPixel.X - float64(minTileX)*float64(tileSize)
+	cropY := topLeftPixel.Y - float64(minTileY)*float64(tileSize)
+
+	// 裁剪宽高 = 目标区域的像素范围
+	cropWidth := bottomRightPixel.X - topLeftPixel.X
+	cropHeight := bottomRightPixel.Y - topLeftPixel.Y
 
 	return TileRange{
-		MinX: minTileX,
-		MaxX: maxTileX,
-		MinY: minTileY,
-		MaxY: maxTileY,
-	}, PixelCoord{X: offsetX, Y: offsetY}
+			MinX: minTileX,
+			MaxX: maxTileX,
+			MinY: minTileY,
+			MaxY: maxTileY,
+		}, CropInfo{
+			CropX:      cropX,
+			CropY:      cropY,
+			CropWidth:  cropWidth,
+			CropHeight: cropHeight,
+		}
 }
 
 // LonLatToTileCoord 经纬度转瓦片坐标

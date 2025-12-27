@@ -14,6 +14,7 @@ type NetMap struct {
 	ImageFormat     string     `gorm:"column:image_format" json:"imageFormat"`                    // 图片格式
 	MinLevel        int        `gorm:"column:min_level" json:"minLevel"`                          // 最小缩放级别
 	MaxLevel        int        `gorm:"column:max_level" json:"maxLevel"`                          // 最大缩放级别
+	TileSize        int        `gorm:"column:tile_size" json:"tileSize"`                          // 最大缩放级别
 	UrlPath         string     `gorm:"column:url_path" json:"urlPath"`                            // URL路径
 	TileUrlTemplate string     `gorm:"column:tile_url_template;type:text" json:"tileUrlTemplate"` // 完整URL模板
 	Status          int        `gorm:"column:status;default:1" json:"status"`                     // 状态：0禁用，1启用

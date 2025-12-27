@@ -1593,7 +1593,7 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 	defer cancel()
 
 	DB := models.DB
-	fmt.Println(sql)
+
 	err := DB.WithContext(ctx).Raw(sql).Scan(&result).Error
 	if err != nil {
 		log.Printf("获取图层范围失败: %v", err)
@@ -1604,8 +1604,6 @@ func (uc *UserController) GetLayerExtent(c *gin.Context) {
 		})
 		return
 	}
-
-	fmt.Printf("查询结果: %+v\n", result)
 
 	// 检查采样是否命中数据
 	if result.SampleCount == 0 {

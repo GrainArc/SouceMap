@@ -1,16 +1,18 @@
+// tile_proxy.go
 package tile_proxy
 
 import (
 	"context"
 	"fmt"
-	"github.com/GrainArc/Gogeo"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
 
@@ -46,7 +48,7 @@ func NewTileProxyService() *TileProxyService {
 			},
 		},
 		coordConv: pgmvt.NewChangeCoord(),
-		cache:     NewTileCache(1000, 10*time.Minute), // 1000个瓦片，10分钟过期
+		cache:     NewTileCache(1000, 10*time.Minute),
 	}
 }
 
@@ -125,6 +127,12 @@ func (s *TileProxyService) HandleTileRequest(c *gin.Context) {
 		return
 	}
 
+	// 获取瓦片大小配置，默认256
+	tileSize := 256
+	if netMap.TileSize > 0 {
+		tileSize = netMap.TileSize
+	}
+
 	// 检查缓存
 	cacheKey := fmt.Sprintf("%d_%d_%d_%d", req.MapID, req.Z, req.X, req.Y)
 	if cachedData, ok := s.cache.Get(cacheKey); ok {
@@ -140,10 +148,10 @@ func (s *TileProxyService) HandleTileRequest(c *gin.Context) {
 		tileData, err = s.proxyDirectTile(c.Request.Context(), &netMap, req)
 	case CoordGCJ02:
 		// GCJ02坐标系，需要转换
-		tileData, err = s.proxyWithCoordTransform(c.Request.Context(), &netMap, req, s.wgs84ToGCJ02)
+		tileData, err = s.proxyWithCoordTransform(c.Request.Context(), &netMap, req, tileSize, s.wgs84ToGCJ02)
 	case CoordBD09:
 		// BD09坐标系，需要转换
-		tileData, err = s.proxyWithCoordTransform(c.Request.Context(), &netMap, req, s.wgs84ToBD09)
+		tileData, err = s.proxyWithCoordTransform(c.Request.Context(), &netMap, req, tileSize, s.wgs84ToBD09)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported projection"})
 		return
@@ -181,35 +189,47 @@ func (s *TileProxyService) wgs84ToBD09(lon, lat float64) (float64, float64) {
 }
 
 // proxyWithCoordTransform 带坐标转换的瓦片代理
-func (s *TileProxyService) proxyWithCoordTransform(ctx context.Context, netMap *models.NetMap, req TileRequest, transform CoordTransformFunc) ([]byte, error) {
+func (s *TileProxyService) proxyWithCoordTransform(
+	ctx context.Context,
+	netMap *models.NetMap,
+	req TileRequest,
+	tileSize int,
+	transform CoordTransformFunc,
+) ([]byte, error) {
 	// 1. 计算请求瓦片的WGS84边界
 	bounds := GetTileBoundsWGS84(req.Z, req.X, req.Y)
 
 	// 2. 转换四个角点到目标坐标系
-	topLeftLon, topLeftLat := transform(bounds.MinLon, bounds.MaxLat)
-	topRightLon, topRightLat := transform(bounds.MaxLon, bounds.MaxLat)
-	bottomLeftLon, bottomLeftLat := transform(bounds.MinLon, bounds.MinLat)
-	bottomRightLon, bottomRightLat := transform(bounds.MaxLon, bounds.MinLat)
+	// 注意：需要更密集的采样点来处理非线性变换
+	transformedBounds := s.transformBoundsWithSampling(bounds, transform)
 
-	// 3. 计算转换后的边界范围
-	minLon := min4(topLeftLon, topRightLon, bottomLeftLon, bottomRightLon)
-	maxLon := max4(topLeftLon, topRightLon, bottomLeftLon, bottomRightLon)
-	minLat := min4(topLeftLat, topRightLat, bottomLeftLat, bottomRightLat)
-	maxLat := max4(topLeftLat, topRightLat, bottomLeftLat, bottomRightLat)
+	// 3. 计算转换后边界的全局像素坐标
+	topLeftPixel := LonLatToGlobalPixel(
+		transformedBounds.MinLon,
+		transformedBounds.MaxLat,
+		req.Z,
+		tileSize,
+	)
+	bottomRightPixel := LonLatToGlobalPixel(
+		transformedBounds.MaxLon,
+		transformedBounds.MinLat,
+		req.Z,
+		tileSize,
+	)
 
-	// 4. 计算全局像素坐标
-	topLeftPixel := LonLatToGlobalPixel(minLon, maxLat, req.Z)
-	bottomRightPixel := LonLatToGlobalPixel(maxLon, minLat, req.Z)
+	// 4. 计算需要请求的瓦片范围和裁剪信息
+	tileRange, cropInfo := CalculateRequiredTilesWithCrop(topLeftPixel, bottomRightPixel, tileSize)
 
-	// 5. 计算需要请求的瓦片范围
-	tileRange, offset := CalculateRequiredTiles(topLeftPixel, bottomRightPixel)
+	// 5. 验证瓦片范围的有效性
+	maxTileIndex := (1 << req.Z) - 1
+	tileRange = s.clampTileRange(tileRange, maxTileIndex)
 
 	// 6. 并发请求所有需要的瓦片
 	tiles := s.fetchTilesParallel(ctx, netMap, req.Z, tileRange)
 
 	// 7. 计算画布尺寸
-	canvasWidth := (tileRange.MaxX - tileRange.MinX + 1) * TileSize
-	canvasHeight := (tileRange.MaxY - tileRange.MinY + 1) * TileSize
+	canvasWidth := (tileRange.MaxX - tileRange.MinX + 1) * tileSize
+	canvasHeight := (tileRange.MaxY - tileRange.MinY + 1) * tileSize
 
 	// 8. 使用GDAL处理图像
 	processor, err := Gogeo.NewImageProcessor(canvasWidth, canvasHeight, 4) // RGBA
@@ -219,56 +239,174 @@ func (s *TileProxyService) proxyWithCoordTransform(ctx context.Context, netMap *
 	defer processor.Close()
 
 	// 9. 将瓦片拼接到画布
+	successCount := 0
 	for _, tile := range tiles {
 		if tile.Err != nil {
-			continue // 跳过失败的瓦片
+			fmt.Printf("Warning: failed to fetch tile %d/%d/%d: %v\n", req.Z, tile.X, tile.Y, tile.Err)
+			continue
 		}
 
-		dstX := (tile.X - tileRange.MinX) * TileSize
-		dstY := (tile.Y - tileRange.MinY) * TileSize
+		if len(tile.Data) == 0 {
+			continue
+		}
+
+		dstX := (tile.X - tileRange.MinX) * tileSize
+		dstY := (tile.Y - tileRange.MinY) * tileSize
 
 		if err := processor.AddTileFromBuffer(tile.Data, tile.Format, dstX, dstY); err != nil {
-			// 记录错误但继续处理
-			fmt.Printf("Warning: failed to add tile %d/%d: %v\n", tile.X, tile.Y, err)
+			fmt.Printf("Warning: failed to add tile %d/%d/%d: %v\n", req.Z, tile.X, tile.Y, err)
+			continue
 		}
+		successCount++
 	}
 
-	// 10. 裁剪并导出
-	cropX := int(offset.X)
-	cropY := int(offset.Y)
+	if successCount == 0 {
+		return nil, fmt.Errorf("no tiles were successfully fetched")
+	}
 
-	// 确保裁剪区域不超出画布
-	if cropX+TileSize > canvasWidth {
-		cropX = canvasWidth - TileSize
-	}
-	if cropY+TileSize > canvasHeight {
-		cropY = canvasHeight - TileSize
-	}
+	// 10. 计算精确的裁剪参数
+	cropX := int(math.Round(cropInfo.CropX))
+	cropY := int(math.Round(cropInfo.CropY))
+
+	// 确保裁剪区域不超出画布边界
 	if cropX < 0 {
 		cropX = 0
 	}
 	if cropY < 0 {
 		cropY = 0
 	}
+	if cropX+tileSize > canvasWidth {
+		cropX = canvasWidth - tileSize
+	}
+	if cropY+tileSize > canvasHeight {
+		cropY = canvasHeight - tileSize
+	}
 
+	// 确保裁剪尺寸正确
+	outputWidth := tileSize
+	outputHeight := tileSize
+
+	// 如果画布本身就小于目标尺寸，调整输出尺寸
+	if canvasWidth < tileSize {
+		outputWidth = canvasWidth
+		cropX = 0
+	}
+	if canvasHeight < tileSize {
+		outputHeight = canvasHeight
+		cropY = 0
+	}
+
+	// 11. 裁剪并导出
 	outputFormat := "PNG"
 	if netMap.ImageFormat == "jpg" || netMap.ImageFormat == "jpeg" {
 		outputFormat = "JPEG"
 	}
 
-	return processor.CropAndExport(cropX, cropY, TileSize, TileSize, outputFormat)
+	// 如果输出尺寸与目标尺寸不同，需要缩放
+	if outputWidth != tileSize || outputHeight != tileSize {
+		// 先裁剪可用区域，然后缩放到目标尺寸
+		return processor.CropScaleAndExport(cropX, cropY, outputWidth, outputHeight, tileSize, tileSize, outputFormat)
+	}
+
+	return processor.CropAndExport(cropX, cropY, tileSize, tileSize, outputFormat)
+}
+
+// transformBoundsWithSampling 使用采样点转换边界（处理非线性变换）
+func (s *TileProxyService) transformBoundsWithSampling(bounds TileBounds, transform CoordTransformFunc) TileBounds {
+	// 在边界上采样多个点，以更准确地计算转换后的边界
+	const samples = 10
+
+	var minLon, maxLon, minLat, maxLat float64
+	first := true
+
+	// 采样边界上的点
+	for i := 0; i <= samples; i++ {
+		t := float64(i) / float64(samples)
+
+		// 上边
+		lon, lat := transform(
+			bounds.MinLon+(bounds.MaxLon-bounds.MinLon)*t,
+			bounds.MaxLat,
+		)
+		if first {
+			minLon, maxLon, minLat, maxLat = lon, lon, lat, lat
+			first = false
+		} else {
+			minLon, maxLon = minFloat(minLon, lon), maxFloat(maxLon, lon)
+			minLat, maxLat = minFloat(minLat, lat), maxFloat(maxLat, lat)
+		}
+
+		// 下边
+		lon, lat = transform(
+			bounds.MinLon+(bounds.MaxLon-bounds.MinLon)*t,
+			bounds.MinLat,
+		)
+		minLon, maxLon = minFloat(minLon, lon), maxFloat(maxLon, lon)
+		minLat, maxLat = minFloat(minLat, lat), maxFloat(maxLat, lat)
+
+		// 左边
+		lon, lat = transform(
+			bounds.MinLon,
+			bounds.MinLat+(bounds.MaxLat-bounds.MinLat)*t,
+		)
+		minLon, maxLon = minFloat(minLon, lon), maxFloat(maxLon, lon)
+		minLat, maxLat = minFloat(minLat, lat), maxFloat(maxLat, lat)
+
+		// 右边
+		lon, lat = transform(
+			bounds.MaxLon,
+			bounds.MinLat+(bounds.MaxLat-bounds.MinLat)*t,
+		)
+		minLon, maxLon = minFloat(minLon, lon), maxFloat(maxLon, lon)
+		minLat, maxLat = minFloat(minLat, lat), maxFloat(maxLat, lat)
+	}
+
+	return TileBounds{
+		MinLon: minLon,
+		MaxLon: maxLon,
+		MinLat: minLat,
+		MaxLat: maxLat,
+	}
+}
+
+// clampTileRange 限制瓦片范围在有效范围内
+func (s *TileProxyService) clampTileRange(tr TileRange, maxIndex int) TileRange {
+	if tr.MinX < 0 {
+		tr.MinX = 0
+	}
+	if tr.MinY < 0 {
+		tr.MinY = 0
+	}
+	if tr.MaxX > maxIndex {
+		tr.MaxX = maxIndex
+	}
+	if tr.MaxY > maxIndex {
+		tr.MaxY = maxIndex
+	}
+	return tr
 }
 
 // fetchTilesParallel 并发获取瓦片
 func (s *TileProxyService) fetchTilesParallel(ctx context.Context, netMap *models.NetMap, z int, tileRange TileRange) []FetchedTile {
+	tileCount := (tileRange.MaxX - tileRange.MinX + 1) * (tileRange.MaxY - tileRange.MinY + 1)
+	if tileCount <= 0 {
+		return nil
+	}
+
 	var wg sync.WaitGroup
-	tileChan := make(chan FetchedTile, (tileRange.MaxX-tileRange.MinX+1)*(tileRange.MaxY-tileRange.MinY+1))
+	tileChan := make(chan FetchedTile, tileCount)
+
+	// 限制并发数
+	semaphore := make(chan struct{}, 10)
 
 	for x := tileRange.MinX; x <= tileRange.MaxX; x++ {
 		for y := tileRange.MinY; y <= tileRange.MaxY; y++ {
 			wg.Add(1)
 			go func(tileX, tileY int) {
 				defer wg.Done()
+
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
 
 				url := s.buildTileURL(netMap, z, tileX, tileY)
 				data, err := s.fetchTile(ctx, url)
@@ -289,13 +427,11 @@ func (s *TileProxyService) fetchTilesParallel(ctx context.Context, netMap *model
 		}
 	}
 
-	// 等待所有请求完成
 	go func() {
 		wg.Wait()
 		close(tileChan)
 	}()
 
-	// 收集结果
 	var tiles []FetchedTile
 	for tile := range tileChan {
 		tiles = append(tiles, tile)
@@ -306,17 +442,15 @@ func (s *TileProxyService) fetchTilesParallel(ctx context.Context, netMap *model
 
 // buildTileURL 构建瓦片URL
 func (s *TileProxyService) buildTileURL(netMap *models.NetMap, z, x, y int) string {
-	// 如果有完整的URL模板，使用模板
 	if netMap.TileUrlTemplate != "" {
 		url := netMap.TileUrlTemplate
 		url = strings.ReplaceAll(url, "{z}", strconv.Itoa(z))
 		url = strings.ReplaceAll(url, "{x}", strconv.Itoa(x))
 		url = strings.ReplaceAll(url, "{y}", strconv.Itoa(y))
-		url = strings.ReplaceAll(url, "{-y}", strconv.Itoa(int(1<<uint(z))-1-y)) // TMS格式
+		url = strings.ReplaceAll(url, "{-y}", strconv.Itoa(int(1<<uint(z))-1-y))
 		return url
 	}
 
-	// 否则根据各字段拼接
 	protocol := netMap.Protocol
 	if protocol == "" {
 		protocol = "https"
@@ -342,7 +476,6 @@ func (s *TileProxyService) fetchTile(ctx context.Context, url string) ([]byte, e
 		return nil, fmt.Errorf("create request failed: %v", err)
 	}
 
-	// 设置请求头，模拟浏览器
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
 	req.Header.Set("Accept", "image/webp,image/apng,image/*,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
@@ -379,28 +512,20 @@ func (s *TileProxyService) sendTileResponse(c *gin.Context, data []byte, format 
 	}
 
 	c.Header("Content-Type", contentType)
-	c.Header("Cache-Control", "public, max-age=86400") // 缓存1天
+	c.Header("Cache-Control", "public, max-age=86400")
 	c.Header("Access-Control-Allow-Origin", "*")
 	c.Data(http.StatusOK, contentType, data)
 }
 
 // 辅助函数
-func min4(a, b, c, d float64) float64 {
-	return min(min(a, b), min(c, d))
-}
-
-func max4(a, b, c, d float64) float64 {
-	return max(max(a, b), max(c, d))
-}
-
-func min(a, b float64) float64 {
+func minFloat(a, b float64) float64 {
 	if a < b {
 		return a
 	}
 	return b
 }
 
-func max(a, b float64) float64 {
+func maxFloat(a, b float64) float64 {
 	if a > b {
 		return a
 	}
