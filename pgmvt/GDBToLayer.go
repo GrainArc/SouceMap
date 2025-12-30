@@ -250,6 +250,7 @@ func mapGeoTypeToStandard(geoType string) string {
 type SourceConfig struct {
 	SourcePath      string               `json:"source_path"`
 	SourceLayerName string               `json:"source_layer_name"`
+	SourceLayerSRS  int                  `json:"source_layer_srs"` //EPSG代码
 	KeyAttribute    string               `json:"key_attribute"`
 	AttMap          []ProcessedFieldInfo `json:"att_map"`
 }
@@ -294,6 +295,7 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, targetLayers []string,
 		if metadataCollection != nil {
 			layerMeta = metadataCollection.GetLayerByName(layer.LayerName)
 		}
+		SC.SourceLayerSRS = layerMeta.EPSG
 		// 确定CN（中文名）：优先使用AliasName，否则使用Name
 		layerCN := layer.LayerName
 		if layerMeta != nil && layerMeta.AliasName != "" && layerMeta.AliasName != layerMeta.Name {

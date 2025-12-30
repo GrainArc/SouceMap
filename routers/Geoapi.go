@@ -89,6 +89,8 @@ func GeoRouters(r *gin.Engine) {
 
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
 		mapRouter.GET("/SyncToFile", UserController.SyncToFile)
+
+		mapRouter.POST("/ImportPGToGDBHandler", UserController.ImportPGToGDBHandler)
 		mapRouter.POST("/LineOnPolygonOverlay", UserController.LineOnPolygonOverlay)
 
 	}

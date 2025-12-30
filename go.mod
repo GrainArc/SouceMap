@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93
-	github.com/GrainArc/Gogeo v1.4.2
+	github.com/GrainArc/Gogeo v1.4.8
 	github.com/chai2010/webp v1.4.0
 	github.com/gin-gonic/gin v1.10.1
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
@@ -14,16 +14,16 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/mholt/archiver/v3 v3.5.1
 	github.com/mozillazg/go-pinyin v0.21.0
-	github.com/paulmach/orb v0.11.1
+	github.com/paulmach/orb v0.12.0
 	github.com/rpaloschi/dxf-go v0.0.0-20171012175419-946d856c548a
 	github.com/saintfish/chardet v0.0.0-20230101081208-5e3ef4b5456d
 	github.com/yofu/dxf v0.0.0-20250806094206-f3988c7f0176
 	golang.org/x/image v0.0.0-20211028202545-6944b10bf410
-	golang.org/x/text v0.29.0
+	golang.org/x/text v0.32.0
 	gorm.io/datatypes v1.2.7
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
-	gorm.io/gorm v1.31.0
+	gorm.io/gorm v1.31.1
 )
 
 require (
@@ -64,11 +64,11 @@ require (
 	github.com/ugorji/go/codec v1.3.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect
-	go.mongodb.org/mongo-driver v1.17.4 // indirect
+	go.mongodb.org/mongo-driver v1.17.6 // indirect
 	golang.org/x/arch v0.21.0 // indirect
 	golang.org/x/crypto v0.42.0 // indirect
 	golang.org/x/net v0.44.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	google.golang.org/protobuf v1.36.9 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect

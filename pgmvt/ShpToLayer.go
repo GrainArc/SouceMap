@@ -977,9 +977,12 @@ func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, C
 		"MultiPolygon", "polygon",
 	)
 	var SC SourceConfig
+	LayerSRS, _ := Gogeo.GetSHPEPSGCode(shpPath)
+
 	SC.SourcePath = shpPath
 	SC.SourceLayerName = shpLayer.LayerName
 	SC.KeyAttribute = "objectid"
+	SC.SourceLayerSRS = LayerSRS
 	// 处理表名，转换为合适的数据库表名
 	tableName := EN
 
