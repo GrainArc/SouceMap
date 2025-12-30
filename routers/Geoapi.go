@@ -58,6 +58,8 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/Area", UserController.Area)
 		mapRouter.POST("/GeodesicArea", UserController.GeodesicArea)
 		mapRouter.POST("/AddSchema", UserController.AddSchema)
+		mapRouter.POST("/GetGDBMetadata", UserController.GetGDBMetadata)
+
 		mapRouter.GET("/DelSchema", UserController.DelSchema)
 		mapRouter.POST("/ChangeSchema", UserController.ChangeSchema)
 		mapRouter.POST("/ChangeLayerStyle", UserController.ChangeLayerStyle)

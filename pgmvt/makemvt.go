@@ -145,7 +145,7 @@ func DelMVT(DB *gorm.DB, tablename string, geom orb.Geometry) {
 	if len(tile) == 0 {
 		return
 	}
-	if len(tile) > 200 {
+	if len(tile) > 100 {
 		DelMVTALL(DB, tablename)
 		return
 	}
@@ -169,7 +169,7 @@ func DelMVT(DB *gorm.DB, tablename string, geom orb.Geometry) {
 	if err := query.Delete(nil).Error; err != nil {
 		log.Printf("error: %v", err)
 	}
-	if err := DB.Table(TempModelName).Where("z > ?", 19).Delete(nil).Error; err != nil {
+	if err := DB.Table(TempModelName).Where("z > ?", 18).Delete(nil).Error; err != nil {
 		log.Printf("error deleting tiles with z > 19: %v", err)
 	}
 }

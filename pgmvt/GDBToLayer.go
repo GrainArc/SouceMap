@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"log"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -253,15 +254,22 @@ type SourceConfig struct {
 	AttMap          []ProcessedFieldInfo `json:"att_map"`
 }
 
-// AddGDBDirectlyOptimized 优化版本：直接将GDB文件导入到PostGIS数据库
-func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color string, Opacity string, Userunits string, LineWidth string) []string {
-
-	layers, err := Gogeo.GDBToPostGIS(gdbPath)
+// AddGDBDirectlyOptimized 优化后的GDB导入函数
+func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, targetLayers []string, Main string, Color string, Opacity string, Userunits string, LineWidth string) []string {
+	layers, err := Gogeo.GDBToPostGIS(gdbPath, targetLayers)
 	if err != nil {
 		log.Printf("读取GDB文件失败: %v", err)
 		return nil
 	}
-
+	// 读取GDB元数据，获取图层别名和路径信息
+	metadataCollection, err := Gogeo.ReadGDBLayerMetadata(gdbPath)
+	if err != nil {
+		log.Printf("读取GDB元数据失败: %v, 将使用默认值", err)
+		metadataCollection = nil
+	}
+	// 获取GDB文件名（不含扩展名）
+	gdbFileName := filepath.Base(gdbPath)
+	gdbFileName = strings.TrimSuffix(gdbFileName, filepath.Ext(gdbFileName))
 	var processedTables []string
 	replacer := strings.NewReplacer(
 		"POINT", "point",
@@ -274,7 +282,6 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 		"MultiLineString", "line",
 		"MultiPolygon", "polygon",
 	)
-
 	for _, layer := range layers {
 		// 处理表名，转换为合适的数据库表名
 		var SC SourceConfig
@@ -282,18 +289,26 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 		SC.SourceLayerName = layer.LayerName
 		SC.KeyAttribute = "fid"
 		tableName := sanitizeTableName(Main + "_" + layer.LayerName)
-
-		// 检查是否为预定义图层
-
+		// 获取图层元数据
+		var layerMeta *Gogeo.GDBLayerMetaData
+		if metadataCollection != nil {
+			layerMeta = metadataCollection.GetLayerByName(layer.LayerName)
+		}
+		// 确定CN（中文名）：优先使用AliasName，否则使用Name
+		layerCN := layer.LayerName
+		if layerMeta != nil && layerMeta.AliasName != "" && layerMeta.AliasName != layerMeta.Name {
+			layerCN = layerMeta.AliasName
+		}
+		// 构建完整的Main路径：原始Main/GDB文件名/图层路径（去掉图层名）
+		fullMain := buildFullMainPath(Main, gdbFileName, layerMeta)
 		// 普通图层，检查重名
 		var count int64
-		DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, layer.LayerName).Count(&count)
+		DB.Model(&models.MySchema{}).Where("en = ? AND cn != ?", tableName, layerCN).Count(&count)
 		if count > 0 {
 			tableName = tableName + "_1"
 		}
-
 		var count2 int64
-		DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, layer.LayerName).Count(&count2)
+		DB.Model(&models.MySchema{}).Where("en = ? AND cn = ?", tableName, layerCN).Count(&count2)
 		if count2 > 0 {
 			// 清空现有数据
 			DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName))
@@ -303,23 +318,143 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, Main string, Color str
 				DB.Exec(fmt.Sprintf("DELETE FROM %s", tableName+"mvt"))
 			}
 		}
-
-		// 直接转换并写入数据
-		AttMap := ConvertGDBLayerToPGDirect(layer, DB, tableName)
+		// 直接转换并写入数据，传入图层元数据用于字段别名处理
+		AttMap := ConvertGDBLayerToPGDirectWithMeta(layer, DB, tableName, layerMeta)
 		SC.AttMap = AttMap
-		// 处理schema记录
+		// 处理schema记录，使用tableName作为EN，layerCN作为CN，fullMain作为Main
 		geoType := mapGeoTypeToStandard(layer.GeoType)
-		handleSchemaRecord(DB, tableName, layer.LayerName, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth, SC)
+		handleSchemaRecord(DB, tableName, layerCN, fullMain, Color, Opacity, geoType, replacer, Userunits, LineWidth, SC)
 		processedTables = append(processedTables, tableName)
 	}
-
 	return processedTables
+}
+
+// buildFullMainPath 构建完整的Main路径
+// 格式：原始Main/GDB文件名/图层路径（不含图层名本身）
+// 例如：Main="道路", gdbFileName="城市道路", layerPath="/成都市/匝道/LCTL"
+// 结果："道路/城市道路/成都市/匝道"
+func buildFullMainPath(originalMain string, gdbFileName string, layerMeta *Gogeo.GDBLayerMetaData) string {
+	// 基础路径：原始Main/GDB文件名
+	basePath := originalMain
+	if gdbFileName != "" {
+		basePath = originalMain + "/" + gdbFileName
+	}
+	// 如果没有元数据或路径为空，直接返回基础路径
+	if layerMeta == nil || layerMeta.Path == "" {
+		return basePath
+	}
+	// 处理图层路径
+	layerPath := layerMeta.Path
+	// 统一路径分隔符
+	layerPath = strings.ReplaceAll(layerPath, "\\", "/")
+	// 移除开头的斜杠
+	layerPath = strings.TrimPrefix(layerPath, "/")
+	// 分割路径
+	pathParts := strings.Split(layerPath, "/")
+	// 如果路径有多个部分，移除最后一个（图层名本身）
+	if len(pathParts) > 1 {
+		// 取除最后一个元素外的所有部分
+		parentPath := strings.Join(pathParts[:len(pathParts)-1], "/")
+		if parentPath != "" {
+			return basePath + "/" + parentPath
+		}
+	}
+	return basePath
+}
+
+// ConvertGDBLayerToPGDirectWithMeta 带元数据的图层转换函数
+func ConvertGDBLayerToPGDirectWithMeta(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName string, layerMeta *Gogeo.GDBLayerMetaData) []ProcessedFieldInfo {
+	if len(layer.FeatureData) == 0 {
+		log.Printf("图层 %s 没有要素数据", layer.LayerName)
+		return nil
+	}
+	// 处理字段信息，转换字段名，传入图层元数据用于获取字段别名
+	processedFields := processFieldInfosWithMeta(layer.FieldInfos, tableName, layerMeta)
+	// 检查表是否存在
+	var validFields map[string]string
+	if tableExists(DB, tableName) {
+		// 获取数据库表的现有字段
+		existingFields := getTableColumns2(DB, tableName)
+		// 只保留匹配的字段
+		validFields = filterMatchingFieldsDirect(processedFields, existingFields)
+		log.Printf("表 %s 已存在，匹配到 %d 个字段", tableName, len(validFields))
+	} else {
+		// 表不存在，创建新表
+		validFields = make(map[string]string)
+		for _, field := range processedFields {
+			validFields[field.ProcessedName] = field.DBType
+		}
+		createGDBTableDirect(DB, tableName, validFields, layer.GeoType)
+		log.Printf("创建新表 %s，包含 %d 个字段", tableName, len(validFields))
+	}
+	// 直接写入数据
+	writeGDBDataToDBDirect(layer.FeatureData, DB, tableName, validFields, processedFields)
+	log.Printf("成功导入图层 %s 到表 %s，共 %d 条记录",
+		layer.LayerName, tableName, len(layer.FeatureData))
+	return processedFields
+}
+
+// processFieldInfosWithMeta 处理字段信息，支持从元数据获取字段别名
+func processFieldInfosWithMeta(fieldInfos []Gogeo.FieldInfo, tableName string, layerMeta *Gogeo.GDBLayerMetaData) []ProcessedFieldInfo {
+	var processedFields []ProcessedFieldInfo
+	// 构建字段别名映射（从元数据）
+	fieldAliasMap := make(map[string]string)
+	if layerMeta != nil {
+		for _, field := range layerMeta.Fields {
+			fieldAliasMap[field.Name] = field.AliasName
+		}
+	}
+	for _, field := range fieldInfos {
+		if field.Name == "id" || field.Name == "ID" {
+			continue
+		}
+		// 转换字段名
+		processedName := methods.ConvertToInitials(field.Name)
+		processedName = strings.ToLower(processedName)
+		// 获取字段别名
+		aliasName := ""
+		if alias, exists := fieldAliasMap[field.Name]; exists {
+			aliasName = alias
+		}
+		// 判断是否需要创建中文属性映射
+		// 条件1：Name和AliasName不一致（有别名）
+		// 条件2：字段名包含中文
+		needChineseMapping := false
+		chineseName := ""
+		if aliasName != "" && aliasName != field.Name {
+			// Name和AliasName不一致，使用AliasName作为CName
+			needChineseMapping = true
+			chineseName = aliasName
+		} else if containsChinese(field.Name) {
+			// Name和AliasName一致（或没有AliasName），但字段名包含中文
+			needChineseMapping = true
+			chineseName = field.Name
+		}
+		// 创建中文属性映射
+		if needChineseMapping && chineseName != "" {
+			DB := models.DB
+			attColor := models.ChineseProperty{
+				CName:     chineseName,
+				EName:     processedName,
+				LayerName: tableName,
+			}
+			if err := DB.Create(&attColor).Error; err != nil {
+				log.Printf("Failed to create Chinese property mapping: %v", err)
+			}
+		}
+		processedFields = append(processedFields, ProcessedFieldInfo{
+			OriginalName:  field.Name,
+			ProcessedName: processedName,
+			DBType:        field.DBType,
+		})
+	}
+	return processedFields
 }
 
 // 将gdb文件图层全部更新到数据库中
 func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color string, Opacity string, Userunits, AddType string, LineWidth string) []string {
 
-	layers, err := Gogeo.GDBToPostGIS(gdbPath)
+	layers, err := Gogeo.GDBToPostGIS(gdbPath, nil)
 	if err != nil {
 		log.Printf("读取GDB文件失败: %v", err)
 		return nil
@@ -400,38 +535,7 @@ func UpdateGDBDirectly(DB *gorm.DB, gdbPath string, EN, CN, Main string, Color s
 
 // 直接将GDB图层数据写入PostgreSQL
 func ConvertGDBLayerToPGDirect(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName string) []ProcessedFieldInfo {
-	if len(layer.FeatureData) == 0 {
-		log.Printf("图层 %s 没有要素数据", layer.LayerName)
-		return nil
-	}
-
-	// 处理字段信息，转换字段名
-	processedFields := processFieldInfos(layer.FieldInfos, tableName)
-
-	// 检查表是否存在
-	var validFields map[string]string
-	if tableExists(DB, tableName) {
-		// 获取数据库表的现有字段
-		existingFields := getTableColumns2(DB, tableName)
-		// 只保留匹配的字段
-		validFields = filterMatchingFieldsDirect(processedFields, existingFields)
-		log.Printf("表 %s 已存在，匹配到 %d 个字段", tableName, len(validFields))
-	} else {
-		// 表不存在，创建新表
-		validFields = make(map[string]string)
-		for _, field := range processedFields {
-			validFields[field.ProcessedName] = field.DBType
-		}
-		createGDBTableDirect(DB, tableName, validFields, layer.GeoType)
-		log.Printf("创建新表 %s，包含 %d 个字段", tableName, len(validFields))
-	}
-
-	// 直接写入数据
-	writeGDBDataToDBDirect(layer.FeatureData, DB, tableName, validFields, processedFields)
-
-	log.Printf("成功导入图层 %s 到表 %s，共 %d 条记录",
-		layer.LayerName, tableName, len(layer.FeatureData))
-	return processedFields
+	return ConvertGDBLayerToPGDirectWithMeta(layer, DB, tableName, nil)
 }
 
 // ProcessedFieldInfo 处理后的字段信息
@@ -443,38 +547,7 @@ type ProcessedFieldInfo struct {
 
 // 处理字段信息，转换字段名
 func processFieldInfos(fieldInfos []Gogeo.FieldInfo, tableName string) []ProcessedFieldInfo {
-	var processedFields []ProcessedFieldInfo
-
-	for _, field := range fieldInfos {
-		if field.Name == "id" || field.Name == "ID" {
-			continue
-		}
-
-		// 转换字段名
-		processedName := methods.ConvertToInitials(field.Name)
-		processedName = strings.ToLower(processedName)
-
-		// 添加中文字段映射
-		if containsChinese(field.Name) {
-			DB := models.DB
-			attColor := models.ChineseProperty{
-				CName:     field.Name,
-				EName:     processedName,
-				LayerName: tableName,
-			}
-			if err := DB.Create(&attColor).Error; err != nil {
-				log.Printf("Failed to create Chinese property mapping: %v", err)
-			}
-		}
-
-		processedFields = append(processedFields, ProcessedFieldInfo{
-			OriginalName:  field.Name,
-			ProcessedName: processedName,
-			DBType:        field.DBType,
-		})
-	}
-
-	return processedFields
+	return processFieldInfosWithMeta(fieldInfos, tableName, nil)
 }
 
 // filterMatchingFieldsDirect 过滤匹配的字段（直接版本）

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"gitee.com/gooffice/gooffice/document"
+	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/Transformer"
 	"github.com/GrainArc/SouceMap/WordGenerator"
 	"github.com/GrainArc/SouceMap/config"
@@ -20,7 +21,6 @@ import (
 	"github.com/paulmach/orb/geojson"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
-
 	"log"
 	"net/http"
 	"net/url"
@@ -458,21 +458,55 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	// 获取表单参数
 	Main := c.PostForm("Main")
 	CN := c.PostForm("CN")
-	EN := methods.ConvertToInitials(Main) + "_" + methods.ConvertToInitials(CN)
 	Color := c.PostForm("Color")
 	Opacity := c.PostForm("Opacity")
 	Userunits := c.PostForm("userunits")
 	VectorPath := c.PostForm("VectorPath")
+
 	// 处理 LineWidth 参数，如果没有传入则默认为 1
 	LineWidth := c.PostForm("LineWidth")
 	if LineWidth == "" {
 		LineWidth = "1"
 	}
 
+	// 获取 targetLayers 参数（GDB 格式需要）
+	targetLayersStr := c.PostForm("targetLayers")
+	var targetLayers []string
+	if targetLayersStr != "" {
+		// 支持逗号分隔或 JSON 数组格式
+		if strings.HasPrefix(targetLayersStr, "[") {
+			if err := json.Unmarshal([]byte(targetLayersStr), &targetLayers); err != nil {
+				c.String(http.StatusBadRequest, "Invalid targetLayers format: "+err.Error())
+				return
+			}
+		} else {
+			// 逗号分隔格式
+			targetLayers = strings.Split(targetLayersStr, ",")
+			for i := range targetLayers {
+				targetLayers[i] = strings.TrimSpace(targetLayers[i])
+			}
+		}
+	}
+
+	// 判断是否为 GDB 模式
+	isGDBMode := len(targetLayers) > 0 || strings.HasSuffix(strings.ToLower(VectorPath), ".gdb")
+
 	// 验证必要参数
-	if Main == "" || CN == "" {
-		c.String(http.StatusBadRequest, "Main and CN parameters are required")
+	if Main == "" {
+		c.String(http.StatusBadRequest, "Main parameter is required")
 		return
+	}
+
+	// 非 GDB 模式需要 CN 参数
+	if !isGDBMode && CN == "" {
+		c.String(http.StatusBadRequest, "CN parameter is required for non-GDB format")
+		return
+	}
+
+	// 只在非 GDB 模式下生成 EN
+	EN := ""
+	if !isGDBMode {
+		EN = methods.ConvertToInitials(Main) + "_" + methods.ConvertToInitials(CN)
 	}
 
 	// 处理文件上传
@@ -481,7 +515,6 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	DB := models.DB
 	if err == nil {
 		// 创建任务ID和文件路径
-
 		path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
 		if err != nil {
 			c.String(http.StatusInternalServerError, "Failed to create file path: "+err.Error())
@@ -513,7 +546,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 		// 处理 GDB 文件
 		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
 		for _, gdbfile := range gdbfiles {
-			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, Main, Color, Opacity, Userunits, LineWidth)
+			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, targetLayers, Main, Color, Opacity, Userunits, LineWidth)
 			for _, item := range ENS {
 				MakeGeoIndex(item)
 			}
@@ -535,10 +568,17 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 		c.String(http.StatusOK, "Schema added successfully")
 		return
 	}
+
+	// 处理通过 VectorPath 直接导入的情况
 	if VectorPath != "" {
 		ext := strings.ToLower(filepath.Ext(VectorPath))
 		if ext == ".gdb" {
-			ENS := pgmvt.AddGDBDirectlyOptimized(DB, VectorPath, Main, Color, Opacity, Userunits, LineWidth)
+			// GDB 格式需要 targetLayers
+			if len(targetLayers) == 0 {
+				c.String(http.StatusBadRequest, "targetLayers parameter is required for GDB format")
+				return
+			}
+			ENS := pgmvt.AddGDBDirectlyOptimized(DB, VectorPath, targetLayers, Main, Color, Opacity, Userunits, LineWidth)
 			for _, item := range ENS {
 				MakeGeoIndex(item)
 			}
@@ -555,7 +595,134 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	} else {
 		c.String(http.StatusBadRequest, "未加载文件")
 	}
+}
 
+// 获取gdb信息
+func (uc *UserController) GetGDBMetadata(c *gin.Context) {
+	// 获取表单参数
+	VectorPath := c.PostForm("VectorPath")
+	// 处理文件上传
+	file, err := c.FormFile("file")
+	taskid := uuid.New().String()
+	if err == nil {
+		// 方式1: 文件上传
+		// 创建任务ID和文件路径
+		path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to create file path: " + err.Error(),
+				"data":    nil,
+			})
+			return
+		}
+		// 确保目录存在
+		dirpath := filepath.Dir(path)
+		if err := os.MkdirAll(dirpath, 0755); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to create directory: " + err.Error(),
+				"data":    nil,
+			})
+			return
+		}
+		// 保存上传的文件
+		if err := c.SaveUploadedFile(file, path); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to save file: " + err.Error(),
+				"data":    nil,
+			})
+			return
+		}
+		// 如果是压缩文件，则解压
+		ext := filepath.Ext(path)
+		if ext == ".zip" || ext == ".rar" {
+			if err := methods.Unzip(path); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{
+					"success": false,
+					"message": "Failed to unzip file: " + err.Error(),
+					"data":    nil,
+				})
+				return
+			}
+		}
+		// 查找 GDB 文件
+		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
+		if len(gdbfiles) == 0 {
+			// 清理临时文件
+			os.RemoveAll(filepath.Dir(dirpath))
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "No GDB file found in uploaded archive",
+				"data":    nil,
+			})
+			return
+		}
+		// 读取第一个GDB文件的元数据
+		gdbPath := gdbfiles[0]
+		collection, err := Gogeo.ReadGDBLayerMetadata(gdbPath)
+		if err != nil {
+			// 清理临时文件
+			os.RemoveAll(filepath.Dir(dirpath))
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to read GDB metadata: " + err.Error(),
+				"data":    nil,
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "GDB metadata retrieved successfully",
+			"data":    collection,
+		})
+		return
+	}
+	// 方式2: 通过 VectorPath 直接读取
+	if VectorPath != "" {
+		ext := strings.ToLower(filepath.Ext(VectorPath))
+		if ext != ".gdb" {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "VectorPath must be a .gdb file",
+				"data":    nil,
+			})
+			return
+		}
+		// 检查文件是否存在
+		if _, err := os.Stat(VectorPath); os.IsNotExist(err) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"success": false,
+				"message": "GDB file not found: " + VectorPath,
+				"data":    nil,
+			})
+			return
+		}
+		// 读取GDB元数据
+		collection, err := Gogeo.ReadGDBLayerMetadata(VectorPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to read GDB metadata: " + err.Error(),
+				"data":    nil,
+			})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"message": "GDB metadata retrieved successfully",
+			"data":    collection,
+		})
+		return
+	}
+	// 既没有上传文件，也没有提供VectorPath
+	c.JSON(http.StatusBadRequest, gin.H{
+		"success": false,
+		"message": "Please provide either a file upload or VectorPath parameter",
+		"data":    nil,
+	})
 }
 
 // 删除图层
