@@ -766,11 +766,8 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 					if deleteErr != nil {
 						fmt.Printf("删除GDB图层失败 [Path: %s, Layer: %s]: %v\n",
 							sourceConfig.SourcePath, sourceConfig.SourceLayerName, deleteErr)
-						c.String(200, "Failed to delete GDB layer")
-						return
 					}
-					fmt.Printf("成功删除GDB图层 [Path: %s, Layer: %s]\n",
-						sourceConfig.SourcePath, sourceConfig.SourceLayerName)
+
 				}
 			}
 		}
