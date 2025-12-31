@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
 
@@ -36,10 +35,11 @@ const (
 
 // TileProxyService 瓦片代理服务
 type TileProxyService struct {
-	db         *gorm.DB
-	httpClient *http.Client
-	coordConv  *pgmvt.ChangeCoord
-	cache      *TileCache
+	db            *gorm.DB
+	httpClient    *http.Client
+	coordConv     *pgmvt.ChangeCoord
+	cache         *TileCache
+	safeProcessor *SafeTileProcessor // 新增
 }
 
 // NewTileProxyService 创建瓦片代理服务
@@ -51,11 +51,11 @@ func NewTileProxyService() *TileProxyService {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second,
-			},
+				IdleConnTimeout:     90 * time.Second},
 		},
-		coordConv: pgmvt.NewChangeCoord(),
-		cache:     NewTileCache(500, 30*time.Minute), // 内存缓存500个热点，SQLite缓存30分钟
+		coordConv:     pgmvt.NewChangeCoord(),
+		cache:         NewTileCache(500, 30*time.Minute),
+		safeProcessor: NewSafeTileProcessor(4), // 限制并发处理数
 	}
 }
 
@@ -221,8 +221,22 @@ func (s *TileProxyService) wgs84ToBD09(lon, lat float64) (float64, float64) {
 	return s.coordConv.WGS84ToBD09(lon, lat)
 }
 
-// proxyWithCoordTransform 带坐标转换的瓦片代理
 func (s *TileProxyService) proxyWithCoordTransform(
+	ctx context.Context,
+	netMap *models.NetMap,
+	req TileRequest,
+	tileSize int,
+	transform CoordTransformFunc,
+) ([]byte, error) {
+	// 使用安全处理器包装
+	result := s.safeProcessor.ProcessWithRecover(ctx, func() ([]byte, error) {
+		return s.doProxyWithCoordTransform(ctx, netMap, req, tileSize, transform)
+	})
+	return result.Data, result.Err
+}
+
+// doProxyWithCoordTransform 实际的转换处理
+func (s *TileProxyService) doProxyWithCoordTransform(
 	ctx context.Context,
 	netMap *models.NetMap,
 	req TileRequest,
@@ -231,11 +245,9 @@ func (s *TileProxyService) proxyWithCoordTransform(
 ) ([]byte, error) {
 	// 1. 计算请求瓦片的WGS84边界
 	bounds := GetTileBoundsWGS84(req.Z, req.X, req.Y)
-
-	// 2. 转换四个角点到目标坐标系
+	// 2. 转换边界
 	transformedBounds := s.transformBoundsWithSampling(bounds, transform)
-
-	// 3. 计算转换后边界的全局像素坐标
+	// 3. 计算像素坐标
 	topLeftPixel := LonLatToGlobalPixel(
 		transformedBounds.MinLon,
 		transformedBounds.MaxLat,
@@ -248,62 +260,27 @@ func (s *TileProxyService) proxyWithCoordTransform(
 		req.Z,
 		tileSize,
 	)
-
-	// 4. 计算需要请求的瓦片范围和裁剪信息
+	// 4. 计算瓦片范围
 	tileRange, cropInfo := CalculateRequiredTilesWithCrop(topLeftPixel, bottomRightPixel, tileSize)
-
-	// 5. 验证瓦片范围的有效性
+	// 5. 验证并限制瓦片范围
 	maxTileIndex := (1 << req.Z) - 1
 	tileRange = s.clampTileRange(tileRange, maxTileIndex)
-
-	// 6. 并发请求所有需要的瓦片（带重试机制）
+	// 限制最大瓦片数量
+	tileCount := (tileRange.MaxX - tileRange.MinX + 1) * (tileRange.MaxY - tileRange.MinY + 1)
+	if tileCount > 16 {
+		return nil, fmt.Errorf("too many tiles required: %d", tileCount)
+	}
+	// 6. 获取瓦片
 	tiles, err := s.fetchTilesParallelWithRetry(ctx, netMap, req.Z, tileRange)
 	if err != nil {
 		return nil, err
 	}
-
-	// 7. 计算画布尺寸
-	canvasWidth := (tileRange.MaxX - tileRange.MinX + 1) * tileSize
-	canvasHeight := (tileRange.MaxY - tileRange.MinY + 1) * tileSize
-
-	// 8. 使用GDAL处理图像
-	processor, err := Gogeo.NewImageProcessor(canvasWidth, canvasHeight, 4) // RGBA
-	if err != nil {
-		return nil, fmt.Errorf("failed to create image processor: %v", err)
-	}
-	defer processor.Close()
-
-	// 9. 将瓦片拼接到画布
-	successCount := 0
-	for _, tile := range tiles {
-		if tile.Err != nil {
-			fmt.Printf("Warning: tile %d/%d/%d still failed after retries: %v\n", req.Z, tile.X, tile.Y, tile.Err)
-			continue
-		}
-
-		if len(tile.Data) == 0 {
-			continue
-		}
-
-		dstX := (tile.X - tileRange.MinX) * tileSize
-		dstY := (tile.Y - tileRange.MinY) * tileSize
-
-		if err := processor.AddTileFromBuffer(tile.Data, tile.Format, dstX, dstY); err != nil {
-			fmt.Printf("Warning: failed to add tile %d/%d/%d: %v\n", req.Z, tile.X, tile.Y, err)
-			continue
-		}
-		successCount++
-	}
-
-	if successCount == 0 {
-		return nil, fmt.Errorf("no tiles were successfully fetched")
-	}
-
-	// 10. 计算精确的裁剪参数
+	// 7. 计算裁剪参数
 	cropX := int(math.Round(cropInfo.CropX))
 	cropY := int(math.Round(cropInfo.CropY))
-
-	// 确保裁剪区域不超出画布边界
+	canvasWidth := (tileRange.MaxX - tileRange.MinX + 1) * tileSize
+	canvasHeight := (tileRange.MaxY - tileRange.MinY + 1) * tileSize
+	// 边界检查
 	if cropX < 0 {
 		cropX = 0
 	}
@@ -312,37 +289,23 @@ func (s *TileProxyService) proxyWithCoordTransform(
 	}
 	if cropX+tileSize > canvasWidth {
 		cropX = canvasWidth - tileSize
+		if cropX < 0 {
+			cropX = 0
+		}
 	}
 	if cropY+tileSize > canvasHeight {
 		cropY = canvasHeight - tileSize
+		if cropY < 0 {
+			cropY = 0
+		}
 	}
-
-	// 确保裁剪尺寸正确
-	outputWidth := tileSize
-	outputHeight := tileSize
-
-	// 如果画布本身就小于目标尺寸，调整输出尺寸
-	if canvasWidth < tileSize {
-		outputWidth = canvasWidth
-		cropX = 0
-	}
-	if canvasHeight < tileSize {
-		outputHeight = canvasHeight
-		cropY = 0
-	}
-
-	// 11. 裁剪并导出
+	// 8. 确定输出格式
 	outputFormat := "PNG"
 	if netMap.ImageFormat == "jpg" || netMap.ImageFormat == "jpeg" {
 		outputFormat = "JPEG"
 	}
-
-	// 如果输出尺寸与目标尺寸不同，需要缩放
-	if outputWidth != tileSize || outputHeight != tileSize {
-		return processor.CropScaleAndExport(cropX, cropY, outputWidth, outputHeight, tileSize, tileSize, outputFormat)
-	}
-
-	return processor.CropAndExport(cropX, cropY, tileSize, tileSize, outputFormat)
+	// 9. 使用安全处理函数
+	return SafeImageProcess(ctx, tiles, tileRange, tileSize, cropX, cropY, outputFormat)
 }
 
 // transformBoundsWithSampling 使用采样点转换边界（处理非线性变换）

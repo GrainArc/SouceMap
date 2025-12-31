@@ -122,11 +122,6 @@ func InitDB() {
 		log.Printf("Failed to migrate tables: %v", err)
 	}
 
-	//// 修复所有表的索引
-	//if err := repairAllIndexes(DB); err != nil {
-	//	log.Printf("Failed to repair indexes: %v", err)
-	//}
-
 	// 初始化默认用户
 	initDefaultUser(DB)
 }
