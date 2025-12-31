@@ -5,7 +5,7 @@ go 1.24.2
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93
-	github.com/GrainArc/Gogeo v1.4.9
+	github.com/GrainArc/Gogeo v1.4.11
 	github.com/chai2010/webp v1.4.0
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
@@ -62,7 +62,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.23 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.58.0 // indirect
-	github.com/rogpeppe/go-internal v1.10.0 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
@@ -71,12 +70,9 @@ require (
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/crypto v0.46.0 // indirect
-	golang.org/x/mod v0.31.0 // indirect
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/tools v0.40.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/mysql v1.6.0 // indirect
 )
