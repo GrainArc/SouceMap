@@ -7,6 +7,7 @@ import (
 	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/datatypes"
 	"gorm.io/gorm"
 	"net/http"
 	"path/filepath"
@@ -140,6 +141,27 @@ func ImportPGToGDB(req *ImportPGToGDBRequest) (*ImportPGToGDBResponse, error) {
 	return response, nil
 }
 
+// transformFieldAliases 使用fieldMapping将fieldAliases的key进行映射
+func transformFieldAliases(fieldAliases, fieldMapping map[string]string) map[string]string {
+	if len(fieldAliases) == 0 || len(fieldMapping) == 0 {
+		return fieldAliases
+	}
+
+	transformedAliases := make(map[string]string)
+
+	for sourceKey, alias := range fieldAliases {
+		// 从fieldMapping中获取映射后的key
+		if mappedKey, exists := fieldMapping[sourceKey]; exists {
+			transformedAliases[mappedKey] = alias
+		} else {
+			// 如果fieldMapping中不存在，保持原key
+			transformedAliases[sourceKey] = alias
+		}
+	}
+
+	return transformedAliases
+}
+
 // importSingleTable 导入单个表
 func importSingleTable(DB *gorm.DB, baseConfig *Gogeo.PostGISConfig, gdbPath, tableName,
 	targetMain, targetSourcePath string, targetEPSG int) *LayerImportResult {
@@ -185,7 +207,7 @@ func importSingleTable(DB *gorm.DB, baseConfig *Gogeo.PostGISConfig, gdbPath, ta
 	if fieldAliases == nil {
 		fieldAliases = make(map[string]string)
 	}
-
+	fieldAliases = transformFieldAliases(fieldAliases, fieldMapping)
 	// 7. 确定PG表名
 	pgTableName := strings.ToLower(sourceSchema.EN)
 
@@ -207,7 +229,7 @@ func importSingleTable(DB *gorm.DB, baseConfig *Gogeo.PostGISConfig, gdbPath, ta
 		WithFieldAliases(fieldAliases)
 
 	options.FieldMapping = fieldMapping
-
+	options.ExcludeFields = []string{"id", "fid", "geom"}
 	// 10. 设置目标坐标系（使用目标配置的EPSG，而不是源配置的EPSG）
 	if targetEPSG > 0 {
 		options.TargetSRS = Gogeo.NewGDBSpatialReferenceFromEPSG(targetEPSG)
@@ -224,12 +246,26 @@ func importSingleTable(DB *gorm.DB, baseConfig *Gogeo.PostGISConfig, gdbPath, ta
 	}
 
 	// 12. 更新源表的Main字段
-	err = DB.Model(&models.MySchema{}).
-		Where("LOWER(en) = ?", strings.ToLower(tableName)).
-		Update("main", targetMain).Error
+	updatedSourceConfigs := sourceConfigs
+	updatedSourceConfigs[0].SourcePath = targetSourcePath
+	updatedSourceJSON, err := json.Marshal(updatedSourceConfigs)
 	if err != nil {
 		result.Success = false
-		result.Message = fmt.Sprintf("导入成功但更新Main字段失败: %v", err)
+		result.Message = fmt.Sprintf("导入成功但序列化Source字段失败: %v", err)
+		return result
+	}
+
+	// 13. 更新源表的Main字段和Source字段
+	err = DB.Model(&models.MySchema{}).
+		Where("LOWER(en) = ?", strings.ToLower(tableName)).
+		Updates(map[string]interface{}{
+			"main":   targetMain,
+			"source": datatypes.JSON(updatedSourceJSON),
+		}).Error
+
+	if err != nil {
+		result.Success = false
+		result.Message = fmt.Sprintf("导入成功但更新Main和Source字段失败: %v", err)
 		return result
 	}
 
@@ -298,7 +334,6 @@ func calculateLayerPath(main string, sourcePath string) string {
 	if main == "" || sourcePath == "" {
 		return ""
 	}
-	fmt.Println("计算路径", main, sourcePath)
 
 	baseName := filepath.Base(sourcePath)
 	gdbName := strings.TrimSuffix(baseName, filepath.Ext(baseName))

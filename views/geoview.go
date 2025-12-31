@@ -734,6 +734,7 @@ func isEndWithNumber(s string) bool {
 	}
 	return false
 }
+
 func (uc *UserController) DelSchema(c *gin.Context) {
 	TableName := strings.ToLower(c.Query("TableName"))
 	var TableNames string
@@ -745,17 +746,65 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 	DB := models.DB
 	var Schemas []models.MySchema
 	DB.Where("LOWER(en) = LOWER(?)", TableName).Find(&Schemas)
-	if len(Schemas) > 0 {
-		DB.Delete(&Schemas)
-	}
-	sql := fmt.Sprintf("DROP  TABLE  IF  EXISTS  %s", TableNames)
-	if err := DB.Exec(sql).Error; err != nil {
-		c.String(http.StatusOK, "Failed  to  delete  table")
 
+	// 删除GDB数据库中对应的图层
+	if len(Schemas) > 0 {
+		for _, schema := range Schemas {
+			// 解析Source字段中的SourcePath和SourceLayerName
+			if len(schema.Source) > 0 {
+				var sourceConfigs []SourceConfig
+				err := json.Unmarshal(schema.Source, &sourceConfigs)
+				if err != nil {
+					fmt.Printf("解析Source失败: %v\n", err)
+					continue
+				}
+				sourceConfig := sourceConfigs[0]
+				// 检查SourcePath和SourceLayerName是否存在
+				if sourceConfig.SourcePath != "" && sourceConfig.SourceLayerName != "" {
+					// 删除GDB中的对应图层
+					deleteErr := Gogeo.DeleteLayer(sourceConfig.SourcePath, sourceConfig.SourceLayerName)
+					if deleteErr != nil {
+						fmt.Printf("删除GDB图层失败 [Path: %s, Layer: %s]: %v\n",
+							sourceConfig.SourcePath, sourceConfig.SourceLayerName, deleteErr)
+						c.String(200, "Failed to delete GDB layer")
+						return
+					}
+					fmt.Printf("成功删除GDB图层 [Path: %s, Layer: %s]\n",
+						sourceConfig.SourcePath, sourceConfig.SourceLayerName)
+				}
+			}
+		}
+
+		// 删除关联的AttColor记录
+		if err := DB.Where("layer_name = ?", TableName).Delete(&models.AttColor{}).Error; err != nil {
+			fmt.Printf("删除AttColor失败: %v\n", err)
+			c.String(200, "Failed to delete AttColor records")
+			return
+		}
+
+		// 删除关联的ChineseProperty记录
+		if err := DB.Where("layer_name = ?", TableName).Delete(&models.ChineseProperty{}).Error; err != nil {
+			fmt.Printf("删除ChineseProperty失败: %v\n", err)
+			c.String(200, "Failed to delete ChineseProperty records")
+			return
+		}
+
+		// 删除数据库记录
+		if err := DB.Delete(&Schemas).Error; err != nil {
+			fmt.Printf("删除Schema失败: %v\n", err)
+			c.String(http.StatusInternalServerError, "Failed to delete schema records")
+			return
+		}
+	}
+
+	// 删除表
+	sql := fmt.Sprintf("DROP TABLE IF EXISTS %s", TableNames)
+	if err := DB.Exec(sql).Error; err != nil {
+		fmt.Printf("删除表失败: %v\n", err)
+		c.String(http.StatusInternalServerError, "Failed to delete table")
 	} else {
 		c.String(http.StatusOK, "ok")
 	}
-
 }
 
 // 修改图层路径
