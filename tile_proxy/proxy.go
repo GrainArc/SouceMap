@@ -392,7 +392,7 @@ func (s *TileProxyService) fetchTilesParallelWithRetry(ctx context.Context, netM
 	tileChan := make(chan FetchedTile, tileCount)
 
 	// 限制并发数
-	semaphore := make(chan struct{}, 2)
+	semaphore := make(chan struct{}, 1)
 
 	for x := tileRange.MinX; x <= tileRange.MaxX; x++ {
 		for y := tileRange.MinY; y <= tileRange.MaxY; y++ {
