@@ -109,7 +109,8 @@ func InitDB() {
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Printf("Failed to connect to database: %v", err)
+		return
 	}
 
 	// 设置命名策略
