@@ -427,7 +427,7 @@ func SyncLayerMXDToDB(MXDUid string, sourceDB *gorm.DB, targetDB *gorm.DB) bool 
 func ConnectToDeviceDB(ip string) (*gorm.DB, error) {
 	// 这里需要根据你的实际数据库配置来实现
 	// 示例：
-	dsn := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable", ip)
+	dsn := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable", ip)
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err

@@ -513,7 +513,7 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 		}
 	}
 	DB := models.DB
-	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	// 确保数据库连接被正确释放
 	defer func() {
@@ -652,7 +652,7 @@ func UpdateConfigSingle(jsonData UpdateData) bool {
 	TableName := jsonData.TableName
 
 	DB := models.DB
-	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	DeviceDB.NamingStrategy = schema.NamingStrategy{
 		SingularTable: true,
@@ -1367,7 +1367,7 @@ func ExportTable(tableName string, outputDir string) (string, error) {
 func ExampleImport(filePath string, ip string) error {
 
 	// 连接目标数据库
-	DSN := fmt.Sprintf("host=%s user=postgres password=1 dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
 	targetDB, err := gorm.Open(postgres.Open(DSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})

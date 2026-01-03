@@ -19,6 +19,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -879,7 +880,13 @@ func (uc *UserController) PicUpload(c *gin.Context) {
 		return
 	}
 	path, _ := filepath.Abs("./PIC/" + TBID + "/" + picbsm + ".jpg")
-	url := config.MainOutRouter + "/Survey/PIC/" + TBID + "/" + picbsm + ".jpg"
+	host := c.Request.Host
+	url2 := &url.URL{
+		Scheme: "http",
+		Host:   host,
+		Path:   "/Survey/PIC/" + TBID + "/" + picbsm + ".jpg",
+	}
+	url := url2.String()
 	err = c.SaveUploadedFile(file, path)
 	if err != nil {
 		c.String(500, "Internal server error")
@@ -917,7 +924,9 @@ func (uc *UserController) ZDTUpload(c *gin.Context) {
 		c.String(400, "Bad request")
 		return
 	}
+
 	path, _ := filepath.Abs("./ZDT/" + TBID + ".jpg")
+
 	url := config.MainOutRouter + "/Survey/ZDT/" + TBID + ".jpg"
 	err = c.SaveUploadedFile(file, path)
 	if err != nil {
@@ -1297,7 +1306,7 @@ func (uc *UserController) DownloadTempGeo(c *gin.Context) {
 	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
 	outDir := filepath.Join("OutFile", bsm)
 	filePath_shp := filepath.Join(outDir, mytable[0].Name+"shp矢量.zip") //  例如  "output.zip"
-	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")      //  例如  "output.zip"
+	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")        //  例如  "output.zip"
 	//  将解码后的数据写入到文件
 	absolutePath_shp, _ := filepath.Abs(filePath_shp)
 	err := os.WriteFile(absolutePath_shp, decodedBytes, 0666)
