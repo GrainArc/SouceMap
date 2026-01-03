@@ -33,7 +33,6 @@ import (
 )
 
 // isValidInterface 判断接口名称是否为 WiFi 或以太网
-// isValidInterface 判断接口名称是否为 WiFi 或以太网
 func isValidInterface(name string) bool {
 	name = strings.ToLower(name)
 

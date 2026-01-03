@@ -13,7 +13,7 @@ var DSN string
 var Raster string
 var Dem string
 var Tiles3d string
-var Dbname string
+
 var Download string
 var Loader string
 
@@ -57,12 +57,15 @@ func init() {
 	MainRouter = MainConfig.MainRouter
 	Raster = MainConfig.Raster
 	Dem = MainConfig.Dem
-	Dbname = MainConfig.Dbname
 	Tiles3d = MainConfig.Tiles3d
 	Loader = MainConfig.Loader
 	Download = MainConfig.Download
 	DeviceName = MainConfig.DeviceName
-
+	MainConfig.Host = "127.0.0.1"
+	MainConfig.Username = "postgres"
+	MainConfig.Password = "a3bwq6srhfxks"
+	MainConfig.Dbname = "GL"
+	MainConfig.Port = "5432"
 	DSN = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC", MainConfig.Host, MainConfig.Username, MainConfig.Password, MainConfig.Dbname, MainConfig.Port)
 
 }
