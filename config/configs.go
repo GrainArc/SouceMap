@@ -38,7 +38,7 @@ type Config struct {
 	Download      string   `xml:"download"`
 }
 
-func init() {
+func InitConfig() {
 
 	xmlFile, err := os.Open("config.xml")
 	if err != nil {
