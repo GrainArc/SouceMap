@@ -426,8 +426,11 @@ func SyncLayerMXDToDB(MXDUid string, sourceDB *gorm.DB, targetDB *gorm.DB) bool 
 // 连接到目标数据库的辅助函数（需要根据实际情况实现）
 func ConnectToDeviceDB(ip string) (*gorm.DB, error) {
 	// 这里需要根据你的实际数据库配置来实现
-	// 示例：
-	dsn := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable", ip)
+	dsn, err := getRemoteDSN(ip)
+	if err != nil {
+		fmt.Println("获取远程DSN失败:", err)
+		return nil, err
+	}
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		return nil, err

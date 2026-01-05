@@ -1614,6 +1614,57 @@ func (uc *UserController) GetDeviceName(c *gin.Context) {
 	c.String(http.StatusOK, cfg.DeviceName)
 }
 
+// Config XML配置结构体
+
+// GetEncryptedDSN 获取加密的DSN字符串
+func (uc *UserController) GetEncryptedDSN(c *gin.Context) {
+	// 读取配置文件
+	type Config struct {
+		XMLName    xml.Name `xml:"config"`
+		DeviceName string   `xml:"DeviceName"`
+		DBName     string   `xml:"dbname"`
+		Host       string   `xml:"host"`
+		Port       string   `xml:"port"`
+		User       string   `xml:"user"`
+		Password   string   `xml:"password"`
+	}
+
+	data, err := os.ReadFile("./config.xml")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "读取配置文件失败: " + err.Error(),
+		})
+		return
+	}
+	// 解析XML
+	var config Config
+	if err := xml.Unmarshal(data, &config); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    500,
+			"message": "解析配置失败: " + err.Error(),
+		})
+		return
+	}
+	// 生成DSN
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable TimeZone=UTC",
+		config.Host, config.Port, config.User, config.Password, config.DBName)
+	// 使用DeviceName作为密钥加密
+	encryptedDSN, err := methods.EncryptStr(dsn, config.DeviceName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":  200,
+			"error": "加密失败: " + err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    200,
+		"message": "success",
+		"data":    encryptedDSN,
+	})
+}
+
 func (uc *UserController) ChangeDeviceName(c *gin.Context) {
 	var req struct {
 		DeviceName string `json:"device_name" binding:"required"`

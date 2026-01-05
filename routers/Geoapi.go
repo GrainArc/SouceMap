@@ -54,6 +54,7 @@ func GeoRouters(r *gin.Engine) {
 
 		mapRouter.GET("/GetTableAttributes", UserController.GetTableAttributes)
 		mapRouter.GET("/GetDeviceName", UserController.GetDeviceName)
+
 		mapRouter.POST("/ChangeDeviceName", UserController.ChangeDeviceName)
 		mapRouter.POST("/Area", UserController.Area)
 		mapRouter.POST("/GeodesicArea", UserController.GeodesicArea)
@@ -86,7 +87,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/OffsetFeature", UserController.OffsetFeature)
 		mapRouter.POST("/DeAggregatorFeature", UserController.ExplodeFeature)
 		mapRouter.POST("/AreaOnAreaAnalysis", UserController.AreaOnAreaAnalysis)
-
+		mapRouter.GET("/GetEncryptedDSN", UserController.GetEncryptedDSN)
 		mapRouter.POST("/ChangeGeoToSchema", UserController.ChangeGeoToSchema)
 		mapRouter.GET("/SyncToFile", UserController.SyncToFile)
 

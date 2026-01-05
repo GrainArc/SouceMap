@@ -52,7 +52,7 @@ var TextureDB *gorm.DB
 // InitDatabase 初始化SQLite数据库
 func InitDatabase() error {
 	// 确保目录存在
-	StoragePath := config.MainConfig.Download + "/Texture"
+	StoragePath := config.MainConfig.Texture
 	DBFileName := "texture.db"
 	if err := os.MkdirAll(StoragePath, os.ModePerm); err != nil {
 		log.Printf("创建存储目录失败: %v", err)

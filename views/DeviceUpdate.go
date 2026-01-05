@@ -495,6 +495,52 @@ func UpdateDB(TableName string, DB *gorm.DB, DeviceDB *gorm.DB) bool {
 	return true
 }
 
+// 获取远程设备的DSN
+func getRemoteDSN(ip string) (string, error) {
+	// 1. 获取加密的DSN
+	encryptedDSNUrl := fmt.Sprintf("http://%s:8181/geo/GetEncryptedDSN", ip)
+	resp, err := http.Get(encryptedDSNUrl)
+	if err != nil {
+		return "", fmt.Errorf("获取加密DSN失败: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取加密DSN响应失败: %v", err)
+	}
+	// 解析JSON响应
+	var dsnResponse struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    string `json:"data"`
+	}
+	if err := json.Unmarshal(body, &dsnResponse); err != nil {
+		return "", fmt.Errorf("解析加密DSN响应失败: %v", err)
+	}
+	if dsnResponse.Code != 200 {
+		return "", fmt.Errorf("获取加密DSN失败: %s", dsnResponse.Message)
+	}
+	encryptedDSN := dsnResponse.Data
+	// 2. 获取DeviceName作为解密密钥
+	deviceNameUrl := fmt.Sprintf("http://%s:8181/geo/GetDeviceName", ip)
+	resp2, err := http.Get(deviceNameUrl)
+	if err != nil {
+		return "", fmt.Errorf("获取DeviceName失败: %v", err)
+	}
+	defer resp2.Body.Close()
+	deviceNameBody, err := io.ReadAll(resp2.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取DeviceName响应失败: %v", err)
+	}
+	deviceName := string(deviceNameBody)
+	// 3. 使用DeviceName解密DSN
+	dsn, err := methods.DecryptStr(encryptedDSN, deviceName)
+	if err != nil {
+		return "", fmt.Errorf("解密DSN失败: %v", err)
+	}
+	return dsn, nil
+}
+
 func UpdateDeviceSingle(jsonData UpdateData) bool {
 	ip := jsonData.IP
 	TableName := jsonData.TableName
@@ -512,7 +558,11 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 		}
 	}
 	DB := models.DB
-	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	DSN, err := getRemoteDSN(ip)
+	if err != nil {
+		fmt.Println("获取远程DSN失败:", err)
+		return false
+	}
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	// 确保数据库连接被正确释放
 	defer func() {
@@ -651,7 +701,11 @@ func UpdateConfigSingle(jsonData UpdateData) bool {
 	TableName := jsonData.TableName
 
 	DB := models.DB
-	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	DSN, err := getRemoteDSN(ip)
+	if err != nil {
+		fmt.Println("获取远程DSN失败:", err)
+		return false
+	}
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	DeviceDB.NamingStrategy = schema.NamingStrategy{
 		SingularTable: true,
@@ -1366,7 +1420,7 @@ func ExportTable(tableName string, outputDir string) (string, error) {
 func ExampleImport(filePath string, ip string) error {
 
 	// 连接目标数据库
-	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable TimeZone=UTC", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable", ip)
 	targetDB, err := gorm.Open(postgres.Open(DSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})

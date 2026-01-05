@@ -29,7 +29,7 @@ type Config struct {
 	Port          string   `xml:"port"`
 	Username      string   `xml:"user"`
 	Password      string   `xml:"password"`
-	Loader        string   `xml:"loader"`
+	Texture       string   `xml:"texture"`
 	Raster        string   `xml:"raster"`
 	Dem           string   `xml:"dem"`
 	RootPath      string   `xml:"RootPath"`
@@ -58,14 +58,13 @@ func InitConfig() {
 	Raster = MainConfig.Raster
 	Dem = MainConfig.Dem
 	Tiles3d = MainConfig.Tiles3d
-	Loader = MainConfig.Loader
 	Download = MainConfig.Download
 	DeviceName = MainConfig.DeviceName
-	MainConfig.Host = "127.0.0.1"
-	MainConfig.Username = "postgres"
-	MainConfig.Password = "a3bwq6srhfxks"
-	MainConfig.Dbname = "GL"
-	MainConfig.Port = "5432"
+	MainConfig.Host = MainConfig.Host
+	MainConfig.Username = MainConfig.Username
+	MainConfig.Password = MainConfig.Password
+	MainConfig.Dbname = MainConfig.Dbname
+	MainConfig.Port = MainConfig.Port
 	DSN = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC", MainConfig.Host, MainConfig.Username, MainConfig.Password, MainConfig.Dbname, MainConfig.Port)
 
 }
