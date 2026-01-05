@@ -510,11 +510,13 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	}
 
 	// 处理文件上传
+
 	file, err := c.FormFile("file")
 	taskid := uuid.New().String()
 	DB := models.DB
 	if err == nil {
 		// 创建任务ID和文件路径
+		fmt.Println("进入文件模式", file.Filename, CN, Main)
 		path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
 		if err != nil {
 			c.String(http.StatusInternalServerError, "Failed to create file path: "+err.Error())
@@ -545,8 +547,10 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 
 		// 处理 GDB 文件
 		gdbfiles := Transformer.FindFiles(dirpath, "gdb")
+
 		for _, gdbfile := range gdbfiles {
-			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, targetLayers, Main, Color, Opacity, Userunits, LineWidth)
+
+			ENS := pgmvt.AddGDBDirectlyOptimized(DB, gdbfile, nil, Main, Color, Opacity, Userunits, LineWidth)
 			for _, item := range ENS {
 				MakeGeoIndex(item)
 			}
@@ -554,6 +558,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 
 		// 处理 SHP 文件
 		shpfiles := Transformer.FindFiles(dirpath, "shp")
+		fmt.Println(shpfiles)
 		if len(shpfiles) > 0 {
 			EN2 := pgmvt.AddSHPDirectlyOptimized(DB, shpfiles[0], EN, CN, Main, Color, Opacity, Userunits, LineWidth)
 			MakeGeoIndex(EN2)
@@ -561,7 +566,7 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 
 		// 清理临时文件（可选）
 		defer func() {
-			if err := os.RemoveAll(filepath.Dir(dirpath)); err != nil {
+			if err := os.RemoveAll(dirpath); err != nil {
 				log.Printf("Failed to cleanup temp directory: %v", err)
 			}
 		}()
@@ -737,6 +742,9 @@ func isEndWithNumber(s string) bool {
 
 func (uc *UserController) DelSchema(c *gin.Context) {
 	TableName := strings.ToLower(c.Query("TableName"))
+	// 新增参数：是否删除本地文件图层，默认为false
+	deleteLocalLayer := c.DefaultQuery("deleteLocalLayer", "false") == "true"
+
 	var TableNames string
 	if isEndWithNumber(TableName) {
 		TableNames = TableName + "," + TableName + "_mvt"
@@ -761,13 +769,20 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 				sourceConfig := sourceConfigs[0]
 				// 检查SourcePath和SourceLayerName是否存在
 				if sourceConfig.SourcePath != "" && sourceConfig.SourceLayerName != "" {
-					// 删除GDB中的对应图层
-					deleteErr := Gogeo.DeleteLayer(sourceConfig.SourcePath, sourceConfig.SourceLayerName)
-					if deleteErr != nil {
-						fmt.Printf("删除GDB图层失败 [Path: %s, Layer: %s]: %v\n",
-							sourceConfig.SourcePath, sourceConfig.SourceLayerName, deleteErr)
+					// 根据用户选择决定是否删除GDB中的对应图层
+					if deleteLocalLayer {
+						deleteErr := Gogeo.DeleteLayer(sourceConfig.SourcePath, sourceConfig.SourceLayerName)
+						if deleteErr != nil {
+							fmt.Printf("删除GDB图层失败 [Path: %s, Layer: %s]: %v\n",
+								sourceConfig.SourcePath, sourceConfig.SourceLayerName, deleteErr)
+						} else {
+							fmt.Printf("成功删除GDB图层 [Path: %s, Layer: %s]\n",
+								sourceConfig.SourcePath, sourceConfig.SourceLayerName)
+						}
+					} else {
+						fmt.Printf("跳过删除GDB图层 [Path: %s, Layer: %s]\n",
+							sourceConfig.SourcePath, sourceConfig.SourceLayerName)
 					}
-
 				}
 			}
 		}
@@ -775,14 +790,14 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 		// 删除关联的AttColor记录
 		if err := DB.Where("layer_name = ?", TableName).Delete(&models.AttColor{}).Error; err != nil {
 			fmt.Printf("删除AttColor失败: %v\n", err)
-			c.String(200, "Failed to delete AttColor records")
+			c.String(http.StatusInternalServerError, "Failed to delete AttColor records")
 			return
 		}
 
 		// 删除关联的ChineseProperty记录
 		if err := DB.Where("layer_name = ?", TableName).Delete(&models.ChineseProperty{}).Error; err != nil {
 			fmt.Printf("删除ChineseProperty失败: %v\n", err)
-			c.String(200, "Failed to delete ChineseProperty records")
+			c.String(http.StatusInternalServerError, "Failed to delete ChineseProperty records")
 			return
 		}
 
