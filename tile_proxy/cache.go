@@ -1,4 +1,4 @@
-// tile_cache.go
+// tile_proxy/tile_cache_manager.go
 package tile_proxy
 
 import (
@@ -12,53 +12,111 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// TileCache SQLite瓦片缓存
-type TileCache struct {
-	db         *sql.DB
-	mu         sync.RWMutex
-	ttl        time.Duration
-	dbPath     string
-	memCache   map[string]*MemCacheItem // 热点数据内存缓存
-	memMu      sync.RWMutex
-	memMaxSize int
+const (
+	DefaultCacheTTL = 30 * 24 * time.Hour // 30天
+)
+
+// TileCacheManager 瓦片缓存管理器
+type TileCacheManager struct {
+	cacheDir   string
+	caches     map[uint]*MapTileCache // mapID -> cache
+	cacheMutex sync.RWMutex
 }
 
-// MemCacheItem 内存缓存项（用于热点数据）
+// MapTileCache 单个地图的瓦片缓存
+type MapTileCache struct {
+	mapID       uint
+	db          *sql.DB
+	dbPath      string
+	maxSizeMB   int
+	mu          sync.RWMutex
+	memCache    map[string]*MemCacheItem
+	memMu       sync.RWMutex
+	memMaxItems int
+}
+
+// MemCacheItem 内存缓存项
 type MemCacheItem struct {
 	Data       []byte
 	AccessTime time.Time
 }
 
-// NewTileCache 创建瓦片缓存
-func NewTileCache(maxMemItems int, ttl time.Duration) *TileCache {
+// NewTileCacheManager 创建缓存管理器
+func NewTileCacheManager(cacheDir string) *TileCacheManager {
+	if cacheDir == "" {
+		cacheDir = "./cache/tiles"
+	}
+
 	// 确保缓存目录存在
-	cacheDir := "./cache"
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		fmt.Printf("Warning: failed to create cache directory: %v\n", err)
 	}
 
-	dbPath := filepath.Join(cacheDir, "tile_cache.db")
-
-	cache := &TileCache{
-		ttl:        ttl,
-		dbPath:     dbPath,
-		memCache:   make(map[string]*MemCacheItem),
-		memMaxSize: maxMemItems,
-	}
-
-	if err := cache.initDB(); err != nil {
-		fmt.Printf("Warning: failed to init cache db: %v, using memory only\n", err)
-		return cache
+	manager := &TileCacheManager{
+		cacheDir: cacheDir,
+		caches:   make(map[uint]*MapTileCache),
 	}
 
 	// 启动清理协程
-	go cache.cleanupLoop()
+	go manager.cleanupLoop()
 
-	return cache
+	return manager
+}
+
+// GetCache 获取或创建地图缓存
+func (m *TileCacheManager) GetCache(mapID uint, maxSizeMB int) (*MapTileCache, error) {
+	// 如果不启用缓存
+	if maxSizeMB <= 0 {
+		return nil, nil
+	}
+
+	m.cacheMutex.RLock()
+	cache, exists := m.caches[mapID]
+	m.cacheMutex.RUnlock()
+
+	if exists {
+		return cache, nil
+	}
+
+	// 创建新缓存
+	m.cacheMutex.Lock()
+	defer m.cacheMutex.Unlock()
+
+	// 双重检查
+	if cache, exists := m.caches[mapID]; exists {
+		return cache, nil
+	}
+
+	cache, err := m.createMapCache(mapID, maxSizeMB)
+	if err != nil {
+		return nil, err
+	}
+
+	m.caches[mapID] = cache
+	return cache, nil
+}
+
+// createMapCache 创建地图缓存
+func (m *TileCacheManager) createMapCache(mapID uint, maxSizeMB int) (*MapTileCache, error) {
+	dbPath := filepath.Join(m.cacheDir, fmt.Sprintf("map_%d.db", mapID))
+
+	cache := &MapTileCache{
+		mapID:       mapID,
+		dbPath:      dbPath,
+		maxSizeMB:   maxSizeMB,
+		memCache:    make(map[string]*MemCacheItem),
+		memMaxItems: 100, // 内存缓存100个热点瓦片
+	}
+
+	if err := cache.initDB(); err != nil {
+		return nil, fmt.Errorf("init cache db failed: %v", err)
+	}
+
+	return cache, nil
 }
 
 // initDB 初始化数据库
-func (c *TileCache) initDB() error {
+func (c *MapTileCache) initDB() error {
 	var err error
 	c.db, err = sql.Open("sqlite3", c.dbPath+"?cache=shared&mode=rwc&_journal_mode=WAL")
 	if err != nil {
@@ -66,23 +124,28 @@ func (c *TileCache) initDB() error {
 	}
 
 	// 设置连接池
-	c.db.SetMaxOpenConns(1) // SQLite 建议单连接
-	c.db.SetMaxIdleConns(1)
-	c.db.SetConnMaxLifetime(0)
+	c.db.SetMaxOpenConns(10)
+	c.db.SetMaxIdleConns(5)
+	c.db.SetConnMaxLifetime(time.Hour)
 
 	// 创建表
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS tile_cache (
-		cache_key TEXT PRIMARY KEY,
+		z INTEGER NOT NULL,
+		x INTEGER NOT NULL,
+		y INTEGER NOT NULL,
 		tile_data BLOB NOT NULL,
 		content_type TEXT DEFAULT 'image/png',
+		data_size INTEGER NOT NULL,
 		created_at INTEGER NOT NULL,
 		expires_at INTEGER NOT NULL,
 		access_count INTEGER DEFAULT 0,
-		last_access INTEGER NOT NULL
+		last_access INTEGER NOT NULL,
+		PRIMARY KEY (z, x, y)
 	);
 	CREATE INDEX IF NOT EXISTS idx_expires_at ON tile_cache(expires_at);
 	CREATE INDEX IF NOT EXISTS idx_last_access ON tile_cache(last_access);
+	CREATE INDEX IF NOT EXISTS idx_access_count ON tile_cache(access_count DESC);
 	`
 
 	_, err = c.db.Exec(createTableSQL)
@@ -95,6 +158,7 @@ func (c *TileCache) initDB() error {
 		PRAGMA synchronous = NORMAL;
 		PRAGMA temp_store = MEMORY;
 		PRAGMA mmap_size = 268435456;
+		PRAGMA cache_size = -64000;
 	`)
 	if err != nil {
 		fmt.Printf("Warning: failed to set pragma: %v\n", err)
@@ -103,99 +167,118 @@ func (c *TileCache) initDB() error {
 	return nil
 }
 
-// Get 获取缓存
-func (c *TileCache) Get(key string) ([]byte, bool) {
+// Get 获取缓存瓦片
+func (c *MapTileCache) Get(z, x, y int) ([]byte, string, bool) {
+	if c == nil {
+		return nil, "", false
+	}
+
 	// 先检查内存缓存
+	cacheKey := fmt.Sprintf("%d_%d_%d", z, x, y)
 	c.memMu.RLock()
-	if item, ok := c.memCache[key]; ok {
+	if item, ok := c.memCache[cacheKey]; ok {
 		c.memMu.RUnlock()
 		// 更新访问时间
 		c.memMu.Lock()
 		item.AccessTime = time.Now()
 		c.memMu.Unlock()
-		return item.Data, true
+		return item.Data, "image/png", true
 	}
 	c.memMu.RUnlock()
 
 	// 从SQLite获取
-	if c.db == nil {
-		return nil, false
-	}
-
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
 	var data []byte
+	var contentType string
 	var expiresAt int64
 
 	err := c.db.QueryRow(
-		"SELECT tile_data, expires_at FROM tile_cache WHERE cache_key = ?",
-		key,
-	).Scan(&data, &expiresAt)
+		"SELECT tile_data, content_type, expires_at FROM tile_cache WHERE z = ? AND x = ? AND y = ?",
+		z, x, y,
+	).Scan(&data, &contentType, &expiresAt)
 
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 
 	// 检查是否过期
 	if time.Now().Unix() > expiresAt {
-		// 异步删除过期数据
-		go c.Delete(key)
-		return nil, false
+		go c.Delete(z, x, y)
+		return nil, "", false
 	}
 
 	// 更新访问统计
-	go c.updateAccessStats(key)
+	go c.updateAccessStats(z, x, y)
 
 	// 添加到内存缓存
-	c.addToMemCache(key, data)
+	c.addToMemCache(cacheKey, data)
 
-	return data, true
+	return data, contentType, true
 }
 
-// Set 设置缓存
-func (c *TileCache) Set(key string, data []byte) {
-	c.SetWithType(key, data, "image/png")
-}
+// Set 设置缓存瓦片
+func (c *MapTileCache) Set(z, x, y int, data []byte, contentType string) error {
+	if c == nil || len(data) == 0 {
+		return nil
+	}
 
-// SetWithType 设置缓存（带内容类型）
-func (c *TileCache) SetWithType(key string, data []byte, contentType string) {
-	if len(data) == 0 {
-		return
+	// 检查缓存大小限制
+	if err := c.checkAndCleanupSize(len(data)); err != nil {
+		return err
 	}
 
 	// 添加到内存缓存
-	c.addToMemCache(key, data)
+	cacheKey := fmt.Sprintf("%d_%d_%d", z, x, y)
+	c.addToMemCache(cacheKey, data)
 
 	// 保存到SQLite
-	if c.db == nil {
-		return
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	now := time.Now().Unix()
-	expiresAt := time.Now().Add(c.ttl).Unix()
+	expiresAt := time.Now().Add(DefaultCacheTTL).Unix()
 
 	_, err := c.db.Exec(`
 		INSERT OR REPLACE INTO tile_cache 
-		(cache_key, tile_data, content_type, created_at, expires_at, access_count, last_access)
-		VALUES (?, ?, ?, ?, ?, 0, ?)
-	`, key, data, contentType, now, expiresAt, now)
+		(z, x, y, tile_data, content_type, data_size, created_at, expires_at, access_count, last_access)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+	`, z, x, y, data, contentType, len(data), now, expiresAt, now)
 
 	if err != nil {
-		fmt.Printf("Warning: failed to cache tile: %v\n", err)
+		return fmt.Errorf("failed to cache tile: %v", err)
 	}
+
+	return nil
+}
+
+// Delete 删除缓存瓦片
+func (c *MapTileCache) Delete(z, x, y int) {
+	if c == nil {
+		return
+	}
+
+	// 从内存缓存删除
+	cacheKey := fmt.Sprintf("%d_%d_%d", z, x, y)
+	c.memMu.Lock()
+	delete(c.memCache, cacheKey)
+	c.memMu.Unlock()
+
+	// 从SQLite删除
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	_, _ = c.db.Exec("DELETE FROM tile_cache WHERE z = ? AND x = ? AND y = ?", z, x, y)
 }
 
 // addToMemCache 添加到内存缓存
-func (c *TileCache) addToMemCache(key string, data []byte) {
+func (c *MapTileCache) addToMemCache(key string, data []byte) {
 	c.memMu.Lock()
 	defer c.memMu.Unlock()
 
 	// 如果内存缓存已满，删除最旧的
-	if len(c.memCache) >= c.memMaxSize {
+	if len(c.memCache) >= c.memMaxItems {
 		c.evictOldestMem()
 	}
 
@@ -206,7 +289,7 @@ func (c *TileCache) addToMemCache(key string, data []byte) {
 }
 
 // evictOldestMem 删除最旧的内存缓存项
-func (c *TileCache) evictOldestMem() {
+func (c *MapTileCache) evictOldestMem() {
 	var oldestKey string
 	var oldestTime time.Time
 
@@ -223,8 +306,8 @@ func (c *TileCache) evictOldestMem() {
 }
 
 // updateAccessStats 更新访问统计
-func (c *TileCache) updateAccessStats(key string) {
-	if c.db == nil {
+func (c *MapTileCache) updateAccessStats(z, x, y int) {
+	if c == nil {
 		return
 	}
 
@@ -234,43 +317,61 @@ func (c *TileCache) updateAccessStats(key string) {
 	_, _ = c.db.Exec(`
 		UPDATE tile_cache 
 		SET access_count = access_count + 1, last_access = ?
-		WHERE cache_key = ?
-	`, time.Now().Unix(), key)
+		WHERE z = ? AND x = ? AND y = ?
+	`, time.Now().Unix(), z, x, y)
 }
 
-// Delete 删除缓存
-func (c *TileCache) Delete(key string) {
-	// 从内存缓存删除
-	c.memMu.Lock()
-	delete(c.memCache, key)
-	c.memMu.Unlock()
-
-	// 从SQLite删除
-	if c.db == nil {
-		return
+// checkAndCleanupSize 检查并清理缓存大小
+func (c *MapTileCache) checkAndCleanupSize(newDataSize int) error {
+	if c.maxSizeMB <= 0 {
+		return nil
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	_, _ = c.db.Exec("DELETE FROM tile_cache WHERE cache_key = ?", key)
-}
-
-// cleanupLoop 定期清理过期缓存
-func (c *TileCache) cleanupLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		c.cleanup()
+	// 获取当前缓存大小
+	var currentSize int64
+	err := c.db.QueryRow("SELECT COALESCE(SUM(data_size), 0) FROM tile_cache").Scan(&currentSize)
+	if err != nil {
+		return err
 	}
+
+	maxSizeBytes := int64(c.maxSizeMB) * 1024 * 1024
+	newTotalSize := currentSize + int64(newDataSize)
+
+	// 如果超过限制，删除最少访问的瓦片
+	if newTotalSize > maxSizeBytes {
+		// 删除访问次数最少且最久未访问的瓦片
+		_, err = c.db.Exec(`
+			DELETE FROM tile_cache 
+			WHERE rowid IN (
+				SELECT rowid FROM tile_cache 
+				ORDER BY access_count ASC, last_access ASC 
+				LIMIT (
+					SELECT COUNT(*) FROM tile_cache 
+					WHERE (SELECT SUM(data_size) FROM tile_cache) > ?
+				) / 10
+			)
+		`, maxSizeBytes)
+
+		if err != nil {
+			fmt.Printf("Warning: cleanup failed: %v\n", err)
+		}
+	}
+
+	return nil
 }
 
 // cleanup 清理过期缓存
-func (c *TileCache) cleanup() {
-	// 清理内存缓存中的旧数据
+func (c *MapTileCache) cleanup() {
+	if c == nil {
+		return
+	}
+
+	// 清理内存缓存
 	c.memMu.Lock()
-	threshold := time.Now().Add(-c.ttl)
+	threshold := time.Now().Add(-DefaultCacheTTL)
 	for key, item := range c.memCache {
 		if item.AccessTime.Before(threshold) {
 			delete(c.memCache, key)
@@ -278,92 +379,96 @@ func (c *TileCache) cleanup() {
 	}
 	c.memMu.Unlock()
 
-	// 清理SQLite中的过期数据
-	if c.db == nil {
-		return
-	}
-
+	// 清理SQLite过期数据
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	result, err := c.db.Exec("DELETE FROM tile_cache WHERE expires_at < ?", time.Now().Unix())
 	if err != nil {
-		fmt.Printf("Warning: cleanup failed: %v\n", err)
+		fmt.Printf("Warning: cleanup failed for map %d: %v\n", c.mapID, err)
 		return
 	}
 
 	if rows, _ := result.RowsAffected(); rows > 0 {
-		fmt.Printf("Cleaned up %d expired cache entries\n", rows)
-		// 执行VACUUM优化数据库
+		fmt.Printf("Cleaned up %d expired tiles for map %d\n", rows, c.mapID)
 		_, _ = c.db.Exec("VACUUM")
 	}
 }
 
-// Clear 清空缓存
-func (c *TileCache) Clear() {
-	// 清空内存缓存
-	c.memMu.Lock()
-	c.memCache = make(map[string]*MemCacheItem)
-	c.memMu.Unlock()
-
-	// 清空SQLite
-	if c.db == nil {
-		return
+// GetStats 获取缓存统计
+func (c *MapTileCache) GetStats() map[string]interface{} {
+	if c == nil {
+		return map[string]interface{}{"enabled": false}
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	_, _ = c.db.Exec("DELETE FROM tile_cache")
-	_, _ = c.db.Exec("VACUUM")
-}
-
-// Size 获取缓存大小
-func (c *TileCache) Size() int {
-	if c.db == nil {
-		c.memMu.RLock()
-		defer c.memMu.RUnlock()
-		return len(c.memCache)
-	}
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	var count int
-	err := c.db.QueryRow("SELECT COUNT(*) FROM tile_cache").Scan(&count)
-	if err != nil {
-		return 0
-	}
-	return count
-}
-
-// Stats 获取缓存统计信息
-func (c *TileCache) Stats() map[string]interface{} {
 	stats := make(map[string]interface{})
+	stats["map_id"] = c.mapID
+	stats["max_size_mb"] = c.maxSizeMB
 
 	c.memMu.RLock()
 	stats["memory_items"] = len(c.memCache)
 	c.memMu.RUnlock()
 
-	if c.db != nil {
-		c.mu.RLock()
-		defer c.mu.RUnlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 
-		var totalCount int
-		var totalSize int64
-		c.db.QueryRow("SELECT COUNT(*), COALESCE(SUM(LENGTH(tile_data)), 0) FROM tile_cache").Scan(&totalCount, &totalSize)
+	var totalCount int
+	var totalSize int64
+	c.db.QueryRow("SELECT COUNT(*), COALESCE(SUM(data_size), 0) FROM tile_cache").Scan(&totalCount, &totalSize)
 
-		stats["sqlite_items"] = totalCount
-		stats["sqlite_size_mb"] = float64(totalSize) / 1024 / 1024
-	}
+	stats["total_tiles"] = totalCount
+	stats["total_size_mb"] = float64(totalSize) / 1024 / 1024
+	stats["usage_percent"] = float64(totalSize) / float64(c.maxSizeMB*1024*1024) * 100
 
 	return stats
 }
 
 // Close 关闭缓存
-func (c *TileCache) Close() error {
-	if c.db != nil {
-		return c.db.Close()
+func (c *MapTileCache) Close() error {
+	if c == nil || c.db == nil {
+		return nil
 	}
-	return nil
+	return c.db.Close()
+}
+
+// cleanupLoop 定期清理
+func (m *TileCacheManager) cleanupLoop() {
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		m.cacheMutex.RLock()
+		caches := make([]*MapTileCache, 0, len(m.caches))
+		for _, cache := range m.caches {
+			caches = append(caches, cache)
+		}
+		m.cacheMutex.RUnlock()
+
+		for _, cache := range caches {
+			cache.cleanup()
+		}
+	}
+}
+
+// CloseAll 关闭所有缓存
+func (m *TileCacheManager) CloseAll() {
+	m.cacheMutex.Lock()
+	defer m.cacheMutex.Unlock()
+
+	for _, cache := range m.caches {
+		cache.Close()
+	}
+	m.caches = make(map[uint]*MapTileCache)
+}
+
+// GetAllStats 获取所有缓存统计
+func (m *TileCacheManager) GetAllStats() []map[string]interface{} {
+	m.cacheMutex.RLock()
+	defer m.cacheMutex.RUnlock()
+
+	stats := make([]map[string]interface{}, 0, len(m.caches))
+	for _, cache := range m.caches {
+		stats = append(stats, cache.GetStats())
+	}
+	return stats
 }
