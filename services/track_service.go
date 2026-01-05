@@ -25,83 +25,78 @@ func (s *TrackService) GetAndBreakGeometries(
 	layerNames []string,
 	bbox geojson.FeatureCollection,
 ) (*geojson.FeatureCollection, error) {
-	// 构建 bbox 的 WKT
 	bboxWKT := s.featureCollectionToWKT(bbox)
 	if bboxWKT == "" {
 		return nil, fmt.Errorf("invalid bbox")
 	}
 
-	// 构建 UNION 查询获取所有图层的几何
+	// 构建 UNION 查询
 	var unionQueries []string
 	for _, layerName := range layerNames {
 		unionQueries = append(unionQueries, fmt.Sprintf(`
-			SELECT geom, '%s' as layer
-			FROM %s
-			WHERE ST_Intersects(geom, ST_GeomFromText($1, 4326))
-		`, layerName, layerName))
+			SELECT ST_Intersection(t.geom, bbox.geom) as geom
+			FROM %s t, bbox
+			WHERE ST_Intersects(t.geom, bbox.geom)
+		`, layerName))
 	}
 
 	query := fmt.Sprintf(`
-		WITH all_geoms AS (
+		WITH bbox AS (
+			SELECT ST_GeomFromText($1, 4326) as geom
+		),
+		all_geoms AS (
 			%s
 		),
+		-- 展开所有几何（处理 GeometryCollection）
 		dumped AS (
-			-- 展开多几何为单几何
-			SELECT layer, (ST_Dump(geom)).geom as geom
-			FROM all_geoms
+			SELECT (ST_Dump(g.geom)).geom as geom
+			FROM all_geoms g
+			WHERE g.geom IS NOT NULL 
+			  AND NOT ST_IsEmpty(g.geom)
 		),
+		-- 转换为线
 		as_lines AS (
-			-- 将所有几何转换为线
 			SELECT 
-				layer,
 				CASE 
-					WHEN ST_GeometryType(geom) = 'ST_LineString' THEN geom
-					WHEN ST_GeometryType(geom) = 'ST_Polygon' THEN ST_Boundary(geom)
-					WHEN ST_GeometryType(geom) = 'ST_MultiLineString' THEN geom
-					WHEN ST_GeometryType(geom) = 'ST_MultiPolygon' THEN ST_Boundary(geom)
+					WHEN ST_GeometryType(d.geom) = 'ST_LineString' THEN d.geom
+					WHEN ST_GeometryType(d.geom) = 'ST_Polygon' THEN ST_Boundary(d.geom)
 					ELSE NULL
 				END as geom
-			FROM dumped
-			WHERE ST_GeometryType(geom) != 'ST_Point'
+			FROM dumped d
+			WHERE ST_GeometryType(d.geom) IN ('ST_LineString', 'ST_Polygon')
 		),
-		exploded_lines AS (
-			-- 展开为单线
-			SELECT layer, (ST_Dump(geom)).geom as geom
-			FROM as_lines
-			WHERE geom IS NOT NULL
+		-- 过滤有效线
+		valid_lines AS (
+			SELECT l.geom
+			FROM as_lines l
+			WHERE l.geom IS NOT NULL 
+			  AND NOT ST_IsEmpty(l.geom)
+			  AND ST_GeometryType(l.geom) = 'ST_LineString'
 		),
-		noded_collection AS (
-			-- 跨图层打断：收集所有线并统一节点化
-			SELECT ST_Node(ST_Collect(geom)) as noded_geom
-			FROM exploded_lines
+		-- 节点化打断
+		noded AS (
+			SELECT ST_Node(ST_Collect(v.geom)) as geom
+			FROM valid_lines v
 		),
-		noded_lines AS (
-			-- 展开节点化后的几何,并关联回原始图层
+		-- 展开为单线段
+		segments AS (
 			SELECT 
 				row_number() OVER () as id,
-				dumped_noded.geom,
-				-- 找到与该几何相交的原始图层（可能有多个）
-				(
-					SELECT string_agg(DISTINCT el.layer, ',')
-					FROM exploded_lines el
-					WHERE ST_Intersects(el.geom, dumped_noded.geom)
-				) as layer
-			FROM noded_collection,
-			LATERAL (SELECT (ST_Dump(noded_geom)).geom) AS dumped_noded(geom)
+				(ST_Dump(n.geom)).geom as geom
+			FROM noded n
+			WHERE n.geom IS NOT NULL
 		)
 		SELECT 
-			id,
-			layer,
-			ST_AsGeoJSON(geom, 15)::json as geom_json,  -- 设置精度为15位小数
-			ST_Length(geom::geography) as length
-		FROM noded_lines
-		WHERE ST_GeometryType(geom) = 'ST_LineString'
-		  AND ST_Length(geom) > 0
+			s.id,
+			ST_AsGeoJSON(s.geom, 15)::json as geom_json,
+			ST_Length(s.geom::geography) as length
+		FROM segments s
+		WHERE ST_GeometryType(s.geom) = 'ST_LineString'
+		  AND ST_Length(s.geom) > 0
 	`, strings.Join(unionQueries, "\n\t\tUNION ALL\n\t\t"))
 
 	var geometries []struct {
 		ID       int             `gorm:"column:id"`
-		Layer    string          `gorm:"column:layer"`
 		GeomJSON json.RawMessage `gorm:"column:geom_json"`
 		Length   float64         `gorm:"column:length"`
 	}
@@ -112,7 +107,6 @@ func (s *TrackService) GetAndBreakGeometries(
 
 	fc := geojson.NewFeatureCollection()
 
-	// 将几何添加到 FeatureCollection
 	for _, geom := range geometries {
 		var geoJSONGeom geojson.Geometry
 		if err := json.Unmarshal(geom.GeomJSON, &geoJSONGeom); err != nil {
@@ -126,7 +120,6 @@ func (s *TrackService) GetAndBreakGeometries(
 
 		feature := geojson.NewFeature(orbGeom)
 		feature.Properties["id"] = geom.ID
-		feature.Properties["layer"] = geom.Layer
 		feature.Properties["length"] = geom.Length
 
 		fc.Append(feature)

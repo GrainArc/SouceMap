@@ -135,7 +135,7 @@ func GeoRouters(r *gin.Engine) {
 	{
 		fields.POST("/AddField", UserController.AddField)       // 添加字段
 		fields.POST("/DeleteField", UserController.DeleteField) // 删除字段
-		fields.GET("/field/types", UserController.GetSupportedFieldTypes)
+		fields.GET("/types", UserController.GetSupportedFieldTypes)
 		fields.POST("/CalculateField", UserController.CalculateField)           // 执行计算
 		fields.POST("/UpdateGeometryField", UserController.UpdateGeometryField) // 预览结果
 		fields.GET("/GetFieldInfo", UserController.GetFieldInfo)                // 获取单个字段信息
