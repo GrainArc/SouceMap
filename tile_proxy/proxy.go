@@ -54,7 +54,7 @@ func NewTileProxyService() *TileProxyService {
 				IdleConnTimeout:     90 * time.Second},
 		},
 		coordConv:     pgmvt.NewChangeCoord(),
-		cache:         NewTileCache(500, 30*time.Minute),
+		cache:         NewTileCache(20000, 500*time.Hour),
 		safeProcessor: NewSafeTileProcessor(4), // 限制并发处理数
 	}
 }
