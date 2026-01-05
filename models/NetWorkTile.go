@@ -17,7 +17,8 @@ type NetMap struct {
 	TileSize        int        `gorm:"column:tile_size" json:"tileSize"`                          // 最大缩放级别
 	UrlPath         string     `gorm:"column:url_path" json:"urlPath"`                            // URL路径
 	TileUrlTemplate string     `gorm:"column:tile_url_template;type:text" json:"tileUrlTemplate"` // 完整URL模板
-	Status          int        `gorm:"column:status;default:1" json:"status"`                     // 状态：0禁用，1启用
+	CacheSizeMB     int        `gorm:"column:cache_size_mb;default:0" json:"cacheSizeMB"`
+	Status          int        `gorm:"column:status;default:1" json:"status"` // 状态：0禁用，1启用
 	CreatedAt       time.Time  `gorm:"autoCreateTime" json:"createdAt"`
 	UpdatedAt       time.Time  `gorm:"autoUpdateTime" json:"updatedAt"`
 	DeletedAt       *time.Time `gorm:"index" json:"deletedAt"`

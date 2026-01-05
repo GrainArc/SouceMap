@@ -1,4 +1,4 @@
-// tile_proxy.go
+// tile_proxy/tile_proxy.go
 package tile_proxy
 
 import (
@@ -28,9 +28,9 @@ const (
 
 // 重试配置
 const (
-	MaxRetries   = 3                      // 最大重试次数
-	RetryDelay   = 500 * time.Millisecond // 重试延迟
-	RetryBackoff = 2                      // 退避倍数
+	MaxRetries   = 3
+	RetryDelay   = 500 * time.Millisecond
+	RetryBackoff = 2
 )
 
 // TileProxyService 瓦片代理服务
@@ -38,8 +38,8 @@ type TileProxyService struct {
 	db            *gorm.DB
 	httpClient    *http.Client
 	coordConv     *pgmvt.ChangeCoord
-	cache         *TileCache
-	safeProcessor *SafeTileProcessor // 新增
+	cacheManager  *TileCacheManager
+	safeProcessor *SafeTileProcessor
 }
 
 // NewTileProxyService 创建瓦片代理服务
@@ -51,11 +51,12 @@ func NewTileProxyService() *TileProxyService {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 20,
-				IdleConnTimeout:     90 * time.Second},
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 		coordConv:     pgmvt.NewChangeCoord(),
-		cache:         NewTileCache(500, 30*time.Minute),
-		safeProcessor: NewSafeTileProcessor(4), // 限制并发处理数
+		cacheManager:  NewTileCacheManager("./cache/tiles"),
+		safeProcessor: NewSafeTileProcessor(4),
 	}
 }
 
@@ -80,17 +81,68 @@ type FetchedTile struct {
 func (s *TileProxyService) RegisterRoutes(r *gin.RouterGroup) {
 	r.GET("/tile/:mapId/:z/:x/:y", s.HandleTileRequest)
 	r.GET("/tile/cache/stats", s.HandleCacheStats)
-	r.DELETE("/tile/cache", s.HandleClearCache)
+	r.GET("/tile/cache/stats/:mapId", s.HandleMapCacheStats)
+	r.DELETE("/tile/cache/:mapId", s.HandleClearMapCache)
 }
 
-// HandleCacheStats 获取缓存统计
+// HandleCacheStats 获取所有缓存统计
 func (s *TileProxyService) HandleCacheStats(c *gin.Context) {
-	c.JSON(http.StatusOK, s.cache.Stats())
+	stats := s.cacheManager.GetAllStats()
+	c.JSON(http.StatusOK, gin.H{
+		"caches": stats,
+		"total":  len(stats),
+	})
 }
 
-// HandleClearCache 清空缓存
-func (s *TileProxyService) HandleClearCache(c *gin.Context) {
-	s.cache.Clear()
+// HandleMapCacheStats 获取指定地图缓存统计
+func (s *TileProxyService) HandleMapCacheStats(c *gin.Context) {
+	mapID, err := strconv.ParseUint(c.Param("mapId"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid map id"})
+		return
+	}
+
+	var netMap models.NetMap
+	if err := s.db.First(&netMap, mapID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "map not found"})
+		return
+	}
+
+	cache, _ := s.cacheManager.GetCache(uint(mapID), netMap.CacheSizeMB)
+	if cache == nil {
+		c.JSON(http.StatusOK, gin.H{"enabled": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, cache.GetStats())
+}
+
+// HandleClearMapCache 清空指定地图缓存
+func (s *TileProxyService) HandleClearMapCache(c *gin.Context) {
+	mapID, err := strconv.ParseUint(c.Param("mapId"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid map id"})
+		return
+	}
+
+	var netMap models.NetMap
+	if err := s.db.First(&netMap, mapID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "map not found"})
+		return
+	}
+
+	cache, _ := s.cacheManager.GetCache(uint(mapID), netMap.CacheSizeMB)
+	if cache != nil {
+		cache.mu.Lock()
+		_, _ = cache.db.Exec("DELETE FROM tile_cache")
+		_, _ = cache.db.Exec("VACUUM")
+		cache.mu.Unlock()
+
+		cache.memMu.Lock()
+		cache.memCache = make(map[string]*MemCacheItem)
+		cache.memMu.Unlock()
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "cache cleared"})
 }
 
@@ -153,26 +205,34 @@ func (s *TileProxyService) HandleTileRequest(c *gin.Context) {
 		tileSize = netMap.TileSize
 	}
 
+	// 获取缓存实例
+	cache, _ := s.cacheManager.GetCache(req.MapID, netMap.CacheSizeMB)
+
 	// 检查缓存
-	cacheKey := fmt.Sprintf("%d_%d_%d_%d", req.MapID, req.Z, req.X, req.Y)
-	if cachedData, ok := s.cache.Get(cacheKey); ok {
-		s.sendTileResponse(c, cachedData, netMap.ImageFormat)
-		return
+	if cache != nil {
+		if cachedData, contentType, ok := cache.Get(req.Z, req.X, req.Y); ok {
+			s.sendTileResponse(c, cachedData, contentType)
+			return
+		}
 	}
 
 	// 根据坐标系处理
 	var tileData []byte
+	var contentType string
+
 	switch netMap.Projection {
 	case CoordWGS84:
 		// WGS84坐标系，直接代理
 		tileData, err = s.proxyDirectTile(c.Request.Context(), &netMap, req)
+		contentType = s.getContentType(netMap.ImageFormat)
 	case CoordGCJ02:
 		// GCJ02坐标系，需要转换
-		fmt.Println("开启坐标转换")
 		tileData, err = s.proxyWithCoordTransform(c.Request.Context(), &netMap, req, tileSize, s.wgs84ToGCJ02)
+		contentType = s.getContentType(netMap.ImageFormat)
 	case CoordBD09:
 		// BD09坐标系，需要转换
 		tileData, err = s.proxyWithCoordTransform(c.Request.Context(), &netMap, req, tileSize, s.wgs84ToBD09)
+		contentType = s.getContentType(netMap.ImageFormat)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported projection"})
 		return
@@ -184,10 +244,12 @@ func (s *TileProxyService) HandleTileRequest(c *gin.Context) {
 	}
 
 	// 缓存结果
-	s.cache.SetWithType(cacheKey, tileData, s.getContentType(netMap.ImageFormat))
+	if cache != nil && len(tileData) > 0 {
+		_ = cache.Set(req.Z, req.X, req.Y, tileData, contentType)
+	}
 
 	// 返回瓦片
-	s.sendTileResponse(c, tileData, netMap.ImageFormat)
+	s.sendTileResponse(c, tileData, contentType)
 }
 
 // getContentType 获取内容类型
@@ -228,7 +290,6 @@ func (s *TileProxyService) proxyWithCoordTransform(
 	tileSize int,
 	transform CoordTransformFunc,
 ) ([]byte, error) {
-	// 使用安全处理器包装
 	result := s.safeProcessor.ProcessWithRecover(ctx, func() ([]byte, error) {
 		return s.doProxyWithCoordTransform(ctx, netMap, req, tileSize, transform)
 	})
@@ -392,7 +453,10 @@ func (s *TileProxyService) fetchTilesParallelWithRetry(ctx context.Context, netM
 	tileChan := make(chan FetchedTile, tileCount)
 
 	// 限制并发数
-	semaphore := make(chan struct{}, 1)
+	semaphore := make(chan struct{}, 4)
+
+	// 获取缓存实例
+	cache, _ := s.cacheManager.GetCache(netMap.ID, netMap.CacheSizeMB)
 
 	for x := tileRange.MinX; x <= tileRange.MaxX; x++ {
 		for y := tileRange.MinY; y <= tileRange.MaxY; y++ {
@@ -404,19 +468,21 @@ func (s *TileProxyService) fetchTilesParallelWithRetry(ctx context.Context, netM
 				defer func() { <-semaphore }()
 
 				// 先检查缓存
-				cacheKey := fmt.Sprintf("src_%d_%d_%d_%d", netMap.ID, z, tileX, tileY)
-				if cachedData, ok := s.cache.Get(cacheKey); ok {
-					format := "png"
-					if netMap.ImageFormat != "" {
-						format = netMap.ImageFormat
+				if cache != nil {
+					if cachedData, _, ok := cache.Get(z, tileX, tileY); ok {
+						format := "png"
+						if netMap.ImageFormat != "" {
+							format = netMap.ImageFormat
+						}
+						tileChan <- FetchedTile{
+							Data:   cachedData,
+							X:      tileX,
+							Y:      tileY,
+							Format: format,
+							Err:    nil,
+						}
+						return
 					}
-					tileChan <- FetchedTile{Data: cachedData,
-						X:      tileX,
-						Y:      tileY,
-						Format: format,
-						Err:    nil,
-					}
-					return
 				}
 
 				url := s.buildTileURL(netMap, z, tileX, tileY)
@@ -429,7 +495,10 @@ func (s *TileProxyService) fetchTilesParallelWithRetry(ctx context.Context, netM
 
 				// 如果成功获取，缓存源瓦片
 				if err == nil && len(data) > 0 && s.isValidTileData(data) {
-					s.cache.Set(cacheKey, data)
+					if cache != nil {
+						contentType := s.getContentType(format)
+						_ = cache.Set(z, tileX, tileY, data, contentType)
+					}
 				}
 
 				tileChan <- FetchedTile{
@@ -462,7 +531,7 @@ func (s *TileProxyService) fetchTilesParallelWithRetry(ctx context.Context, netM
 	// 对失败的瓦片进行二次重试
 	if len(failedTiles) > 0 {
 		fmt.Printf("Retrying %d failed tiles...\n", len(failedTiles))
-		retriedTiles := s.retryFailedTiles(ctx, netMap, z, failedTiles)
+		retriedTiles := s.retryFailedTiles(ctx, netMap, z, failedTiles, cache)
 		tiles = append(tiles, retriedTiles...)
 	}
 
@@ -470,7 +539,7 @@ func (s *TileProxyService) fetchTilesParallelWithRetry(ctx context.Context, netM
 }
 
 // retryFailedTiles 重试失败的瓦片
-func (s *TileProxyService) retryFailedTiles(ctx context.Context, netMap *models.NetMap, z int, failedTiles []FetchedTile) []FetchedTile {
+func (s *TileProxyService) retryFailedTiles(ctx context.Context, netMap *models.NetMap, z int, failedTiles []FetchedTile, cache *MapTileCache) []FetchedTile {
 	var wg sync.WaitGroup
 	resultChan := make(chan FetchedTile, len(failedTiles))
 
@@ -498,8 +567,10 @@ func (s *TileProxyService) retryFailedTiles(ctx context.Context, netMap *models.
 
 			// 缓存成功的结果
 			if err == nil && len(data) > 0 && s.isValidTileData(data) {
-				cacheKey := fmt.Sprintf("src_%d_%d_%d_%d", netMap.ID, z, tile.X, tile.Y)
-				s.cache.Set(cacheKey, data)
+				if cache != nil {
+					contentType := s.getContentType(format)
+					_ = cache.Set(z, tile.X, tile.Y, data, contentType)
+				}
 			}
 
 			resultChan <- FetchedTile{
@@ -536,8 +607,7 @@ func (s *TileProxyService) fetchTileWithRetry(ctx context.Context, url string, m
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
-			case <-time.After(delay):
-				// 指数退避
+			case <-time.After(delay): // 指数退避
 				delay = delay * time.Duration(RetryBackoff)
 			}
 		}
@@ -564,7 +634,7 @@ func (s *TileProxyService) isValidTileData(data []byte) bool {
 		return false
 	}
 
-	// 检查最小有效大小（一个有效的PNG/JPEG至少需要几十字节）
+	// 检查最小有效大小
 	if len(data) < 100 {
 		return false
 	}
@@ -596,18 +666,12 @@ func (s *TileProxyService) isValidTileData(data []byte) bool {
 		}
 	}
 
-	// 未知格式，假设有效
 	return true
 }
 
 // isValidPNG 检查PNG是否有效（非全透明）
 func (s *TileProxyService) isValidPNG(data []byte) bool {
-	// 简单检查：PNG文件大小太小可能是空白瓦片
-	// 一个256x256的全透明PNG通常很小（几百字节）
-	// 有内容的PNG通常会大于1KB
 	if len(data) < 500 {
-		// 可能是空白瓦片，但仍然是有效的PNG
-		// 这里我们认为太小的PNG可能是nodata
 		return false
 	}
 	return true
@@ -615,11 +679,9 @@ func (s *TileProxyService) isValidPNG(data []byte) bool {
 
 // isValidJPEG 检查JPEG是否有效
 func (s *TileProxyService) isValidJPEG(data []byte) bool {
-	// JPEG文件应该以FFD9结尾
 	if len(data) < 2 {
 		return false
 	}
-	// 检查文件大小，太小的JPEG可能是空白
 	if len(data) < 1000 {
 		return false
 	}
@@ -686,17 +748,7 @@ func (s *TileProxyService) fetchTile(ctx context.Context, url string) ([]byte, e
 }
 
 // sendTileResponse 发送瓦片响应
-func (s *TileProxyService) sendTileResponse(c *gin.Context, data []byte, format string) {
-	contentType := "image/png"
-	switch strings.ToLower(format) {
-	case "jpg", "jpeg":
-		contentType = "image/jpeg"
-	case "webp":
-		contentType = "image/webp"
-	case "png":
-		contentType = "image/png"
-	}
-
+func (s *TileProxyService) sendTileResponse(c *gin.Context, data []byte, contentType string) {
 	c.Header("Content-Type", contentType)
 	c.Header("Cache-Control", "public, max-age=86400")
 	c.Header("Access-Control-Allow-Origin", "*")
@@ -705,8 +757,8 @@ func (s *TileProxyService) sendTileResponse(c *gin.Context, data []byte, format 
 
 // Close 关闭服务
 func (s *TileProxyService) Close() error {
-	if s.cache != nil {
-		return s.cache.Close()
+	if s.cacheManager != nil {
+		s.cacheManager.CloseAll()
 	}
 	return nil
 }
