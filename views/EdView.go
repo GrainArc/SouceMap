@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -649,7 +650,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",       // 错误提示信息
+			"message": "删除记录失败",             // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -659,9 +660,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,                    // 状态码：请求成功
+			"code":    200,          // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,                      // 删除的记录数量
+			"count":   0,            // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -669,7 +670,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",      // 成功提示信息
+		"message": "清空记录成功",            // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
@@ -3516,83 +3517,120 @@ func mapField(fc string, attMap []pgmvt.ProcessedFieldInfo) string {
 
 }
 
-// mapPostGISTypeToGDB 将PostgreSQL字段类型映射为GDB字段类型
-// 返回: FieldType, Width, Precision
+// controllers/sync_controller.go (更新 mapPostGISTypeToGDB 调用部分)
+
+// mapPostGISTypeToGDB 扩展的类型映射函数
 func mapPostGISTypeToGDB(pgType string) (Gogeo.FieldType, int, int) {
 	// 转换为小写便于匹配
 	pgType = strings.ToLower(strings.TrimSpace(pgType))
 
-	// 处理带长度的类型，如 varchar(255)
-	var baseType string
-	var width int
-	var precision int
-
 	// 解析类型定义
-	if strings.Contains(pgType, "(") {
-		parts := strings.Split(pgType, "(")
-		baseType = parts[0]
-
-		// 提取宽度和精度
-		if len(parts) > 1 {
-			params := strings.TrimSuffix(parts[1], ")")
-			paramParts := strings.Split(params, ",")
-
-			if len(paramParts) > 0 {
-				fmt.Sscanf(paramParts[0], "%d", &width)
-			}
-			if len(paramParts) > 1 {
-				fmt.Sscanf(paramParts[1], "%d", &precision)
-			}
-		}
-	} else {
-		baseType = pgType
-	}
+	baseType, params := parseTypeParams(pgType)
 
 	// 类型映射
 	switch baseType {
+	// 整数类型
 	case "smallint", "int2":
 		return Gogeo.FieldTypeInteger, 0, 0
 
-	case "integer", "int", "int4":
+	case "integer", "int", "int4", "serial":
 		return Gogeo.FieldTypeInteger, 0, 0
 
-	case "bigint", "int8":
+	case "bigint", "int8", "bigserial":
 		return Gogeo.FieldTypeInteger64, 0, 0
 
+	// 浮点数类型
 	case "real", "float4":
 		return Gogeo.FieldTypeReal, 0, 0
 
-	case "double precision", "float8", "numeric", "decimal":
-		if precision == 0 {
-			precision = 2 // 默认精度
-		}
-		return Gogeo.FieldTypeReal, 0, precision
+	case "double precision", "float8", "float", "double":
+		return Gogeo.FieldTypeReal, 0, 0
 
-	case "character varying", "varchar", "character", "char", "text":
-		if width == 0 {
-			width = 254 // GDB字符串默认长度
+	case "numeric", "decimal":
+		width := 18
+		precision := 6
+		if len(params) >= 1 {
+			width = params[0]
+		}
+		if len(params) >= 2 {
+			precision = params[1]
+		}
+		return Gogeo.FieldTypeReal, width, precision
+
+	// 字符串类型
+	case "character varying", "varchar":
+		width := 254
+		if len(params) >= 1 {
+			width = params[0]
+		}
+		if width > 2147483647 {
+			width = 2147483647
 		}
 		return Gogeo.FieldTypeString, width, 0
 
+	case "character", "char":
+		width := 1
+		if len(params) >= 1 {
+			width = params[0]
+		}
+		return Gogeo.FieldTypeString, width, 0
+
+	case "text":
+		return Gogeo.FieldTypeString, 2147483647, 0
+
+	// 日期时间类型
 	case "date":
 		return Gogeo.FieldTypeDate, 0, 0
 
-	case "time", "time without time zone":
+	case "time", "time without time zone", "time with time zone", "timetz":
 		return Gogeo.FieldTypeTime, 0, 0
 
-	case "timestamp", "timestamp without time zone", "timestamp with time zone":
+	case "timestamp", "timestamp without time zone", "timestamp with time zone", "timestamptz":
 		return Gogeo.FieldTypeDateTime, 0, 0
 
-	case "bytea":
+	// 二进制类型
+	case "bytea", "bytes":
 		return Gogeo.FieldTypeBinary, 0, 0
+
+	// 布尔类型
+	case "boolean", "bool":
+		return Gogeo.FieldTypeInteger, 0, 0
+
+	// UUID类型
+	case "uuid":
+		return Gogeo.FieldTypeString, 36, 0
 
 	default:
 		// 默认作为字符串处理
-		if width == 0 {
-			width = 254
+		width := 254
+		if len(params) >= 1 {
+			width = params[0]
 		}
 		return Gogeo.FieldTypeString, width, 0
 	}
+}
+
+// parseTypeParams 解析类型参数
+func parseTypeParams(pgType string) (baseType string, params []int) {
+	re := regexp.MustCompile(`^([a-z\s]+)(?:\(([^)]+)\))?$`)
+	matches := re.FindStringSubmatch(pgType)
+
+	if len(matches) < 2 {
+		return pgType, nil
+	}
+
+	baseType = strings.TrimSpace(matches[1])
+
+	if len(matches) >= 3 && matches[2] != "" {
+		paramStrs := strings.Split(matches[2], ",")
+		for _, p := range paramStrs {
+			if val, err := strconv.Atoi(strings.TrimSpace(p)); err == nil {
+				params = append(params, val)
+			}
+		}
+	}
+
+	return baseType, params
 }
 
 // 线面叠加分析

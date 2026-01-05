@@ -85,6 +85,7 @@ func (uc *UserController) UpdateGeometryField(c *gin.Context) {
 }
 
 // 添加字段
+// AddField 添加字段
 func (uc *UserController) AddField(c *gin.Context) {
 	var req models.FieldOperation
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -94,7 +95,6 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
 	// 验证必要参数
 	if req.FieldType == "" {
 		c.JSON(http.StatusBadRequest, models.Response{
@@ -103,16 +103,39 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
-	// 验证varchar类型必须有长度
-	if strings.ToLower(req.FieldType) == "varchar" && req.Length <= 0 {
+	// 获取字段类型信息
+	typeInfo, typeExists := models.SupportedFieldTypes[strings.ToLower(req.FieldType)]
+	if !typeExists {
+		// 返回支持的类型列表
+		supportedTypes := make([]string, 0, len(models.SupportedFieldTypes))
+		for typeName := range models.SupportedFieldTypes {
+			supportedTypes = append(supportedTypes, typeName)
+		}
 		c.JSON(http.StatusBadRequest, models.Response{
 			Code:    400,
-			Message: "varchar类型必须指定长度参数",
+			Message: fmt.Sprintf("不支持的字段类型: %s", req.FieldType),
+			Data: map[string]interface{}{
+				"supported_types": supportedTypes,
+			},
 		})
 		return
 	}
-
+	// 验证需要长度的类型
+	if typeInfo.NeedLength && req.Length <= 0 {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: fmt.Sprintf("%s 类型必须指定长度参数 (length)", req.FieldType),
+		})
+		return
+	}
+	// 验证需要精度的类型
+	if typeInfo.NeedScale && req.Precision <= 0 {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Code:    400,
+			Message: fmt.Sprintf("%s 类型必须指定精度参数 (precision)", req.FieldType),
+		})
+		return
+	}
 	// 检查表是否存在
 	if !uc.fieldService.CheckTableExists(req.TableName) {
 		c.JSON(http.StatusBadRequest, models.Response{
@@ -121,7 +144,6 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
 	// 检查字段是否已存在
 	if uc.fieldService.CheckFieldExists(req.TableName, req.FieldName) {
 		c.JSON(http.StatusBadRequest, models.Response{
@@ -130,7 +152,6 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
 	// 检查表是否有数据，如果有数据且字段不允许为空，必须提供默认值
 	var rowCount int64
 	if err := models.DB.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM "%s"`, req.TableName)).Scan(&rowCount).Error; err != nil {
@@ -140,7 +161,6 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
 	if rowCount > 0 && !req.IsNullable && req.DefaultValue == "" {
 		c.JSON(http.StatusBadRequest, models.Response{
 			Code:    400,
@@ -148,10 +168,18 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
 	// 添加字段
-	err := uc.fieldService.AddField(req.TableName, req.FieldName, req.FieldType,
-		req.Length, req.DefaultValue, req.Comment, req.IsNullable)
+	err := uc.fieldService.AddField(
+		req.TableName,
+		req.FieldName,
+		req.FieldType,
+		req.Length,
+		req.Precision,
+		req.Scale,
+		req.DefaultValue,
+		req.Comment,
+		req.IsNullable,
+	)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Code:    500,
@@ -159,28 +187,21 @@ func (uc *UserController) AddField(c *gin.Context) {
 		})
 		return
 	}
-
+	// 构建字段类型字符串用于记录
+	fieldTypeStr := uc.fieldService.BuildFieldTypeString(req.FieldType, req.Length, req.Precision, req.Scale)
 	// 保存字段操作记录
-	fieldTypeWithLength := req.FieldType
-	if req.Length > 0 {
-		fieldTypeWithLength = fmt.Sprintf("%s(%d)", req.FieldType, req.Length)
-	}
-
 	record := &models.FieldRecord{
 		TableName:    req.TableName,
-		Type:         "add", // 操作类型：添加
+		Type:         "add",
 		BZ:           req.Comment,
 		OldFieldName: "",
 		OldFieldType: "",
 		NewFieldName: req.FieldName,
-		NewFieldType: fieldTypeWithLength,
+		NewFieldType: fieldTypeStr,
 	}
-
 	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
-		// 记录保存失败，只记录日志，不影响主流程
 		fmt.Printf("保存字段操作记录失败: %v\n", err)
 	}
-
 	c.JSON(http.StatusOK, models.Response{
 		Code:    200,
 		Message: "字段添加成功",
@@ -189,130 +210,35 @@ func (uc *UserController) AddField(c *gin.Context) {
 			"field_name": req.FieldName,
 			"field_type": req.FieldType,
 			"length":     req.Length,
+			"precision":  req.Precision,
+			"scale":      req.Scale,
+			"category":   typeInfo.Category,
 		},
 	})
 }
 
-// 修改字段
-func (uc *UserController) ModifyField(c *gin.Context) {
-	var req models.FieldOperation
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "参数错误: " + err.Error(),
-		})
-		return
-	}
-
-	// 验证必要参数
-	if req.FieldType == "" {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "字段类型不能为空",
-		})
-		return
-	}
-
-	// 验证varchar类型必须有长度
-	if strings.ToLower(req.FieldType) == "varchar" && req.Length <= 0 {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "varchar类型必须指定长度参数",
-		})
-		return
-	}
-
-	// 检查表是否存在
-	if !uc.fieldService.CheckTableExists(req.TableName) {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "表不存在",
-		})
-		return
-	}
-
-	// 检查原字段是否存在
-	if !uc.fieldService.CheckFieldExists(req.TableName, req.FieldName) {
-		c.JSON(http.StatusBadRequest, models.Response{
-			Code:    400,
-			Message: "原字段不存在",
-		})
-		return
-	}
-
-	// 如果要重命名字段，检查新字段名是否已存在
-	if req.NewFieldName != "" && req.NewFieldName != req.FieldName {
-		if uc.fieldService.CheckFieldExists(req.TableName, req.NewFieldName) {
-			c.JSON(http.StatusBadRequest, models.Response{
-				Code:    400,
-				Message: "新字段名已存在",
-			})
-			return
+// GetSupportedFieldTypes 获取支持的字段类型列表
+func (uc *UserController) GetSupportedFieldTypes(c *gin.Context) {
+	// 按分类组织类型
+	categorizedTypes := make(map[string][]map[string]interface{})
+	for typeName, typeInfo := range models.SupportedFieldTypes {
+		typeData := map[string]interface{}{
+			"name":        typeName,
+			"need_length": typeInfo.NeedLength,
+			"need_scale":  typeInfo.NeedScale,
+			"description": typeInfo.Description,
 		}
+		if categorizedTypes[typeInfo.Category] == nil {
+			categorizedTypes[typeInfo.Category] = make([]map[string]interface{}, 0)
+		}
+		categorizedTypes[typeInfo.Category] = append(categorizedTypes[typeInfo.Category], typeData)
 	}
-
-	// 获取修改前的字段信息
-	oldFieldInfo, err := uc.fieldService.GetSingleFieldInfo(req.TableName, req.FieldName)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.Response{
-			Code:    500,
-			Message: "获取原字段信息失败: " + err.Error(),
-		})
-		return
-	}
-
-	// 构建旧字段类型字符串
-	oldFieldTypeStr := oldFieldInfo.FieldType
-	if oldFieldInfo.Length > 0 {
-		oldFieldTypeStr = fmt.Sprintf("%s(%d)", oldFieldInfo.FieldType, oldFieldInfo.Length)
-	}
-
-	// 修改字段
-	err = uc.fieldService.ModifyField(req.TableName, req.FieldName, req.NewFieldName,
-		req.FieldType, req.Length, req.DefaultValue, req.Comment, req.IsNullable)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, models.Response{
-			Code:    500,
-			Message: "修改字段失败: " + err.Error(),
-		})
-		return
-	}
-
-	finalFieldName := req.NewFieldName
-	if finalFieldName == "" {
-		finalFieldName = req.FieldName
-	}
-
-	// 保存字段操作记录
-	newFieldTypeStr := req.FieldType
-	if req.Length > 0 {
-		newFieldTypeStr = fmt.Sprintf("%s(%d)", req.FieldType, req.Length)
-	}
-
-	record := &models.FieldRecord{
-		TableName:    req.TableName,
-		Type:         "modify", // 操作类型：修改
-		BZ:           req.Comment,
-		OldFieldName: req.FieldName,
-		OldFieldType: oldFieldTypeStr,
-		NewFieldName: finalFieldName,
-		NewFieldType: newFieldTypeStr,
-	}
-
-	if err := uc.fieldService.SaveFieldRecord(record); err != nil {
-		// 记录保存失败，只记录日志，不影响主流程
-		fmt.Printf("保存字段操作记录失败: %v\n", err)
-	}
-
 	c.JSON(http.StatusOK, models.Response{
 		Code:    200,
-		Message: "字段修改成功",
+		Message: "获取成功",
 		Data: map[string]interface{}{
-			"table_name":     req.TableName,
-			"old_field_name": req.FieldName,
-			"new_field_name": finalFieldName,
-			"field_type":     req.FieldType,
-			"length":         req.Length,
+			"types":      models.SupportedFieldTypes,
+			"categories": categorizedTypes,
 		},
 	})
 }

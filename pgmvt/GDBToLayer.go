@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode"
 )
 
@@ -86,73 +87,256 @@ func convertValueToTargetType(value interface{}, targetType string) interface{} 
 
 	targetType = strings.ToUpper(targetType)
 
-	switch targetType {
-	case "INTEGER", "BIGINT", "SMALLINT":
+	// 提取基础类型（处理 VARCHAR(255) 这种带长度的类型）
+	baseType := targetType
+	if idx := strings.Index(targetType, "("); idx != -1 {
+		baseType = targetType[:idx]
+	}
+
+	switch baseType {
+	case "INTEGER", "INT", "INT4", "BIGINT", "INT8", "SMALLINT", "INT2":
 		// 转换为整数
 		switch v := value.(type) {
-		case int, int32, int64:
+		case int:
 			return v
-		case float32, float64:
-			return int(v.(float64))
+		case int32:
+			return int(v)
+		case int64:
+			return v
+		case float32:
+			return int(v)
+		case float64:
+			return int(v)
 		case string:
+			if v == "" {
+				return nil
+			}
 			if intVal, err := strconv.Atoi(v); err == nil {
 				return intVal
 			}
-			return 0
+			return nil
 		default:
-			return 0
+			return nil
 		}
 
-	case "DOUBLE PRECISION", "NUMERIC", "REAL":
+	case "DOUBLE PRECISION", "NUMERIC", "REAL", "FLOAT", "FLOAT4", "FLOAT8", "DECIMAL":
 		// 转换为浮点数
 		switch v := value.(type) {
-		case float32, float64:
+		case float32:
+			return float64(v)
+		case float64:
 			return v
-		case int, int32, int64:
-			return float64(v.(int))
+		case int:
+			return float64(v)
+		case int32:
+			return float64(v)
+		case int64:
+			return float64(v)
 		case string:
+			if v == "" {
+				return nil
+			}
 			if floatVal, err := strconv.ParseFloat(v, 64); err == nil {
 				return floatVal
 			}
-			return 0.0
+			return nil
 		default:
-			return 0.0
+			return nil
 		}
 
-	case "CHARACTER VARYING", "VARCHAR", "TEXT", "CHARACTER":
+	case "CHARACTER VARYING", "VARCHAR", "TEXT", "CHARACTER", "CHAR":
 		// 转换为字符串
 		switch v := value.(type) {
 		case string:
 			return cleanString(v)
-		case int, int32, int64:
-			return strconv.Itoa(v.(int))
-		case float32, float64:
-			return strconv.FormatFloat(v.(float64), 'f', -1, 64)
+		case int:
+			return strconv.Itoa(v)
+		case int32:
+			return strconv.Itoa(int(v))
+		case int64:
+			return strconv.FormatInt(v, 10)
+		case float32:
+			return strconv.FormatFloat(float64(v), 'f', -1, 32)
+		case float64:
+			return strconv.FormatFloat(v, 'f', -1, 64)
 		default:
 			return fmt.Sprintf("%v", v)
 		}
 
-	case "BOOLEAN":
+	case "BOOLEAN", "BOOL":
 		// 转换为布尔值
 		switch v := value.(type) {
 		case bool:
 			return v
 		case string:
-			return strings.ToLower(v) == "true" || v == "1"
-		case int, int32, int64:
-			return v.(int) != 0
+			if v == "" {
+				return nil
+			}
+			lower := strings.ToLower(v)
+			return lower == "true" || v == "1" || lower == "yes" || lower == "t"
+		case int:
+			return v != 0
+		case int32:
+			return v != 0
+		case int64:
+			return v != 0
 		default:
-			return false
+			return nil
 		}
 
+	case "TIMESTAMP", "TIMESTAMP WITHOUT TIME ZONE", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ":
+		// 转换为时间戳
+		return convertToTimestamp(value)
+
+	case "DATE":
+		// 转换为日期
+		return convertToDate(value)
+
+	case "TIME", "TIME WITHOUT TIME ZONE", "TIME WITH TIME ZONE", "TIMETZ":
+		// 转换为时间
+		return convertToTime(value)
+
 	default:
-		// 默认转换为字符串
+		// 默认处理
+		// 检查是否是带长度的类型，如 VARCHAR(255)
+		if strings.HasPrefix(baseType, "VARCHAR") || strings.HasPrefix(baseType, "CHARACTER") {
+			if strValue, ok := value.(string); ok {
+				return cleanString(strValue)
+			}
+			return fmt.Sprintf("%v", value)
+		}
+
+		// 对于未知类型，如果是空字符串则返回 nil
 		if strValue, ok := value.(string); ok {
+			if strValue == "" {
+				return nil
+			}
 			return cleanString(strValue)
 		}
 		return fmt.Sprintf("%v", value)
 	}
 }
+
+// convertToTimestamp 转换为时间戳
+func convertToTimestamp(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		// 尝试解析常见的日期时间格式
+		formats := []string{
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05",
+			"2006-01-02T15:04:05Z",
+			"2006-01-02T15:04:05Z07:00",
+			"2006-01-02 15:04:05.000",
+			"2006-01-02 15:04:05.000000",
+			"2006/01/02 15:04:05",
+			"01/02/2006 15:04:05",
+			"02-Jan-2006 15:04:05",
+			"2006-01-02",
+			"2006/01/02",
+		}
+		for _, format := range formats {
+			if t, err := time.Parse(format, v); err == nil {
+				return t
+			}
+		}
+		// 如果无法解析，记录警告并返回 nil
+		log.Printf("警告: 无法解析时间戳值: %s", v)
+		return nil
+	case time.Time:
+		if v.IsZero() {
+			return nil
+		}
+		return v
+	default:
+		return nil
+	}
+}
+
+// convertToDate 转换为日期
+func convertToDate(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		// 尝试解析常见的日期格式
+		formats := []string{
+			"2006-01-02",
+			"2006/01/02",
+			"01/02/2006",
+			"02-01-2006",
+			"02-Jan-2006",
+			"Jan 02, 2006",
+			"2006-01-02 15:04:05", // 如果包含时间，只取日期部分
+			"2006-01-02T15:04:05",
+		}
+		for _, format := range formats {
+			if t, err := time.Parse(format, v); err == nil {
+				// 返回 time.Time 类型，GORM 会正确处理
+				return t
+			}
+		}
+		log.Printf("警告: 无法解析日期值: %s", v)
+		return nil
+	case time.Time:
+		if v.IsZero() {
+			return nil
+		}
+		return v
+	default:
+		return nil
+	}
+}
+
+// convertToTime 转换为时间
+func convertToTime(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		// 尝试解析常见的时间格式
+		formats := []string{
+			"15:04:05",
+			"15:04",
+			"15:04:05.000",
+			"15:04:05.000000",
+			"3:04:05 PM",
+			"3:04 PM",
+		}
+		for _, format := range formats {
+			if t, err := time.Parse(format, v); err == nil {
+				return t.Format("15:04:05")
+			}
+		}
+		log.Printf("警告: 无法解析时间值: %s", v)
+		return nil
+	case time.Time:
+		if v.IsZero() {
+			return nil
+		}
+		return v.Format("15:04:05")
+	default:
+		return nil
+	}
+}
+
 func containsChinese(s string) bool {
 	for _, r := range s {
 		// 判断是否为中日韩统一表意文字（CJK Unified Ideographs）
@@ -606,7 +790,7 @@ func createGDBTableDirect(DB *gorm.DB, tableName string, fields map[string]strin
 	}
 }
 
-// writeGDBDataToDBDirect 直接将GDB数据写入数据库
+// 直接将GDB数据写入数据库
 func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableName string,
 	validFields map[string]string, processedFields []ProcessedFieldInfo) {
 
