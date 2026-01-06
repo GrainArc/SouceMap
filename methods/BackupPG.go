@@ -48,7 +48,7 @@ func NewSQLBackupManager() (*SQLBackupManager, error) {
 		RetentionDays: 14,
 		Compress:      true,
 	}
-	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
+	dsn := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable timezone=UTC",
 		config.Host, config.User, config.Password, config.Database, config.Port)
 
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})

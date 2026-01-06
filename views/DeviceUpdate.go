@@ -310,7 +310,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 		if contains(mainRouterIP, ip) == true {
 			continue // 跳过当前循环，处理下一个IP
 		}
-		wg.Add(1)            // 增加等待组计数
+		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
 
@@ -1420,7 +1420,7 @@ func ExportTable(tableName string, outputDir string) (string, error) {
 func ExampleImport(filePath string, ip string) error {
 
 	// 连接目标数据库
-	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable", ip)
+	DSN := fmt.Sprintf("host=%s user=postgres password=a3bwq6srhfxks dbname=GL port=5432 sslmode=disable timezone=UTC", ip)
 	targetDB, err := gorm.Open(postgres.Open(DSN), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
