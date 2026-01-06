@@ -5,7 +5,8 @@ go 1.24.2
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93
-	github.com/GrainArc/Gogeo v1.4.14
+	github.com/GrainArc/Gogeo v1.4.15
+	github.com/axgle/mahonia v0.0.0-20180208002826-3358181d7394
 	github.com/chai2010/webp v1.4.0
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
@@ -29,7 +30,6 @@ require (
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
-	github.com/axgle/mahonia v0.0.0-20180208002826-3358181d7394 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.14.2 // indirect
 	github.com/bytedance/sonic/loader v0.4.0 // indirect
