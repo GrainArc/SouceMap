@@ -110,6 +110,24 @@ func GeoRouters(r *gin.Engine) {
 		StaticRouter.GET("/GetRasterName", UserController.GetRasterName)
 		StaticRouter.GET(":dbname/:z/:x/:y.png", UserController.Raster)
 	}
+	DynamicRouter := r.Group("/raster/dynamic")
+	{
+		// 服务管理
+		DynamicRouter.POST("/service", UserController.CreateDynamicRasterService)         // 创建服务
+		DynamicRouter.GET("/services", UserController.ListDynamicRasterServices)          // 列出所有服务
+		DynamicRouter.GET("/service/:name", UserController.GetDynamicRasterService)       // 获取服务信息
+		DynamicRouter.PUT("/service/:name", UserController.UpdateDynamicRasterService)    // 更新服务
+		DynamicRouter.DELETE("/service/:name", UserController.DeleteDynamicRasterService) // 删除服务
+		// 服务控制
+		DynamicRouter.POST("/service/:name/start", UserController.StartDynamicRasterService)     // 启动服务
+		DynamicRouter.POST("/service/:name/stop", UserController.StopDynamicRasterService)       // 停止服务
+		DynamicRouter.POST("/service/:name/refresh", UserController.RefreshDynamicRasterService) // 刷新服务
+		// TileJSON
+		DynamicRouter.GET("/tilejson/:name", UserController.GetDynamicRasterTileJSON)
+		// 瓦片接口
+		DynamicRouter.GET("/tile/:name/:z/:x/:y.png", UserController.GetDynamicRasterTile)
+		DynamicRouter.GET("/terrain/:name/:z/:x/:y.png", UserController.GetDynamicTerrainTile)
+	}
 	DemRouter := r.Group("/dem")
 	{
 		DemRouter.GET("/:z/:x/:y.webp", UserController.Dem)

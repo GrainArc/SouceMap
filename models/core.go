@@ -2,6 +2,7 @@ package models
 
 import (
 	"github.com/GrainArc/SouceMap/config"
+
 	"log"
 	"os"
 	"path/filepath"
@@ -125,6 +126,7 @@ func InitDB() {
 
 	// 初始化默认用户
 	initDefaultUser(DB)
+
 }
 
 // migrateAllTables 批量迁移所有表
@@ -147,6 +149,7 @@ func migrateAllTables(db *gorm.DB) error {
 		&GeoRecord{},
 		&Report{},
 		&NetMap{},
+		&DynamicRaster{},
 	}
 
 	return db.AutoMigrate(models...)
