@@ -231,9 +231,11 @@ func GeoRouters(r *gin.Engine) {
 		api2.GET("/get_used_symbols", symbolHandler.GetUsedSymbols)
 	}
 	tileProxyService := tile_proxy.NewTileProxyService()
+	NewWebTileHandler := tile_proxy.NewWebTileHandler(config.MainConfig.Download)
 	api3 := r.Group("/network_map")
 	{
 		tileProxyService.RegisterRoutes(api3)
+		NewWebTileHandler.RegisterRoutes(api3)
 		api3.POST("/CreateNetMap", UserController.CreateNetMap)
 		api3.GET("/ListNetMaps", UserController.ListNetMaps)
 		api3.GET("/:id", UserController.GetNetMapByID)
