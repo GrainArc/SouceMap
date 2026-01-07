@@ -4,8 +4,8 @@ gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260 h1:4hcVo6RZnE54728lJ
 gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260/go.mod h1:106ArxZjGFbxAHJHDlMXPF6Bnp3AWYwqSvK/xquFstc=
 gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93 h1:Aq5znH5v9quy6eWspBTHUOH8+CxbraxW15wFpc/wkIk=
 gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93/go.mod h1:Y3q9DdGSKANzWBiCBwpKvDE2f2B59E667lsLiJaVNDg=
-github.com/GrainArc/Gogeo v1.4.16 h1:5KJmaDNkHukupILgOOJKbSizIUscoIUJ4Wj5+9gHV0M=
-github.com/GrainArc/Gogeo v1.4.16/go.mod h1:XNK6GLvQI21eXP3WODVUoO9S3aPbgPil/YsUwuV227U=
+github.com/GrainArc/Gogeo v1.5.1 h1:rhk+yACNYQgdkWD2cAIF56dUGFjlJjhnSInaonsDsSk=
+github.com/GrainArc/Gogeo v1.5.1/go.mod h1:XNK6GLvQI21eXP3WODVUoO9S3aPbgPil/YsUwuV227U=
 github.com/adrg/strutil v0.1.0/go.mod h1:pXRr2+IyX5AEPAF5icj/EeTaiflPSD2hvGjnguilZgE=
 github.com/adrg/sysfont v0.1.1/go.mod h1:19nTHzfIn/HbngFMet+yNAvwSQYtOJYMI7vWexLWyNw=
 github.com/adrg/xdg v0.2.1/go.mod h1:ZuOshBmzV4Ta+s23hdfFZnBsdzmoR3US0d7ErpqSbTQ=
@@ -70,8 +70,8 @@ github.com/google/go-cmp v0.7.0/go.mod h1:pXiqmnSA92OHEEa9HXL2W4E7lf9JzCmGVUdgjX
 github.com/google/gofuzz v1.0.0/go.mod h1:dBl0BpW6vV/+mYPU4Po3pmUjxk6FQPldtuIdl/M65Eg=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aNNg=
-github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
+github.com/gorilla/websocket v1.5.1 h1:gmztn0JnHVt9JZquRuzLw3g4wouNVzKL15iLr/zn/QY=
+github.com/gorilla/websocket v1.5.1/go.mod h1:x3kM2JMyaluk02fnUJpQuwD2dCS5NDG2ZHL0uE0tcaY=
 github.com/jackc/pgpassfile v1.0.0 h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
 github.com/jackc/pgpassfile v1.0.0/go.mod h1:CEx0iS5ambNFdcRtxPj5JhEz+xB6uRky5eyVu/W2HEg=
 github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=

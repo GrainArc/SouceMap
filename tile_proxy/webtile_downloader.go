@@ -438,6 +438,38 @@ func (d *WebTileDownloader) handleSession(session *DownloadSession) {
 	}
 }
 
+type WebMercatorBounds struct {
+	MinX float64
+	MinY float64
+	MaxX float64
+	MaxY float64
+}
+
+// GetTileBoundsWebMercator 获取瓦片的 Web Mercator 边界
+func GetTileBoundsWebMercator(z, x, y int) WebMercatorBounds {
+	n := math.Pow(2, float64(z))
+
+	// Web Mercator 范围
+	const earthRadius = 6378137.0
+	const maxExtent = math.Pi * earthRadius // 20037508.342789244
+
+	tileSize := (2 * maxExtent) / n
+
+	minX := -maxExtent + float64(x)*tileSize
+	maxX := minX + tileSize
+
+	// Y轴在Web Mercator中是反向的（TMS标准）
+	maxY := maxExtent - float64(y)*tileSize
+	minY := maxY - tileSize
+
+	return WebMercatorBounds{
+		MinX: minX,
+		MinY: minY,
+		MaxX: maxX,
+		MaxY: maxY,
+	}
+}
+
 // executeDownload 执行下载任务
 func (d *WebTileDownloader) executeDownload(session *DownloadSession) {
 	task := session.task

@@ -5,13 +5,13 @@ go 1.24.2
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93
-	github.com/GrainArc/Gogeo v1.4.16
+	github.com/GrainArc/Gogeo v1.5.1
 	github.com/axgle/mahonia v0.0.0-20180208002826-3358181d7394
 	github.com/chai2010/webp v1.4.0
 	github.com/gin-gonic/gin v1.11.0
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
+	github.com/gorilla/websocket v1.5.1
 	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/mholt/archiver/v3 v3.5.1
 	github.com/mozillazg/go-pinyin v0.21.0
