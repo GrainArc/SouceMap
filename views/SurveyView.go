@@ -742,13 +742,15 @@ FROM intersecting_areas;
 	}
 
 	if err := DB.Raw(sql).Scan(&result).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(200, gin.H{
+			"code":  400,
+			"error": err.Error()})
 		return
 	}
 	feature := geojson.NewFeatureCollection()
 	json.Unmarshal(result.GeoJSON, &feature)
 	if len(feature.Features) == 0 {
-		c.JSON(400, "no data")
+		c.JSON(200, gin.H{"code": 400, "error": "No features found"})
 	}
 	c.JSON(http.StatusOK, feature)
 }
@@ -1306,7 +1308,7 @@ func (uc *UserController) DownloadTempGeo(c *gin.Context) {
 	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
 	outDir := filepath.Join("OutFile", bsm)
 	filePath_shp := filepath.Join(outDir, mytable[0].Name+"shp矢量.zip") //  例如  "output.zip"
-	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")      //  例如  "output.zip"
+	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")        //  例如  "output.zip"
 	//  将解码后的数据写入到文件
 	absolutePath_shp, _ := filepath.Abs(filePath_shp)
 	err := os.WriteFile(absolutePath_shp, decodedBytes, 0666)
