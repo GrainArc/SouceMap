@@ -548,38 +548,6 @@ func buildFullMainPath(originalMain string, gdbFileName string, layerMeta *Gogeo
 	return basePath
 }
 
-// ConvertGDBLayerToPGDirectWithMeta 带元数据的图层转换函数
-func ConvertGDBLayerToPGDirectWithMeta(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName string, layerMeta *Gogeo.GDBLayerMetaData) []ProcessedFieldInfo {
-	if len(layer.FeatureData) == 0 {
-		log.Printf("图层 %s 没有要素数据", layer.LayerName)
-		return nil
-	}
-	// 处理字段信息，转换字段名，传入图层元数据用于获取字段别名
-	processedFields := processFieldInfosWithMeta(layer.FieldInfos, tableName, layerMeta)
-	// 检查表是否存在
-	var validFields map[string]string
-	if tableExists(DB, tableName) {
-		// 获取数据库表的现有字段
-		existingFields := getTableColumns2(DB, tableName)
-		// 只保留匹配的字段
-		validFields = filterMatchingFieldsDirect(processedFields, existingFields)
-		log.Printf("表 %s 已存在，匹配到 %d 个字段", tableName, len(validFields))
-	} else {
-		// 表不存在，创建新表
-		validFields = make(map[string]string)
-		for _, field := range processedFields {
-			validFields[field.ProcessedName] = field.DBType
-		}
-		createGDBTableDirect(DB, tableName, validFields, layer.GeoType)
-		log.Printf("创建新表 %s，包含 %d 个字段", tableName, len(validFields))
-	}
-	// 直接写入数据
-	writeGDBDataToDBDirect(layer.FeatureData, DB, tableName, validFields, processedFields)
-	log.Printf("成功导入图层 %s 到表 %s，共 %d 条记录",
-		layer.LayerName, tableName, len(layer.FeatureData))
-	return processedFields
-}
-
 // processFieldInfosWithMeta 处理字段信息，支持从元数据获取字段别名
 func processFieldInfosWithMeta(fieldInfos []Gogeo.FieldInfo, tableName string, layerMeta *Gogeo.GDBLayerMetaData) []ProcessedFieldInfo {
 	var processedFields []ProcessedFieldInfo
@@ -790,133 +758,636 @@ func createGDBTableDirect(DB *gorm.DB, tableName string, fields map[string]strin
 	}
 }
 
-// 直接将GDB数据写入数据库
+// GeometryTypeCategory 几何类型分类
+type GeometryTypeCategory int
+
+const (
+	GeomCategoryUnknown GeometryTypeCategory = iota
+	GeomCategoryPoint
+	GeomCategoryLine
+	GeomCategoryPolygon
+)
+
+// GeometryConversionResult 几何转换结果
+type GeometryConversionResult struct {
+	ConvertedWKBHex string
+	Success         bool
+	ErrorMsg        string
+	WasConverted    bool // 是否进行了转换
+}
+
+// getGeometryCategory 获取几何类型分类
+func getGeometryCategory(geoType string) GeometryTypeCategory {
+	geoType = strings.ToUpper(geoType)
+
+	switch {
+	case strings.Contains(geoType, "POINT"):
+		return GeomCategoryPoint
+	case strings.Contains(geoType, "LINE") ||
+		strings.Contains(geoType, "CURVE") && !strings.Contains(geoType, "POLYGON"):
+		return GeomCategoryLine
+	case strings.Contains(geoType, "POLYGON") ||
+		strings.Contains(geoType, "SURFACE"): // 关键：SURFACE 类型归类为 Polygon
+		return GeomCategoryPolygon
+	default:
+		return GeomCategoryUnknown
+	}
+}
+
+// getTargetGeometryType 根据分类获取目标几何类型
+func getTargetGeometryType(category GeometryTypeCategory, isMulti bool) string {
+	switch category {
+	case GeomCategoryPoint:
+		if isMulti {
+			return "MultiPoint"
+		}
+		return "Point"
+	case GeomCategoryLine:
+		if isMulti {
+			return "MultiLineString"
+		}
+		return "LineString"
+	case GeomCategoryPolygon:
+		if isMulti {
+			return "MultiPolygon"
+		}
+		return "Polygon"
+	default:
+		return ""
+	}
+}
+
+// buildGeometryConversionSQL 构建几何转换SQL表达式 - 简化可靠版
+func buildGeometryConversionSQL(wkbHex string, targetGeoType string) clause.Expr {
+	targetGeoType = strings.ToUpper(targetGeoType)
+
+	var sql string
+
+	switch targetGeoType {
+	case "POINT":
+		sql = `ST_PointOnSurface(ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)))`
+
+	case "MULTIPOINT":
+		sql = `ST_Multi(ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)))::geometry(MultiPoint, 4326)`
+
+	case "LINESTRING":
+		sql = `ST_GeometryN(ST_Multi(ST_CurveToLine(ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)))), 1)`
+
+	case "MULTILINESTRING":
+		sql = `ST_Multi(ST_CurveToLine(ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))))::geometry(MultiLineString, 4326)`
+
+	case "POLYGON":
+		sql = `ST_GeometryN(
+			ST_Multi(
+				ST_MakeValid(
+					ST_CurveToLine(
+						ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))
+					)
+				)
+			), 
+			1
+		)`
+
+	case "MULTIPOLYGON":
+		// 关键：使用 ST_MakeValid 确保几何有效，然后强制转换类型
+		sql = `ST_Multi(
+			ST_MakeValid(
+				ST_CurveToLine(
+					ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))
+				)
+			)
+		)::geometry(MultiPolygon, 4326)`
+
+	default:
+		sql = `ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))`
+	}
+
+	return clause.Expr{
+		SQL:  sql,
+		Vars: []interface{}{wkbHex},
+	}
+}
+
+// buildSimpleGeometrySQL 构建简单的几何SQL（用于已知类型匹配的情况）
+func buildSimpleGeometrySQL(wkbHex string, targetGeoType string) clause.Expr {
+	targetGeoType = strings.ToLower(targetGeoType)
+	isMultiTarget := strings.Contains(targetGeoType, "multi")
+
+	var sql string
+	if isMultiTarget {
+		// 对于Multi类型目标，确保结果是Multi
+		sql = `ST_Multi(ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326)))`
+	} else {
+		sql = `ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))`
+	}
+
+	return clause.Expr{
+		SQL:  sql,
+		Vars: []interface{}{wkbHex},
+	}
+}
+
+// preCheckGeometryType 预检测几何类型（批量检测以提高性能）
+func preCheckGeometryType(DB *gorm.DB, wkbHex string) (string, error) {
+	var result struct {
+		GeomType string
+	}
+
+	err := DB.Raw(`
+		SELECT GeometryType(ST_GeomFromWKB(decode(?, 'hex'))) as geom_type
+	`, wkbHex).Scan(&result).Error
+
+	if err != nil {
+		return "", err
+	}
+
+	return result.GeomType, nil
+}
+
+// batchPreCheckGeometryTypes 批量预检测几何类型
+func batchPreCheckGeometryTypes(DB *gorm.DB, wkbHexList []string) (map[string]string, error) {
+	result := make(map[string]string)
+
+	if len(wkbHexList) == 0 {
+		return result, nil
+	}
+
+	// 使用UNION ALL批量查询，每批最多100个
+	const checkBatchSize = 100
+
+	for i := 0; i < len(wkbHexList); i += checkBatchSize {
+		end := i + checkBatchSize
+		if end > len(wkbHexList) {
+			end = len(wkbHexList)
+		}
+
+		batch := wkbHexList[i:end]
+
+		// 构建批量查询
+		var queryParts []string
+		var args []interface{}
+
+		for idx, wkb := range batch {
+			queryParts = append(queryParts, fmt.Sprintf(
+				"SELECT %d as idx, ? as wkb, GeometryType(ST_GeomFromWKB(decode(?, 'hex'))) as geom_type",
+				i+idx,
+			))
+			args = append(args, wkb, wkb)
+		}
+
+		query := strings.Join(queryParts, " UNION ALL ")
+
+		var rows []struct {
+			Idx      int
+			Wkb      string
+			GeomType string
+		}
+
+		if err := DB.Raw(query, args...).Scan(&rows).Error; err != nil {
+			// 如果批量查询失败，回退到单个查询
+			for _, wkb := range batch {
+				geomType, err := preCheckGeometryType(DB, wkb)
+				if err == nil {
+					result[wkb] = geomType
+				}
+			}
+			continue
+		}
+
+		for _, row := range rows {
+			result[row.Wkb] = row.GeomType
+		}
+	}
+
+	return result, nil
+}
+
+// isGeometryTypeCompatible 检查几何类型是否兼容
+func isGeometryTypeCompatible(sourceType, targetType string) bool {
+	sourceCategory := getGeometryCategory(sourceType)
+	targetCategory := getGeometryCategory(targetType)
+
+	// 同类型兼容
+	if sourceCategory == targetCategory {
+		return true
+	}
+
+	// GeometryCollection可能包含任何类型
+	if strings.ToUpper(sourceType) == "GEOMETRYCOLLECTION" {
+		return true // 需要进一步检查是否包含目标类型
+	}
+
+	return false
+}
+
+// needsConversion 检查是否需要转换
+func needsConversion(sourceType, targetType string) bool {
+	sourceType = strings.ToUpper(sourceType)
+	targetType = strings.ToUpper(targetType)
+
+	// 完全匹配不需要转换
+	if sourceType == targetType {
+		return false
+	}
+
+	// Multi和非Multi之间需要转换
+	// Surface类型需要转换为Polygon
+	// Curve类型需要转换为Line
+
+	return true
+}
+
+// FeatureWriteResult 要素写入结果
+type FeatureWriteResult struct {
+	TotalCount      int64
+	SuccessCount    int64
+	ConvertedCount  int64
+	SkippedCount    int64
+	ErrorCount      int64
+	SkippedFeatures []SkippedFeatureInfo
+}
+
+// SkippedFeatureInfo 跳过的要素信息
+type SkippedFeatureInfo struct {
+	Index      int
+	SourceType string
+	TargetType string
+	Reason     string
+}
+
+// FailedFeature 失败的要素信息
+type FailedFeature struct {
+	Record   map[string]interface{}
+	WKBHex   string
+	ErrorMsg string
+	Index    int
+}
+
 func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableName string,
-	validFields map[string]string, processedFields []ProcessedFieldInfo) {
-
-	const batchSize = 1000
-	const workerCount = 8
-
-	// 动态计算安全的批次大小（考虑参数限制）
-	fieldCount := len(validFields) + 1 // +1 for geom field
+	validFields map[string]string, processedFields []ProcessedFieldInfo, targetGeoType string) *FeatureWriteResult {
+	result := &FeatureWriteResult{}
+	const batchSize = 500
+	const workerCount = 4
+	// 动态计算安全的批次大小
+	fieldCount := len(validFields) + 1
 	maxSafeBatchSize := calculateSafeBatchSize(fieldCount)
 	actualBatchSize := min(batchSize, maxSafeBatchSize)
-
 	// 创建字段映射表
-	fieldMap := make(map[string]string) // originalName -> processedName
+	fieldMap := make(map[string]string)
 	for _, field := range processedFields {
 		fieldMap[field.OriginalName] = field.ProcessedName
 	}
-
-	// 创建通道用于批量处理
-	recordChan := make(chan []map[string]interface{}, workerCount*2) // 增加缓冲
+	// 标准化目标几何类型
+	normalizedTargetGeoType := strings.ToUpper(targetGeoType)
+	log.Printf("目标表 %s 几何类型: %s", tableName, normalizedTargetGeoType)
+	// 收集失败的要素
+	var failedFeaturesMu sync.Mutex
+	var failedFeatures []FailedFeature
+	// 创建通道
+	type BatchItem struct {
+		Records []map[string]interface{}
+		WKBHexs []string // 保存原始WKB用于失败重试
+		Indices []int    // 保存原始索引
+	}
+	recordChan := make(chan BatchItem, workerCount*2)
 	var wg sync.WaitGroup
-	var insertErrors int64 // 用于统计错误
-
-	// 启动工作协程 - 使用CreateInBatches
+	var successCount, errorCount int64
+	// 启动工作协程
 	for i := 0; i < workerCount; i++ {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			localBatchSize := actualBatchSize / 2 // 进一步细分批次
-
-			for batch := range recordChan {
-				// 使用事务和CreateInBatches确保数据一致性和避免参数限制
+			for batchItem := range recordChan {
+				batch := batchItem.Records
+				wkbHexs := batchItem.WKBHexs
+				indices := batchItem.Indices
+				// 使用事务处理批量插入
 				err := DB.Transaction(func(tx *gorm.DB) error {
-					return tx.Table(tableName).CreateInBatches(batch, localBatchSize).Error
+					if err := tx.Table(tableName).CreateInBatches(batch, actualBatchSize/2).Error; err != nil {
+						return err
+					}
+					return nil
 				})
-
 				if err != nil {
-					atomic.AddInt64(&insertErrors, 1)
-					log.Printf("Worker %d - Error inserting batch of %d records: %v",
-						workerID, len(batch), err)
-
-					// 如果批量插入失败，尝试单条插入以找出问题记录
-					if len(batch) <= 10 { // 只对小批次尝试单条插入
-						for i, record := range batch {
-							if err := DB.Table(tableName).Create(record).Error; err != nil {
-								log.Printf("Worker %d - Failed to insert record %d: %v",
-									workerID, i, err)
+					// 批量插入失败，尝试单条插入
+					log.Printf("Worker %d - 批量插入失败，尝试单条插入: %v", workerID, err)
+					for j, record := range batch {
+						if err := DB.Table(tableName).Create(record).Error; err != nil {
+							// 检查是否是几何类型不匹配错误
+							if strings.Contains(err.Error(), "Geometry type") ||
+								strings.Contains(err.Error(), "geometry") {
+								// 收集失败的要素，稍后进行转换重试
+								failedFeaturesMu.Lock()
+								failedFeatures = append(failedFeatures, FailedFeature{
+									Record:   record,
+									WKBHex:   wkbHexs[j],
+									ErrorMsg: err.Error(),
+									Index:    indices[j],
+								})
+								failedFeaturesMu.Unlock()
+							} else {
+								// 其他错误直接计入错误数
+								atomic.AddInt64(&errorCount, 1)
+								log.Printf("Worker %d - 插入失败: %v", workerID, err)
 							}
+						} else {
+							atomic.AddInt64(&successCount, 1)
 						}
+					}
+				} else {
+					atomic.AddInt64(&successCount, int64(len(batch)))
+				}
+			}
+		}(i)
+	}
+	// 处理数据
+	go func() {
+		defer close(recordChan)
+		var batch []map[string]interface{}
+		var wkbHexs []string
+		var indices []int
+		skippedCount := 0
+		var skippedFeatures []SkippedFeatureInfo
+		for idx, feature := range featureData {
+			if feature.WKBHex == "" {
+				skippedCount++
+				skippedFeatures = append(skippedFeatures, SkippedFeatureInfo{
+					Index:  idx,
+					Reason: "无几何数据",
+				})
+				continue
+			}
+			record := make(map[string]interface{})
+			// 处理属性数据
+			for originalName, value := range feature.Properties {
+				if originalName == "id" || originalName == "ID" {
+					continue
+				}
+				if processedName, exists := fieldMap[originalName]; exists {
+					if targetType, valid := validFields[processedName]; valid {
+						convertedValue := convertValueToTargetType(value, targetType)
+						record[processedName] = convertedValue
+					}
+				}
+			}
+			// 使用简单的几何SQL（原有逻辑）
+			record["geom"] = buildSimpleGeometrySQL(feature.WKBHex, targetGeoType)
+			batch = append(batch, record)
+			wkbHexs = append(wkbHexs, feature.WKBHex)
+			indices = append(indices, idx)
+			// 批量发送
+			if len(batch) >= actualBatchSize {
+				recordChan <- BatchItem{
+					Records: batch,
+					WKBHexs: wkbHexs,
+					Indices: indices,
+				}
+				batch = make([]map[string]interface{}, 0, actualBatchSize)
+				wkbHexs = make([]string, 0, actualBatchSize)
+				indices = make([]int, 0, actualBatchSize)
+			}
+		}
+		// 发送剩余记录
+		if len(batch) > 0 {
+			recordChan <- BatchItem{
+				Records: batch,
+				WKBHexs: wkbHexs,
+				Indices: indices,
+			}
+		}
+		result.SkippedCount = int64(skippedCount)
+		result.SkippedFeatures = skippedFeatures
+		log.Printf("数据处理完成: 总计 %d 条, 跳过 %d 条 (表: %s)",
+			len(featureData), skippedCount, tableName)
+	}()
+	wg.Wait()
+
+	// 第一阶段完成，统计结果
+	firstPassSuccess := successCount
+	firstPassErrors := len(failedFeatures)
+
+	log.Printf("第一阶段完成 [%s]: 成功=%d, 需要转换=%d",
+		tableName, firstPassSuccess, firstPassErrors)
+
+	// 第二阶段：对失败的要素进行几何转换后重试
+	var convertedCount int64
+	if len(failedFeatures) > 0 {
+		log.Printf("开始第二阶段：对 %d 个失败要素进行几何转换重试", len(failedFeatures))
+
+		convertedSuccess, convertedErrors := retryFailedFeaturesWithConversion(
+			DB, tableName, failedFeatures, normalizedTargetGeoType,
+		)
+
+		convertedCount = convertedSuccess
+		atomic.AddInt64(&successCount, convertedSuccess)
+		atomic.AddInt64(&errorCount, convertedErrors)
+
+		log.Printf("第二阶段完成 [%s]: 转换成功=%d, 转换失败=%d",
+			tableName, convertedSuccess, convertedErrors)
+	}
+
+	result.TotalCount = int64(len(featureData))
+	result.SuccessCount = successCount
+	result.ConvertedCount = convertedCount
+	result.ErrorCount = errorCount
+
+	// 输出详细统计
+	log.Printf("导入完成 [%s]: 总计=%d, 成功=%d (直接=%d, 转换=%d), 跳过=%d, 错误=%d",
+		tableName, result.TotalCount, result.SuccessCount,
+		firstPassSuccess, convertedCount, result.SkippedCount, result.ErrorCount)
+
+	if len(result.SkippedFeatures) > 0 && len(result.SkippedFeatures) <= 10 {
+		for _, sf := range result.SkippedFeatures {
+			log.Printf("  跳过要素 #%d: %s (%s -> %s)",
+				sf.Index, sf.Reason, sf.SourceType, sf.TargetType)
+		}
+	} else if len(result.SkippedFeatures) > 10 {
+		log.Printf("  跳过要素过多，仅显示前10条...")
+		for i := 0; i < 10; i++ {
+			sf := result.SkippedFeatures[i]
+			log.Printf("  跳过要素 #%d: %s (%s -> %s)",
+				sf.Index, sf.Reason, sf.SourceType, sf.TargetType)
+		}
+	}
+
+	return result
+}
+
+// retryFailedFeaturesWithConversion 对失败的要素进行几何转换后重试插入
+func retryFailedFeaturesWithConversion(DB *gorm.DB, tableName string, failedFeatures []FailedFeature, targetGeoType string) (successCount int64, errorCount int64) {
+	if len(failedFeatures) == 0 {
+		return 0, 0
+	}
+
+	const retryBatchSize = 100
+	const retryWorkerCount = 2
+
+	// 创建通道
+	retryChan := make(chan []FailedFeature, retryWorkerCount*2)
+	var wg sync.WaitGroup
+	var retrySuccess, retryError int64
+
+	// 启动重试工作协程
+	for i := 0; i < retryWorkerCount; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+
+			for batch := range retryChan {
+				for _, failed := range batch {
+					// 构建使用转换SQL的新记录
+					newRecord := make(map[string]interface{})
+
+					// 复制属性数据（排除geom字段）
+					for k, v := range failed.Record {
+						if k != "geom" {
+							newRecord[k] = v
+						}
+					}
+
+					// 使用转换SQL处理几何
+					newRecord["geom"] = buildGeometryConversionSQL(failed.WKBHex, targetGeoType)
+
+					// 尝试插入
+					if err := DB.Table(tableName).Create(newRecord).Error; err != nil {
+						atomic.AddInt64(&retryError, 1)
+						log.Printf("Worker %d - 转换后插入仍失败 [要素#%d]: %v",
+							workerID, failed.Index, err)
+					} else {
+						atomic.AddInt64(&retrySuccess, 1)
 					}
 				}
 			}
 		}(i)
 	}
 
-	// 处理数据
+	// 分批发送失败的要素
 	go func() {
-		defer close(recordChan)
+		defer close(retryChan)
 
-		var batch []map[string]interface{}
-		recordCount := 0
-		errorCount := 0
-		skippedCount := 0
+		var batch []FailedFeature
+		for _, failed := range failedFeatures {
+			batch = append(batch, failed)
 
-		for _, feature := range featureData {
-			record := make(map[string]interface{})
-
-			// 处理属性数据
-			for originalName, value := range feature.Properties {
-				if originalName == "id" || originalName == "ID" {
-					continue
-				}
-
-				// 获取处理后的字段名
-				if processedName, exists := fieldMap[originalName]; exists {
-					// 只处理有效的字段
-					if targetType, valid := validFields[processedName]; valid {
-						// 根据目标字段类型转换值
-						convertedValue := convertValueToTargetType(value, targetType)
-						record[processedName] = convertedValue
-					}
-				}
-			}
-
-			// 处理几何数据
-			if feature.WKBHex != "" {
-				record["geom"] = clause.Expr{
-					SQL:  "ST_Force2D(ST_SetSRID(ST_GeomFromWKB(decode(?, 'hex')), 4326))",
-					Vars: []interface{}{feature.WKBHex},
-				}
-
-				batch = append(batch, record)
-				recordCount++
-
-				// 批量发送
-				if len(batch) >= actualBatchSize {
-					// 非阻塞发送，避免死锁
-					select {
-					case recordChan <- batch:
-						batch = make([]map[string]interface{}, 0, actualBatchSize) // 重新分配
-					default:
-						log.Printf("Channel full, waiting...")
-						recordChan <- batch
-						batch = make([]map[string]interface{}, 0, actualBatchSize)
-					}
-				}
-			} else {
-				// 记录没有几何数据的要素
-				skippedCount++
+			if len(batch) >= retryBatchSize {
+				retryChan <- batch
+				batch = make([]FailedFeature, 0, retryBatchSize)
 			}
 		}
 
-		// 发送剩余记录
+		// 发送剩余的
 		if len(batch) > 0 {
-			recordChan <- batch
+			retryChan <- batch
 		}
-
-		log.Printf("GDB data processed: %d records inserted, %d skipped (no geometry), %d errors for table %s",
-			recordCount, skippedCount, errorCount, tableName)
 	}()
 
 	wg.Wait()
 
-	// 报告最终统计
-	if insertErrors > 0 {
-		log.Printf("GDB import completed with %d insert errors for table %s", insertErrors, tableName)
+	return retrySuccess, retryError
+}
+
+// ConvertGDBLayerToPGDirectWithMeta 优化后的图层转换函数
+func ConvertGDBLayerToPGDirectWithMeta(layer Gogeo.GDBLayerInfo, DB *gorm.DB, tableName string, layerMeta *Gogeo.GDBLayerMetaData) []ProcessedFieldInfo {
+	if len(layer.FeatureData) == 0 {
+		log.Printf("图层 %s 没有要素数据", layer.LayerName)
+		return nil
+	}
+
+	// 处理字段信息
+	processedFields := processFieldInfosWithMeta(layer.FieldInfos, tableName, layerMeta)
+
+	// 检查表是否存在
+	var validFields map[string]string
+	var targetGeoType string
+
+	if tableExists(DB, tableName) {
+		existingFields := getTableColumns2(DB, tableName)
+		validFields = filterMatchingFieldsDirect(processedFields, existingFields)
+
+		// 获取现有表的几何类型
+		targetGeoType = getTableGeometryType(DB, tableName)
+		log.Printf("表 %s 已存在，几何类型: %s，匹配到 %d 个字段",
+			tableName, targetGeoType, len(validFields))
 	} else {
-		log.Printf("GDB import completed successfully for table %s", tableName)
+		validFields = make(map[string]string)
+		for _, field := range processedFields {
+			validFields[field.ProcessedName] = field.DBType
+		}
+
+		// 使用图层的几何类型
+		targetGeoType = normalizeGeoType(layer.GeoType)
+		createGDBTableDirect(DB, tableName, validFields, targetGeoType)
+		log.Printf("创建新表 %s，几何类型: %s，包含 %d 个字段",
+			tableName, targetGeoType, len(validFields))
+	}
+
+	// 使用优化后的写入函数
+	result := writeGDBDataToDBDirect(layer.FeatureData, DB, tableName, validFields, processedFields, targetGeoType)
+
+	log.Printf("图层 %s 导入完成: 成功 %d/%d 条记录",
+		layer.LayerName, result.SuccessCount, result.TotalCount)
+
+	return processedFields
+}
+
+// getTableGeometryType 获取表的几何类型
+func getTableGeometryType(DB *gorm.DB, tableName string) string {
+	var result struct {
+		Type string
+	}
+
+	// 从geometry_columns视图获取几何类型
+	err := DB.Raw(`
+		SELECT type 
+		FROM geometry_columns 
+		WHERE f_table_name = ? AND f_geometry_column = 'geom'
+		LIMIT 1
+	`, tableName).Scan(&result).Error
+
+	if err != nil || result.Type == "" {
+		// 如果查询失败，尝试从实际数据推断
+		err = DB.Raw(`
+			SELECT GeometryType(geom) as type 
+			FROM ` + tableName + ` 
+			WHERE geom IS NOT NULL 
+			LIMIT 1
+		`).Scan(&result).Error
+
+		if err != nil {
+			return "GEOMETRY" // 默认返回通用几何类型
+		}
+	}
+
+	return result.Type
+}
+
+// normalizeGeoType 标准化几何类型名称
+func normalizeGeoType(geoType string) string {
+	geoType = strings.ToUpper(geoType)
+
+	// 处理常见的变体
+	switch {
+	case strings.Contains(geoType, "MULTISURFACE"):
+		return "MULTIPOLYGON"
+	case strings.Contains(geoType, "SURFACE"):
+		return "POLYGON"
+	case strings.Contains(geoType, "MULTICURVE"):
+		return "MULTILINESTRING"
+	case strings.Contains(geoType, "CURVE"):
+		return "LINESTRING"
+	case strings.Contains(geoType, "MULTIPOLYGON"):
+		return "MULTIPOLYGON"
+	case strings.Contains(geoType, "POLYGON"):
+		return "POLYGON"
+	case strings.Contains(geoType, "MULTILINESTRING"):
+		return "MULTILINESTRING"
+	case strings.Contains(geoType, "LINESTRING"):
+		return "LINESTRING"
+	case strings.Contains(geoType, "MULTIPOINT"):
+		return "MULTIPOINT"
+	case strings.Contains(geoType, "POINT"):
+		return "POINT"
+	default:
+		return geoType
 	}
 }
