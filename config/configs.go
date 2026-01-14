@@ -50,13 +50,6 @@ func InitConfig() {
 	// 创建应用配置目录（如果不存在）
 	os.MkdirAll(appDir, 0755)
 	appConfig := filepath.Join(appDir, "config.xml")
-	if _, err := os.Stat(appConfig); os.IsNotExist(err) {
-		file, err := os.Create(appConfig)
-		if err != nil {
-		}
-		defer file.Close()
-
-	}
 
 	xmlFile, err := os.Open(appConfig)
 	if err != nil {
