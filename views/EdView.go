@@ -565,7 +565,9 @@ func DownloadSearchGeo(SD searchData) string {
 	var Schema models.MySchema
 	DB.Where("en = ?", SD.TableName).First(&Schema)
 	taskid := Schema.EN
-	existingZipPath := "OutFile/" + taskid + "/" + SD.TableName + ".zip"
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	existingZipPath := OutFilePath + "/" + taskid + "/" + SD.TableName + ".zip"
 	if _, err := os.Stat(existingZipPath); err == nil {
 		// 文件存在，直接返回路径
 		return existingZipPath
@@ -573,15 +575,15 @@ func DownloadSearchGeo(SD searchData) string {
 
 	result, _ := queryTable(DB, SD)
 
-	outdir := "OutFile/" + taskid
+	outdir := filepath.Join(OutFilePath, taskid)
 	os.MkdirAll(outdir, os.ModePerm)
-	outshp := "OutFile/" + taskid + "/" + Schema.CN + ".shp"
+	outshp := outdir + "/" + Schema.CN + ".shp"
 
 	// 直接从查询结果转换为Shapefile
 	Gogeo.ConvertPostGISToShapefileWithStructure(DB, result.Data, outshp, SD.TableName)
 
 	methods.ZipFolder(outdir, SD.TableName)
-	copyFile("./OutFile/"+taskid+"/"+SD.TableName+".zip", config.MainConfig.Download)
+	copyFile(OutFilePath+"/"+taskid+"/"+SD.TableName+".zip", config.MainConfig.Download)
 
 	return "OutFile/" + taskid + "/" + SD.TableName + ".zip"
 }

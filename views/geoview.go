@@ -96,14 +96,18 @@ func (uc *UserController) OutIntersect(c *gin.Context) {
 
 		geo, _ := Transformer.GeoJsonTransformToCGCS(&geo2)
 		bsm := uuid.New().String()
-		os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
+		homeDir, _ := os.UserHomeDir()
+		OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+		os.Mkdir(filepath.Join(OutFilePath, bsm), os.ModePerm)
 		ctime := time.Now().Format("2006-01-02")
-		outDir := filepath.Join("OutFile", bsm)
+
+		outDir := filepath.Join(OutFilePath, bsm)
 		Transformer.ConvertGeoJSONToSHP(geo, filepath.Join(outDir, "矢量.shp"))
 		absolutePath2, _ := filepath.Abs(outDir)
 		doc.SaveToFile(absolutePath2 + "/分析表格.docx")
 		methods.ZipFolder(absolutePath2, ctime+jsonData.Tablename+"分析成果")
-		copyFile("./OutFile/"+bsm+"/"+ctime+jsonData.Tablename+"分析成果"+".zip", config.Download)
+
+		copyFile(OutFilePath+"/"+bsm+"/"+ctime+jsonData.Tablename+"分析成果"+".zip", config.Download)
 		host := c.Request.Host
 		url := &url.URL{
 			Scheme: "http",
@@ -399,8 +403,10 @@ func (uc *UserController) SchemaToExcel(c *gin.Context) {
 	doc, _ := document.Open("./word/空模板.docx")
 	WordGenerator.OutSchema(doc, data)
 	bsm := uuid.New().String()
-	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
-	outDir := filepath.Join("OutFile", bsm)
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	os.Mkdir(filepath.Join(OutFilePath, bsm), os.ModePerm)
+	outDir := filepath.Join(OutFilePath, bsm)
 	absolutePath2, _ := filepath.Abs(outDir)
 	doc.SaveToFile(absolutePath2 + "/图层总表预览.docx")
 	host := c.Request.Host
@@ -516,13 +522,9 @@ func (uc *UserController) AddSchema(c *gin.Context) {
 	DB := models.DB
 	if err == nil {
 		// 创建任务ID和文件路径
-		fmt.Println("进入文件模式", file.Filename, CN, Main)
-		path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
-		if err != nil {
-			c.String(http.StatusInternalServerError, "Failed to create file path: "+err.Error())
-			return
-		}
-
+		cacheDir, _ := os.UserCacheDir() // 返回 ~/.cache
+		appCacheDir := filepath.Join(cacheDir, "BoundlessMap")
+		path := filepath.Join(appCacheDir, taskid, file.Filename)
 		// 确保目录存在
 		dirpath := filepath.Dir(path)
 		if err := os.MkdirAll(dirpath, 0755); err != nil {
@@ -612,15 +614,10 @@ func (uc *UserController) GetGDBMetadata(c *gin.Context) {
 	if err == nil {
 		// 方式1: 文件上传
 		// 创建任务ID和文件路径
-		path, err := filepath.Abs("./TempFile/" + taskid + "/" + file.Filename)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"success": false,
-				"message": "Failed to create file path: " + err.Error(),
-				"data":    nil,
-			})
-			return
-		}
+		cacheDir, _ := os.UserCacheDir() // 返回 ~/.cache
+		appCacheDir := filepath.Join(cacheDir, "BoundlessMap")
+		path := filepath.Join(appCacheDir, taskid, file.Filename)
+
 		// 确保目录存在
 		dirpath := filepath.Dir(path)
 		if err := os.MkdirAll(dirpath, 0755); err != nil {
@@ -1601,8 +1598,8 @@ func (uc *UserController) AutoPolygon(c *gin.Context) {
 }
 
 func (uc *UserController) GetDeviceName(c *gin.Context) {
-	// 读取 XML 文件
-	configPath := "config.xml" // 根据实际路径调整
+	configDir, _ := os.UserConfigDir()
+	configPath := filepath.Join(configDir, "BoundlessMap", "config.xml")
 	xmlFile, err := os.ReadFile(configPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1643,8 +1640,10 @@ func (uc *UserController) GetEncryptedDSN(c *gin.Context) {
 		User       string   `xml:"user"`
 		Password   string   `xml:"password"`
 	}
+	configDir, _ := os.UserConfigDir()
+	appConfig := filepath.Join(configDir, "BoundlessMap", "config.xml")
 
-	data, err := os.ReadFile("./config.xml")
+	data, err := os.ReadFile(appConfig)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1698,8 +1697,9 @@ func (uc *UserController) ChangeDeviceName(c *gin.Context) {
 		})
 		return
 	}
+	configDir, _ := os.UserConfigDir()
+	configPath := filepath.Join(configDir, "BoundlessMap", "config.xml")
 
-	configPath := "config.xml"
 	xmlFile, err := os.ReadFile(configPath)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{

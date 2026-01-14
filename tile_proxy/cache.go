@@ -32,7 +32,8 @@ type MemCacheItem struct {
 // NewTileCache 创建瓦片缓存
 func NewTileCache(maxMemItems int, ttl time.Duration) *TileCache {
 	// 确保缓存目录存在
-	cacheDir := "./cache"
+	homeDir, _ := os.UserHomeDir()
+	cacheDir := filepath.Join(homeDir, "BoundlessMap", "cache")
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		fmt.Printf("Warning: failed to create cache directory: %v\n", err)
 	}

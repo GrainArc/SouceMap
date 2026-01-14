@@ -780,7 +780,9 @@ func DownLayer(tablename string) string {
 	var Schema models.MySchema
 	DB.Where("en = ?", tablename).First(&Schema)
 	taskid := Schema.EN
-	existingZipPath := "OutFile/" + taskid + "/" + tablename + ".zip"
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	existingZipPath := OutFilePath + "/" + taskid + "/" + tablename + ".zip"
 	if _, err := os.Stat(existingZipPath); err == nil {
 		// 文件存在，直接返回路径
 		return existingZipPath
@@ -788,15 +790,16 @@ func DownLayer(tablename string) string {
 
 	result, _ := queryTable(DB, SD)
 
-	outdir := "OutFile/" + taskid
+	outdir := OutFilePath + "/" + taskid
 	os.MkdirAll(outdir, os.ModePerm)
-	outshp := "OutFile/" + taskid + "/" + Schema.CN + ".shp"
+	outshp := OutFilePath + "/" + taskid + "/" + Schema.CN + ".shp"
 
 	// 直接从查询结果转换为Shapefile
 	Gogeo.ConvertPostGISToShapefileWithStructure(DB, result.Data, outshp, tablename)
 
 	methods.ZipFolder(outdir, tablename)
-	copyFile("./OutFile/"+taskid+"/"+tablename+".zip", config.MainConfig.Download)
+
+	copyFile(OutFilePath+"/"+taskid+"/"+tablename+".zip", config.MainConfig.Download)
 
 	return "OutFile/" + taskid + "/" + tablename + ".zip"
 }
@@ -838,7 +841,10 @@ func (uc *UserController) UpdateLayer(c *gin.Context) {
 	VectorPath := c.PostForm("VectorPath")
 	if err == nil {
 		taskid := uuid.New().String()
-		path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
+		cacheDir, _ := os.UserCacheDir() // 返回 ~/.cache
+		appCacheDir := filepath.Join(cacheDir, "BoundlessMap")
+		path := filepath.Join(appCacheDir, taskid, file.Filename)
+
 		dirpath := filepath.Dir(path)
 		err = c.SaveUploadedFile(file, path)
 		if err != nil {
@@ -947,7 +953,9 @@ func (uc *UserController) AppendLayer(c *gin.Context) {
 	VectorPath := c.PostForm("VectorPath")
 	if err == nil {
 		taskid := uuid.New().String()
-		path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
+		cacheDir, _ := os.UserCacheDir() // 返回 ~/.cache
+		appCacheDir := filepath.Join(cacheDir, "BoundlessMap")
+		path := filepath.Join(appCacheDir, taskid, file.Filename)
 		dirpath := filepath.Dir(path)
 		err = c.SaveUploadedFile(file, path)
 		if err != nil {
@@ -1451,19 +1459,32 @@ func ExampleImport(filePath string, ip string) error {
 func (uc *UserController) DownloadOfflineLayer(c *gin.Context) {
 	table := c.Query("tablename")
 	taskid := uuid.New().String()
-	existingZipPath := "OutFile/" + taskid + "/" + table
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	existingZipPath := filepath.Join(OutFilePath, taskid, table)
+
 	outpath, err := ExportTable(table, existingZipPath)
 	if err != nil {
 		c.String(500, "数据无法导出")
+		return // 添加 return，避免继续执行
 	}
+
+	// 将绝对路径转换为相对路径（从 OutFile 开始）
+	relativePath, err := filepath.Rel(OutFilePath, outpath)
+	if err != nil {
+		c.String(500, "路径转换失败")
+		return
+	}
+	// 确保使用正斜杠（用于URL）
+	relativePath = strings.ReplaceAll(relativePath, "\\", "/")
+
 	host := c.Request.Host
-	url := &url.URL{
+	downloadURL := &url.URL{
 		Scheme: "http",
 		Host:   host,
-		Path:   "/geo/" + outpath,
+		Path:   "/geo/OutFile/" + relativePath,
 	}
-	c.String(http.StatusOK, url.String())
-
+	c.String(http.StatusOK, downloadURL.String())
 }
 
 // 数据回复

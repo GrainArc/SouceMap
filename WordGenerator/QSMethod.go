@@ -12,6 +12,8 @@ import (
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/geojson"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -165,7 +167,9 @@ func PICTable(word *document.Document, PICS []models.GeoPic) {
 	Tables := word.Tables()
 	ZTable := Tables[2]
 	Rows := ZTable.Rows()
+	homeDir, _ := os.UserHomeDir()
 
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 	for index, item := range PICS {
 		if index <= 3 {
 			var Cellindex int
@@ -179,7 +183,8 @@ func PICTable(word *document.Document, PICS []models.GeoPic) {
 			cells := Rows[Rowindex].Cells()
 			pp := cells[Cellindex].Paragraphs()
 			run := pp[0].AddRun()
-			img1, _ := common.ImageFromFile("./PIC/" + item.TBID + "/" + item.Pic_bsm + ".jpg")
+
+			img1, _ := common.ImageFromFile(PICPath + "/" + item.TBID + "/" + item.Pic_bsm + ".jpg")
 			pic, _ := word.AddImage(img1)
 			anchored, _ := run.AddDrawingInline(pic)
 			ow := img1.Size.X
@@ -195,7 +200,7 @@ func PICTable(word *document.Document, PICS []models.GeoPic) {
 				pp := cell1.AddParagraph()
 				pp.Properties().SetAlignment(wml.ST_JcCenter)
 				run := pp.AddRun()
-				img1, _ := common.ImageFromFile("./PIC/" + item.TBID + "/" + item.Pic_bsm + ".jpg")
+				img1, _ := common.ImageFromFile(PICPath + "/" + item.TBID + "/" + item.Pic_bsm + ".jpg")
 				pic, _ := word.AddImage(img1)
 				anchored, _ := run.AddDrawingInline(pic)
 				ow := img1.Size.X
@@ -209,7 +214,7 @@ func PICTable(word *document.Document, PICS []models.GeoPic) {
 				pp = cell2.AddParagraph()
 				pp.Properties().SetAlignment(wml.ST_JcCenter)
 				run = pp.AddRun()
-				img1, _ = common.ImageFromFile("./PIC/" + item.TBID + "/" + PICS[index+1].Pic_bsm + ".jpg")
+				img1, _ = common.ImageFromFile(PICPath + "/" + item.TBID + "/" + PICS[index+1].Pic_bsm + ".jpg")
 				pic, _ = word.AddImage(img1)
 				anchored, _ = run.AddDrawingInline(pic)
 				ow = img1.Size.X

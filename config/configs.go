@@ -3,7 +3,9 @@ package config
 import (
 	"encoding/xml"
 	"fmt"
+	"log"
 	"os"
+	"path/filepath"
 )
 
 // 10.0.4.10:8426 124.220.233.230:8426
@@ -39,8 +41,24 @@ type Config struct {
 }
 
 func InitConfig() {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		log.Fatal("无法获取用户配置目录:", err)
+	}
 
-	xmlFile, err := os.Open("config.xml")
+	appDir := filepath.Join(configDir, "BoundlessMap")
+	// 创建应用配置目录（如果不存在）
+	os.MkdirAll(appDir, 0755)
+	appConfig := filepath.Join(appDir, "config.xml")
+	if _, err := os.Stat(appConfig); os.IsNotExist(err) {
+		file, err := os.Create(appConfig)
+		if err != nil {
+		}
+		defer file.Close()
+
+	}
+
+	xmlFile, err := os.Open(appConfig)
 	if err != nil {
 		fmt.Println("Error  opening  file:", err)
 		return

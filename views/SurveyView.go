@@ -51,7 +51,9 @@ func (uc *UserController) InTempLayer(c *gin.Context) {
 
 	// 处理文件上传
 	if err == nil {
-		path, _ := filepath.Abs("./TempFile/" + taskid + "/" + "/" + file.Filename)
+		cacheDir, _ := os.UserCacheDir() // 返回 ~/.cache
+		appCacheDir := filepath.Join(cacheDir, "BoundlessMap")
+		path, _ := filepath.Abs(appCacheDir + "/" + taskid + "/" + "/" + file.Filename)
 		dirpath := filepath.Dir(path)
 		err = c.SaveUploadedFile(file, path)
 		if err != nil {
@@ -881,7 +883,9 @@ func (uc *UserController) PicUpload(c *gin.Context) {
 		c.String(400, "Bad request")
 		return
 	}
-	path, _ := filepath.Abs("./PIC/" + TBID + "/" + picbsm + ".jpg")
+	homeDir, _ := os.UserHomeDir()
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
+	path, _ := filepath.Abs(PICPath + "/" + TBID + "/" + picbsm + ".jpg")
 	host := c.Request.Host
 	url2 := &url.URL{
 		Scheme: "http",
@@ -967,9 +971,11 @@ func (uc *UserController) PicDel(c *gin.Context) {
 		return
 	}
 	var picBs []string
+	homeDir, _ := os.UserHomeDir()
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 	for _, record := range mytable {
 		picBs = append(picBs, record.Pic_bsm)
-		outDir := filepath.Join("PIC", record.TBID, record.Pic_bsm+".jpg")
+		outDir := filepath.Join(PICPath, record.TBID, record.Pic_bsm+".jpg")
 		os.Remove(outDir)
 	}
 	DB.Where("pic_bsm IN (?)", picBs).Delete(&models.GeoPic{})
@@ -1095,16 +1101,16 @@ func (uc *UserController) DelTempGeo(c *gin.Context) {
 		c.JSON(http.StatusNotFound, "Record  not  found")
 		return
 	}
+	homeDir, _ := os.UserHomeDir()
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 	for _, record := range mytable {
 		DB.Where("tb_id  =  ?", record.TBID).Delete(&models.TempLayerAttribute{})
 		DB.Where("tb_id  =  ?", record.TBID).Delete(&models.GeoPic{})
 		DB.Where("tb_id  =  ?", record.TBID).Delete(&models.ZDTPic{})
 		DB.Delete(&record)
-		outDir := filepath.Join("PIC", record.TBID)
-		outDir2 := filepath.Join("ZDT", record.TBID+".jpg")
+		outDir := filepath.Join(PICPath, record.TBID)
 		if _, err := os.Stat(outDir); err == nil {
 			os.RemoveAll(outDir)
-			os.Remove(outDir2)
 		}
 	}
 	c.JSON(http.StatusOK, "OK")
@@ -1145,13 +1151,13 @@ func (uc *UserController) DelTempLayer(c *gin.Context) {
 	var maindata []models.TempLayer
 	DB.Where("bsm = ?", bsm).Find(&maindata)
 	var tempLayerAttributeIDs []string
+	homeDir, _ := os.UserHomeDir()
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 	for _, item := range maindata {
 		tempLayerAttributeIDs = append(tempLayerAttributeIDs, item.TBID)
-		outDir := filepath.Join("PIC", item.TBID)
-		outDir2 := filepath.Join("ZDT", item.TBID+".jpg")
+		outDir := filepath.Join(PICPath, item.TBID)
 		if _, err := os.Stat(outDir); err == nil {
 			os.RemoveAll(outDir)
-			os.Remove(outDir2)
 		}
 	}
 	// 检查TempLayer里是否有记录存在
@@ -1211,12 +1217,14 @@ func QSBG(bsm string, outDir string, mygeojson *geojson.FeatureCollection) {
 	doc, _ := document.Open("./word/权属说明.docx")
 	defer doc.Close()
 	//完善表1
+	homeDir, _ := os.UserHomeDir()
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 	//查询截图
 	var ZD *models.ZDTPic
 	DB.Where("tb_id = ? ", bsm).Find(&ZD)
 	var ZDPIC *string
 	if ZD != nil {
-		bb := "./ZDT/" + bsm + ".jpg"
+		bb := PICPath + "/" + bsm + ".jpg"
 		ZDPIC = &bb
 	}
 	//查询其他信息
@@ -1232,134 +1240,16 @@ func QSBG(bsm string, outDir string, mygeojson *geojson.FeatureCollection) {
 	//查询照片
 	var pics []models.GeoPic
 	DB.Where("tb_id = ? ", bsm).Find(&pics)
+
 	if len(pics) >= 1 {
 		WordGenerator.PICTable(doc, pics)
 		for _, item := range pics {
-			copyFile("./PIC/"+item.TBID+"/"+item.Pic_bsm+".jpg", outDir+"/现状照片")
+			copyFile(PICPath+"/"+item.TBID+"/"+item.Pic_bsm+".jpg", outDir+"/现状照片")
 		}
 	}
 
 	//输出word
 	doc.SaveToFile(outDir + "/权属调查报告.docx")
-}
-func (uc *UserController) DownloadTempGeo(c *gin.Context) {
-
-	var jsonData map[string]interface{}
-	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		// 处理JSON数据绑定错误
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	bsm := jsonData["TBID"].(string)
-	base64String_shp := jsonData["shp"].(string)
-
-	var mytable []models.TempGeo
-	var mytable2 []models.TempLayer
-	DB := models.DB
-	DB.Where("tb_id = ?", bsm).Find(&mytable)
-	var data []*geojson.Feature
-	if len(mytable) >= 1 {
-		for _, item := range mytable {
-			var featureCollection struct {
-				Features []*geojson.Feature `json:"features"`
-			}
-			json.Unmarshal(item.Geojson, &featureCollection)
-			featureCollection.Features[0].Properties["zt"] = item.ZT
-			featureCollection.Features[0].Properties["TBID"] = item.TBID
-			data = append(data, featureCollection.Features...)
-		}
-	} else {
-		DB.Where("tb_id = ? ", bsm).Find(&mytable2)
-		for _, item := range mytable2 {
-			var featureCollection struct {
-				Features []*geojson.Feature `json:"features"`
-			}
-
-			error := json.Unmarshal(item.Geojson, &featureCollection)
-			if error == nil {
-				featureCollection.Features[0].ID = item.ID
-				featureCollection.Features[0].Properties["zt"] = item.ZT
-				featureCollection.Features[0].Properties["TBID"] = item.TBID
-				data = append(data, featureCollection.Features...)
-			} else {
-				str, _ := hex.DecodeString(string(item.Geojson))
-				finalDecodedString := string(str)
-				json.Unmarshal([]byte(finalDecodedString), &featureCollection)
-				featureCollection.Features[0].ID = item.ID
-				featureCollection.Features[0].Properties["zt"] = item.ZT
-				featureCollection.Features[0].Properties["TBID"] = item.TBID
-				data = append(data, featureCollection.Features...)
-			}
-		}
-		//图层查询
-
-	}
-	mygeojson := geojson.NewFeatureCollection()
-	mygeojson.Features = data
-	featureCollection := geojson.NewFeatureCollection()
-	jsonBytes, _ := json.Marshal(mygeojson)
-	json.Unmarshal(jsonBytes, &featureCollection)
-
-	//  将Base64字符串解码成原始二进制数据
-	decodedBytes, _ := base64.StdEncoding.DecodeString(base64String_shp)
-
-	//  定义你想要保存的文件的路径和名字
-	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
-	outDir := filepath.Join("OutFile", bsm)
-	filePath_shp := filepath.Join(outDir, mytable[0].Name+"shp矢量.zip") //  例如  "output.zip"
-	filePath_dxf := filepath.Join(outDir, mytable[0].Name+".dxf")        //  例如  "output.zip"
-	//  将解码后的数据写入到文件
-	absolutePath_shp, _ := filepath.Abs(filePath_shp)
-	err := os.WriteFile(absolutePath_shp, decodedBytes, 0666)
-	if err != nil {
-		c.String(http.StatusOK, "err")
-		return
-	}
-	methods.ConvertGeoJSONToDXF(*featureCollection, filePath_dxf)
-	//制作报告
-	QSBG(bsm, outDir, mygeojson)
-	//压缩全部文件
-	absolutePath2, _ := filepath.Abs(outDir)
-	methods.ZipFolder(absolutePath2, mytable[0].Name)
-	copyFile("./OutFile/"+bsm+"/"+mytable[0].Name+".zip", config.Download)
-
-	c.String(http.StatusOK, "/OutFile/"+bsm+"/"+mytable[0].Name+".zip")
-
-}
-
-// 数据批量导出
-func (uc *UserController) DownloadTempGeoALL(c *gin.Context) {
-	var jsonData map[string]interface{}
-	c.BindJSON(&jsonData)
-	data := GetTempGeoList(jsonData)
-	//  定义你想要保存的文件的路径和名字
-	bsm := uuid.New().String()
-	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
-	ctime := time.Now().Format("2006-01-02")
-	outDir := filepath.Join("OutFile", bsm)
-	Transformer.ConvertGeoJSONToSHP(&data, filepath.Join(outDir, "矢量.shp"))
-	//照片打包
-	DB := models.DB
-	query := DB.Model(&models.TempGeo{})
-	mytable := methods.TempDataSearch(query, jsonData)
-	for _, items := range mytable {
-		var pics []models.GeoPic
-		DB.Where("tb_id = ? ", items.TBID).Find(&pics)
-		if len(pics) >= 1 {
-			Transformer.ConvertPointToArrow(pics, filepath.Join(outDir, "方位角.shp"))
-			for _, item := range pics {
-				copyFile("./PIC/"+item.TBID+"/"+item.Pic_bsm+".jpg", outDir+"/现状照片/"+items.Name)
-			}
-		}
-
-	}
-
-	absolutePath2, _ := filepath.Abs(outDir)
-	methods.ZipFolder(absolutePath2, ctime+"调查成果")
-	copyFile("./OutFile/"+bsm+"/"+ctime+"调查成果"+".zip", config.Download)
-
-	c.String(http.StatusOK, "/OutFile/"+bsm+"/"+ctime+"调查成果"+".zip")
 }
 
 // 图层数据导出
@@ -1392,9 +1282,11 @@ func (uc *UserController) DownloadTempLayer(c *gin.Context) {
 	features.Features = data
 	//  定义你想要保存的文件的路径和名字
 	bsm := uuid.New().String()
-	os.Mkdir(filepath.Join("OutFile", bsm), os.ModePerm)
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	os.Mkdir(filepath.Join(OutFilePath, bsm), os.ModePerm)
 	ctime := time.Now().Format("2006-01-02")
-	outDir := filepath.Join("OutFile", bsm)
+	outDir := filepath.Join(OutFilePath, bsm)
 	Transformer.ConvertGeoJSONToSHP(features, filepath.Join(outDir, "矢量.shp"))
 
 	for _, items := range mytable {
@@ -1411,10 +1303,11 @@ func (uc *UserController) DownloadTempLayer(c *gin.Context) {
 
 		var pics []models.GeoPic
 		DB.Where("tb_id = ? ", items.TBID).Find(&pics)
+		PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 		if len(pics) >= 1 {
 			Transformer.ConvertPointToArrow(pics, filepath.Join(outDir, "方位角.shp"))
 			for _, item := range pics {
-				copyFile("./PIC/"+item.TBID+"/"+item.Pic_bsm+".jpg", outDir+"/现状照片/"+items.Name)
+				copyFile(PICPath+"/"+item.TBID+"/"+item.Pic_bsm+".jpg", outDir+"/现状照片/"+items.Name)
 			}
 		}
 
@@ -1422,9 +1315,14 @@ func (uc *UserController) DownloadTempLayer(c *gin.Context) {
 
 	absolutePath2, _ := filepath.Abs(outDir)
 	methods.ZipFolder(absolutePath2, ctime+"调查成果")
-	copyFile("./OutFile/"+bsm+"/"+ctime+"调查成果"+".zip", config.Download)
-
-	c.String(http.StatusOK, "/OutFile/"+bsm+"/"+ctime+"调查成果"+".zip")
+	copyFile(OutFilePath+"/"+bsm+"/"+ctime+"调查成果"+".zip", config.Download)
+	host := c.Request.Host
+	url := &url.URL{
+		Scheme: "http",
+		Host:   host,
+		Path:   "/geo/OutFile/" + bsm + "/" + ctime + "调查成果" + ".zip",
+	}
+	c.String(http.StatusOK, url.String())
 }
 
 type ZDList struct {

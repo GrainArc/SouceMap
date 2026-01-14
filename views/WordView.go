@@ -43,7 +43,9 @@ func (uc *UserController) QSReport(c *gin.Context) {
 	//输出word
 	host := c.Request.Host
 	taskid := uuid.New().String()
-	path := filepath.Join("OutFile/" + taskid)
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	path := filepath.Join(OutFilePath, taskid)
 	err := os.MkdirAll(path, os.ModePerm)
 	if err != nil {
 		// 处理文件夹创建错误
@@ -437,7 +439,9 @@ func (uc *UserController) GenerateReport(c *gin.Context) {
 	}
 	host := c.Request.Host
 	taskid := uuid.New().String()
-	path := filepath.Join("OutFile/" + taskid)
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
+	path := filepath.Join(OutFilePath, taskid)
 	os.MkdirAll(path, os.ModePerm)
 	builder.Save(path + fmt.Sprintf("/%s_%s.docx", report.ReportName, timestamp))
 	url := &url.URL{

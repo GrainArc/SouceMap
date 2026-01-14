@@ -7,10 +7,22 @@ import (
 )
 
 // 删除文件夹内的所有文件
-func DeleteFiles(dirPath string) {
-	// 判断文件夹是否存在
-	os.RemoveAll(dirPath)
-	os.Mkdir("TempFile", os.ModePerm)
+func DeleteFiles(dirPath string) error {
+	// 读取目录中的所有文件和子目录
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return fmt.Errorf("读取目录失败: %w", err)
+	}
+
+	// 遍历删除目录中的所有内容
+	for _, entry := range entries {
+		path := filepath.Join(dirPath, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			return fmt.Errorf("删除 %s 失败: %w", path, err)
+		}
+	}
+
+	return nil
 }
 
 func GetAllFiles(path string) ([]string, error) {

@@ -6,11 +6,15 @@ import (
 	"github.com/GrainArc/SouceMap/tile_proxy"
 	"github.com/GrainArc/SouceMap/views"
 	"github.com/gin-gonic/gin"
+	"os"
+	"path/filepath"
 )
 
 func GeoRouters(r *gin.Engine) {
 	UserController := &views.UserController{}
 	mapRouter := r.Group("/geo")
+	homeDir, _ := os.UserHomeDir()
+	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
 	{
 		mapRouter.GET(":tablename/:z/:x/:y.pbf", UserController.OutMVT)
 		mapRouter.GET("/TileSizeChange", UserController.TileSizeChange)
@@ -32,8 +36,6 @@ func GeoRouters(r *gin.Engine) {
 
 		mapRouter.POST("/SaveTempGeo", UserController.InTempGeo)
 		mapRouter.GET("/ShowTempGeo", UserController.ShowTempGeo)
-		mapRouter.POST("/DownloadTempGeo", UserController.DownloadTempGeo)
-		mapRouter.POST("/DownloadTempGeoALL", UserController.DownloadTempGeoALL)
 		mapRouter.GET("/DownloadTempLayer", UserController.DownloadTempLayer)
 		mapRouter.POST("/Capture", UserController.Capture)
 		mapRouter.POST("/AutoPolygon", UserController.AutoPolygon)
@@ -66,7 +68,8 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/ChangeLayerStyle", UserController.ChangeLayerStyle)
 		mapRouter.POST("/GetExcavationFillVolume", UserController.GetExcavationFillVolume)
 		mapRouter.POST("/GetHeightFromDEM", UserController.GetHeightFromDEM)
-		mapRouter.Static("/OutFile", "./OutFile")
+
+		mapRouter.Static("/OutFile", OutFilePath)
 		mapRouter.POST("/OutIntersect", UserController.OutIntersect)
 		mapRouter.GET("/OutLayer", UserController.OutLayer)
 		// 在路由注册文件中添加
@@ -96,9 +99,9 @@ func GeoRouters(r *gin.Engine) {
 
 	}
 	SurveyRouter := r.Group("/Survey")
+	PICPath := filepath.Join(homeDir, "BoundlessMap", "PIC")
 	{
-		SurveyRouter.Static("/PIC", "./PIC")
-		SurveyRouter.Static("/ZDT", "./ZDT")
+		SurveyRouter.Static("/PIC", PICPath)
 		SurveyRouter.POST("/MsgUpload", UserController.MsgUpload)
 		SurveyRouter.POST("/PicUpload", UserController.PicUpload)
 		SurveyRouter.POST("/ZDTUpload", UserController.ZDTUpload)
