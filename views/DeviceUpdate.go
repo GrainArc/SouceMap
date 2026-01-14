@@ -782,12 +782,6 @@ func DownLayer(tablename string) string {
 	taskid := Schema.EN
 	homeDir, _ := os.UserHomeDir()
 	OutFilePath := filepath.Join(homeDir, "BoundlessMap", "OutFile")
-	existingZipPath := OutFilePath + "/" + taskid + "/" + tablename + ".zip"
-	if _, err := os.Stat(existingZipPath); err == nil {
-		// 文件存在，直接返回路径
-		return existingZipPath
-	}
-
 	result, _ := queryTable(DB, SD)
 
 	outdir := OutFilePath + "/" + taskid
