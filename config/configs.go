@@ -79,3 +79,34 @@ func InitConfig() {
 	DSN = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC", MainConfig.Host, MainConfig.Username, MainConfig.Password, MainConfig.Dbname, MainConfig.Port)
 
 }
+
+func InitConfigLocal() {
+
+	xmlFile, err := os.Open("config.xml")
+	if err != nil {
+		fmt.Println("Error  opening  file:", err)
+		return
+	}
+	defer xmlFile.Close()
+
+	xmlDecoder := xml.NewDecoder(xmlFile)
+	err = xmlDecoder.Decode(&MainConfig)
+	if err != nil {
+		fmt.Println("Error  decoding  XML:", err)
+		return
+	}
+	MainOutRouter = MainConfig.MainOutRouter
+	MainRouter = MainConfig.MainRouter
+	Raster = MainConfig.Raster
+	Dem = MainConfig.Dem
+	Tiles3d = MainConfig.Tiles3d
+	Download = MainConfig.Download
+	DeviceName = MainConfig.DeviceName
+	MainConfig.Host = MainConfig.Host
+	MainConfig.Username = MainConfig.Username
+	MainConfig.Password = MainConfig.Password
+	MainConfig.Dbname = MainConfig.Dbname
+	MainConfig.Port = MainConfig.Port
+	DSN = fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC", MainConfig.Host, MainConfig.Username, MainConfig.Password, MainConfig.Dbname, MainConfig.Port)
+
+}
