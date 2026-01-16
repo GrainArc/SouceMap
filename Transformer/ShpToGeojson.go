@@ -466,18 +466,30 @@ func createCpgFile(filename string) error {
 
 	return nil
 }
+
 func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath string) {
 	fileName := filepath.Base(shpfileFilePath)
 	rootName := fileName[0 : len(fileName)-len(filepath.Ext(fileName))]
-	shpfileFilePath_point := filepath.Join(filepath.Dir(shpfileFilePath), rootName) + "_点.shp"
-	shpfileFilePath_polygon := filepath.Join(filepath.Dir(shpfileFilePath), rootName) + "_面.shp"
-	shpfileFilePath_line := filepath.Join(filepath.Dir(shpfileFilePath), rootName) + "_线.shp"
+	dirPath := filepath.Dir(shpfileFilePath)
+
+	shpfileFilePath_point := filepath.Join(dirPath, rootName) + "_点.shp"
+	shpfileFilePath_polygon := filepath.Join(dirPath, rootName) + "_面.shp"
+	shpfileFilePath_line := filepath.Join(dirPath, rootName) + "_线.shp"
+
 	shpFile_polygon, _ := shp.Create(shpfileFilePath_polygon, shp.POLYGON)
 	shpFile_line, _ := shp.Create(shpfileFilePath_line, shp.POLYLINE)
 	shpFile_point, _ := shp.Create(shpfileFilePath_point, shp.POINT)
-	createCpgFile(filepath.Join(filepath.Dir(shpfileFilePath), rootName) + "_点.cpg")
-	createCpgFile(filepath.Join(filepath.Dir(shpfileFilePath), rootName) + "_面.cpg")
-	createCpgFile(filepath.Join(filepath.Dir(shpfileFilePath), rootName) + "_线.cpg")
+
+	// 创建CPG文件
+	createCpgFile(filepath.Join(dirPath, rootName) + "_点.cpg")
+	createCpgFile(filepath.Join(dirPath, rootName) + "_面.cpg")
+	createCpgFile(filepath.Join(dirPath, rootName) + "_线.cpg")
+
+	// 创建PRJ投影文件
+	createPrjFile(filepath.Join(dirPath, rootName) + "_点.prj")
+	createPrjFile(filepath.Join(dirPath, rootName) + "_面.prj")
+	createPrjFile(filepath.Join(dirPath, rootName) + "_线.prj")
+
 	var fields []shp.Field
 
 	Properties := GeoData.Features[0].Properties
@@ -498,13 +510,14 @@ func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath str
 	defer shpFile_polygon.Close()
 	defer shpFile_line.Close()
 	defer shpFile_point.Close()
+
 	pn := 0
 	ln := 0
 	pon := 0
 	mpon := 0
+
 	for _, feature := range GeoData.Features {
 		if feature.Geometry != nil {
-			//// 写入 SHP 形状以及属性
 			switch geom := feature.Geometry.(type) {
 			case orb.Polygon:
 				var PL [][]shp.Point
@@ -520,28 +533,25 @@ func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath str
 				shpFile_polygon.Write(NEWPL)
 				for key, item := range feature.Properties {
 					var itemStr string
-
-					// 检查 item 的类型并进行相应的转换
 					switch v := item.(type) {
 					case string:
-						itemStr = v // 如果是字符串，直接赋值
+						itemStr = v
 					case float64:
-						itemStr = fmt.Sprintf("%f", v) // 如果是 float64，转换为字符串
+						itemStr = fmt.Sprintf("%f", v)
 					case int:
-						itemStr = fmt.Sprintf("%d", v) // 如果是 int，转换为字符串
+						itemStr = fmt.Sprintf("%d", v)
 					case nil:
-						itemStr = "" // 如果是 nil，转换为空字符串
+						itemStr = ""
 					default:
-						itemStr = fmt.Sprintf("%v", v) // 其他类型，使用默认格式化
+						itemStr = fmt.Sprintf("%v", v)
 					}
-					// 写入属性
 					error := shpFile_polygon.WriteAttribute(pn, FieldMAP[key], Utf8ToGbk(itemStr))
 					if error != nil {
-						fmt.Println(error.Error()) // 打印错误信息
+						fmt.Println(error.Error())
 					}
 				}
-
 				pn += 1
+
 			case orb.MultiPolygon:
 				for index, _ := range geom {
 					var PL [][]shp.Point
@@ -556,28 +566,24 @@ func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath str
 					shpFile_polygon.Write(NEWPL)
 					for key, item := range feature.Properties {
 						var itemStr string
-
-						// 检查 item 的类型并进行相应的转换
 						switch v := item.(type) {
 						case string:
-							itemStr = v // 如果是字符串，直接赋值
+							itemStr = v
 						case float64:
-							itemStr = fmt.Sprintf("%f", v) // 如果是 float64，转换为字符串
+							itemStr = fmt.Sprintf("%f", v)
 						case int:
-							itemStr = fmt.Sprintf("%d", v) // 如果是 int，转换为字符串
+							itemStr = fmt.Sprintf("%d", v)
 						case nil:
-							itemStr = "" // 如果是 nil，转换为空字符串
+							itemStr = ""
 						default:
-							itemStr = fmt.Sprintf("%v", v) // 其他类型，使用默认格式化
+							itemStr = fmt.Sprintf("%v", v)
 						}
-						// 写入属性
 						error := shpFile_polygon.WriteAttribute(pn, FieldMAP[key], Utf8ToGbk(itemStr))
 						if error != nil {
-							fmt.Println(error.Error()) // 打印错误信息
+							fmt.Println(error.Error())
 						}
 					}
 					pn += 1
-
 				}
 
 			case orb.LineString:
@@ -597,6 +603,7 @@ func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath str
 					}
 				}
 				ln += 1
+
 			case orb.Point:
 				pt := geom
 				var NewPT shp.Point
@@ -610,6 +617,7 @@ func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath str
 					}
 				}
 				pon += 1
+
 			case orb.MultiPoint:
 				pt := geom[0]
 				var NewPT shp.Point
@@ -624,20 +632,31 @@ func ConvertGeoJSONToSHP(GeoData *geojson.FeatureCollection, shpfileFilePath str
 				}
 				mpon += 1
 			}
-
 		}
 	}
+
 	// 确保所有文件都已关闭
 	shpFile_polygon.Close()
 	shpFile_line.Close()
 	shpFile_point.Close()
 
-	// 检查并删除空的shapefile及其关联文件
+	// 检查并删除空的shapefile及其关联文件（包括prj文件）
 	checkAndDeleteEmptyShapefile(shpfileFilePath_point, rootName+"_点")
 	checkAndDeleteEmptyShapefile(shpfileFilePath_polygon, rootName+"_面")
 	checkAndDeleteEmptyShapefile(shpfileFilePath_line, rootName+"_线")
 }
+func createPrjFile(prjFilePath string) error {
+	prjContent := `GEOGCS["GCS_China_Geodetic_Coordinate_System_2000",DATUM["D_China_2000",SPHEROID["CGCS2000",6378137.0,298.257222101]],PRIMEM["Greenwich",0.0],UNIT["Degree",0.0174532925199433]]`
 
+	file, err := os.Create(prjFilePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	_, err = file.WriteString(prjContent)
+	return err
+}
 func checkAndDeleteEmptyShapefile(shpFilePath, baseName string) {
 	// 获取.shp文件信息
 	fileInfo, err := os.Stat(shpFilePath)
