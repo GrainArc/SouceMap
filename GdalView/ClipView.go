@@ -17,15 +17,14 @@ import (
 
 // 裁剪分析请求参数结构体
 type ClipRequest struct {
-	Table1         string  `json:"table1" binding:"required"` // 输入表
-	Table2         string  `json:"table2" binding:"required"` // 裁剪表
-	OutTable       string  `json:"out_table" binding:"required"`
-	IsMergeTile    bool    `json:"isMergeTile"`    // 是否合并瓦片
-	FieldStrategy  int     `json:"fieldStrategy"`  // 字段合并策略
-	MaxWorkers     int     `json:"maxWorkers"`     // 最大工作线程数
-	GridSize       float64 `json:"gridSize"`       // 网格大小
-	TileCount      int     `json:"tileCount"`      // 分块数量
-	BufferDistance float64 `json:"bufferDistance"` // 缓冲距离
+	Table1        string  `json:"table1" binding:"required"` // 输入表
+	Table2        string  `json:"table2" binding:"required"` // 裁剪表
+	OutTable      string  `json:"out_table" binding:"required"`
+	IsMergeTile   bool    `json:"isMergeTile"`   // 是否合并瓦片
+	FieldStrategy int     `json:"fieldStrategy"` // 字段合并策略
+	MaxWorkers    int     `json:"maxWorkers"`    // 最大工作线程数
+	GridSize      float64 `json:"gridSize"`      // 网格大小
+	TileCount     int     `json:"tileCount"`     // 分块数量
 }
 
 // 裁剪任务信息结构体
@@ -114,9 +113,6 @@ func validateClipParams(req *ClipRequest) error {
 	}
 	if req.TileCount <= 0 {
 		req.TileCount = 10 // 默认值
-	}
-	if req.BufferDistance < 0 {
-		req.BufferDistance = 0.0001 // 默认值
 	}
 
 	return nil
@@ -255,7 +251,6 @@ func (uc *UserController) ClipWebSocket(c *gin.Context) {
 		TileCount:        req.TileCount,
 		MaxWorkers:       req.MaxWorkers,
 		IsMergeTile:      req.IsMergeTile,
-		BufferDistance:   req.BufferDistance,
 		ProgressCallback: progressCallback,
 		PrecisionConfig: &Gogeo.GeometryPrecisionConfig{
 			GridSize:      req.GridSize,

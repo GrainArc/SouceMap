@@ -17,14 +17,13 @@ import (
 
 // Identity分析请求参数结构体
 type IdentityRequest struct {
-	Table1         string  `json:"table1" binding:"required"`
-	Table2         string  `json:"table2" binding:"required"`
-	OutTable       string  `json:"out_table" binding:"required"`
-	IsMergeTile    bool    `json:"isMergeTile"` // 是否合并瓦片
-	MaxWorkers     int     `json:"maxWorkers"`
-	GridSize       float64 `json:"gridSize"`
-	TileCount      int     `json:"tileCount"`
-	BufferDistance float64 `json:"bufferDistance"`
+	Table1      string  `json:"table1" binding:"required"`
+	Table2      string  `json:"table2" binding:"required"`
+	OutTable    string  `json:"out_table" binding:"required"`
+	IsMergeTile bool    `json:"isMergeTile"` // 是否合并瓦片
+	MaxWorkers  int     `json:"maxWorkers"`
+	GridSize    float64 `json:"gridSize"`
+	TileCount   int     `json:"tileCount"`
 }
 
 // Identity任务信息结构体
@@ -115,9 +114,7 @@ func validateIdentityParams(req *IdentityRequest) error {
 	if req.TileCount <= 0 {
 		req.TileCount = 10 // 默认值
 	}
-	if req.BufferDistance < 0 {
-		req.BufferDistance = 0.0001 // 默认值
-	}
+
 	return nil
 }
 
@@ -253,7 +250,6 @@ func (uc *UserController) IdentityWebSocket(c *gin.Context) {
 	config := &Gogeo.ParallelGeosConfig{
 		TileCount:        req.TileCount,
 		MaxWorkers:       req.MaxWorkers,
-		BufferDistance:   req.BufferDistance,
 		IsMergeTile:      req.IsMergeTile,
 		ProgressCallback: progressCallback,
 		PrecisionConfig: &Gogeo.GeometryPrecisionConfig{

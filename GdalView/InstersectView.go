@@ -32,15 +32,14 @@ const (
 
 // 请求参数结构体
 type IntersectRequest struct {
-	Table1         string  `json:"table1" binding:"required"`
-	Table2         string  `json:"table2" binding:"required"`
-	OutTable       string  `json:"out_table" binding:"required"`
-	FieldStrategy  int     `json:"fieldStrategy"`
-	IsMergeTile    bool    `json:"isMergeTile"`
-	MaxWorkers     int     `json:"maxWorkers"`
-	GridSize       float64 `json:"gridSize"`
-	TileCount      int     `json:"tileCount"`
-	BufferDistance float64 `json:"bufferDistance"`
+	Table1        string  `json:"table1" binding:"required"`
+	Table2        string  `json:"table2" binding:"required"`
+	OutTable      string  `json:"out_table" binding:"required"`
+	FieldStrategy int     `json:"fieldStrategy"`
+	IsMergeTile   bool    `json:"isMergeTile"`
+	MaxWorkers    int     `json:"maxWorkers"`
+	GridSize      float64 `json:"gridSize"`
+	TileCount     int     `json:"tileCount"`
 }
 
 // 任务信息结构体
@@ -143,9 +142,7 @@ func validateIntersectParams(req *IntersectRequest) error {
 	if req.TileCount <= 0 {
 		req.TileCount = 10 // 默认值
 	}
-	if req.BufferDistance < 0 {
-		req.BufferDistance = 0.0001 // 默认值
-	}
+
 	return nil
 }
 
@@ -282,7 +279,6 @@ func (uc *UserController) IntersectWebSocket(c *gin.Context) {
 		TileCount:        req.TileCount,
 		MaxWorkers:       req.MaxWorkers,
 		IsMergeTile:      req.IsMergeTile,
-		BufferDistance:   req.BufferDistance,
 		ProgressCallback: progressCallback,
 		PrecisionConfig: &Gogeo.GeometryPrecisionConfig{
 			GridSize:      req.GridSize,
@@ -297,7 +293,7 @@ func (uc *UserController) IntersectWebSocket(c *gin.Context) {
 	errorChan := make(chan error, 1)
 
 	go func() {
-		result, err := OSGEO.SpatialIntersectionAnalysisParallel(
+		result, err := OSGEO.SpatialIntersectionAnalysisParallelPG(models.DB,
 			req.Table1,
 			req.Table2,
 			Gogeo.FieldMergeStrategy(req.FieldStrategy),
