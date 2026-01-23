@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/GrainArc/Gogeo"
-	"github.com/GrainArc/SouceMap/OSGEO"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
@@ -293,7 +292,7 @@ func (uc *UserController) IntersectWebSocket(c *gin.Context) {
 	errorChan := make(chan error, 1)
 
 	go func() {
-		result, err := OSGEO.SpatialIntersectionAnalysisParallelPG(models.DB,
+		result, err := Gogeo.SpatialIntersectionAnalysisParallelPG(models.DB,
 			req.Table1,
 			req.Table2,
 			Gogeo.FieldMergeStrategy(req.FieldStrategy),

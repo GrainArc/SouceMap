@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/GrainArc/Gogeo"
-	"github.com/GrainArc/SouceMap/OSGEO"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
@@ -265,7 +264,7 @@ func (uc *UserController) ClipWebSocket(c *gin.Context) {
 	errorChan := make(chan error, 1)
 
 	go func() {
-		result, err := OSGEO.SpatialClipAnalysisParallel(
+		result, err := Gogeo.SpatialClipAnalysisParallelPG(models.DB,
 			req.Table1,
 			req.Table2,
 			config,

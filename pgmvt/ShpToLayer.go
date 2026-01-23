@@ -958,7 +958,10 @@ func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 // AddSHPDirectlyOptimized 优化版本：直接将SHP文件导入到PostGIS数据库
 func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, Color string, Opacity string, Userunits string, LineWidth string) string {
 	//先将shp强制加入objid
-	Gogeo.EnsureObjectIDField(shpPath)
+	_, err := Gogeo.EnsureObjectIDField(shpPath)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
 	shpLayer, err := Gogeo.SHPToPostGIS(shpPath)
 	if err != nil {
 		log.Printf("读取SHP文件失败: %v", err)

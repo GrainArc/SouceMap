@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/GrainArc/Gogeo"
-	"github.com/GrainArc/SouceMap/OSGEO"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/gin-gonic/gin"
@@ -263,7 +262,7 @@ func (uc *UserController) UpdateWebSocket(c *gin.Context) {
 	errorChan := make(chan error, 1)
 
 	go func() {
-		result, err := OSGEO.SpatialUpdateAnalysisParallel(
+		result, err := Gogeo.SpatialUpdateAnalysisParallelPG(models.DB,
 			req.InputTable,
 			req.UpdateTable,
 			config,
