@@ -11,6 +11,7 @@ import (
 	"log"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1027,7 +1028,7 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 	validFields map[string]string, processedFields []ProcessedFieldInfo, targetGeoType string) *FeatureWriteResult {
 	result := &FeatureWriteResult{}
 	const batchSize = 500
-	const workerCount = 4
+	workerCount := runtime.NumCPU() / 2
 	// 动态计算安全的批次大小
 	fieldCount := len(validFields) + 1
 	maxSafeBatchSize := calculateSafeBatchSize(fieldCount)
@@ -1061,13 +1062,9 @@ func writeGDBDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 				batch := batchItem.Records
 				wkbHexs := batchItem.WKBHexs
 				indices := batchItem.Indices
-				// 使用事务处理批量插入
-				err := DB.Transaction(func(tx *gorm.DB) error {
-					if err := tx.Table(tableName).CreateInBatches(batch, actualBatchSize/2).Error; err != nil {
-						return err
-					}
-					return nil
-				})
+				// 直接批量插入，不使用事务
+				err := DB.Table(tableName).CreateInBatches(batch, actualBatchSize/2).Error
+
 				if err != nil {
 					// 批量插入失败，尝试单条插入
 					log.Printf("Worker %d - 批量插入失败，尝试单条插入: %v", workerID, err)
