@@ -12,6 +12,7 @@ import (
 	"github.com/paulmach/orb"
 	"github.com/paulmach/orb/encoding/wkb"
 	"github.com/saintfish/chardet"
+	"runtime"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -852,8 +853,8 @@ func createSHPTableDirect(DB *gorm.DB, tableName string, fields map[string]strin
 func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableName string,
 	validFields map[string]string, processedFields []ProcessedFieldInfo) {
 
-	const batchSize = 1000
-	const workerCount = 8
+	const batchSize = 500
+	workerCount := runtime.NumCPU() / 2
 	// 动态计算安全的批次大小（考虑参数限制）
 	fieldCount := len(validFields) + 1 // +1 for geom field
 	maxSafeBatchSize := calculateSafeBatchSize(fieldCount)
@@ -874,13 +875,9 @@ func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			localBatchSize := actualBatchSize / 2 // 进一步细分批次
-
 			for batch := range recordChan {
 				// 使用事务和CreateInBatches确保数据一致性和避免参数限制
-				err := DB.Transaction(func(tx *gorm.DB) error {
-					return tx.Table(tableName).CreateInBatches(batch, localBatchSize).Error
-				})
+				err := DB.Table(tableName).CreateInBatches(batch, actualBatchSize/2).Error
 
 				if err != nil {
 					atomic.AddInt64(&insertErrors, 1)
