@@ -875,9 +875,10 @@ func writeSHPDataToDBDirect(featureData []Gogeo.FeatureData, DB *gorm.DB, tableN
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
+			localBatchSize := actualBatchSize / 2 // 进一步细分批次
+
 			for batch := range recordChan {
-				// 使用事务和CreateInBatches确保数据一致性和避免参数限制
-				err := DB.Table(tableName).CreateInBatches(batch, actualBatchSize/2).Error
+				err := DB.Table(tableName).CreateInBatches(batch, localBatchSize).Error
 
 				if err != nil {
 					atomic.AddInt64(&insertErrors, 1)
