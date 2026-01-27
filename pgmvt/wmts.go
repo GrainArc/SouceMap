@@ -38,71 +38,90 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 		return cachedTile
 	}
 
-	// 2. 缓存未命中，生成瓦片
+	// 2. 计算边界
 	boundboxMin := XyzLonLat(float64(x), float64(y), float64(z))
 	boundboxMax := XyzLonLat(float64(x)+1, float64(y)+1, float64(z))
 
-	// 解析颜色配置
+	// 3. 先检查该范围内是否有数据
+	var dataCount int64
+	checkSQL := fmt.Sprintf(`
+        SELECT COUNT(*) 
+        FROM "%s" 
+        WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
+    `, layerName, boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1])
+
+	db.Raw(checkSQL).Scan(&dataCount)
+	if dataCount == 0 {
+		return nil
+	}
+
+	// 4. 解析颜色配置
 	var colorData []ColorData
 	if err := json.Unmarshal(config.ColorConfig, &colorData); err != nil {
 		return nil
 	}
 
-	// 构建 RGB 三个通道的 CASE WHEN 语句
+	// 5. 构建颜色映射
 	rCaseSQL, gCaseSQL, bCaseSQL := buildColorCaseSQL(colorData)
 
-	// 构建 ST_AsRaster SQL
 	tileSize := config.TileSize
 	if tileSize == 0 {
 		tileSize = 256
 	}
 
+	// 6. 计算像素大小
+	pixelWidth := (boundboxMax[0] - boundboxMin[0]) / float64(tileSize)
+	pixelHeight := (boundboxMax[1] - boundboxMin[1]) / float64(tileSize)
+
+	// 7. 使用正确的 ST_AsRaster 语法
 	sql := fmt.Sprintf(`
-		WITH tile_geom AS (
-			SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS bbox
-		),
-		rasterized AS (
-			SELECT ST_AsRaster(
-				ST_Transform(geom, 4326),
-				(SELECT bbox FROM tile_geom),
-				%d, %d,
-				ARRAY['8BUI', '8BUI', '8BUI', '8BUI']::text[],
-				ARRAY[
-					%s,  -- R
-					%s,  -- G
-					%s,  -- B
-					%d   -- A (opacity)
-				]::double precision[],
-				ARRAY[0, 0, 0, 0]::double precision[]
-			) AS rast
-			FROM "%s"
-			WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-		),
-		merged AS (
-			SELECT ST_Union(rast) AS rast
-			FROM rasterized
-		)
-		SELECT ST_AsPNG(rast) AS png
-		FROM merged
-		WHERE rast IS NOT NULL
-	`,
-		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1],
-		tileSize, tileSize,
-		rCaseSQL, gCaseSQL, bCaseSQL,
-		int(config.Opacity*255),
-		layerName,
-		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1],
+        WITH colored_features AS (
+            SELECT 
+                ST_Transform(geom, 4326) as geom,
+                (%s) as r_val,
+                (%s) as g_val,
+                (%s) as b_val
+            FROM "%s"
+            WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
+        )
+        SELECT ST_AsPNG(
+            ST_Union(
+                ST_AsRaster(
+                    geom,
+                    %v, %v,                                    -- scalex, scaley
+                    %v, %v,                                    -- gridx, gridy (upperleft corner)
+                    ARRAY['8BUI', '8BUI', '8BUI', '8BUI'],    -- pixeltype array
+                    ARRAY[r_val, g_val, b_val, %d]::double precision[], -- value array
+                    ARRAY[0, 0, 0, 0]::double precision[]     -- nodataval array
+                )
+            )
+        ) AS png
+        FROM colored_features
+        WHERE geom IS NOT NULL
+    `,
+		rCaseSQL, gCaseSQL, bCaseSQL, // 颜色映射
+		layerName,                                                      // 表名
+		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1], // WHERE 条件 bbox
+		pixelWidth, -pixelHeight, // scalex, scaley (注意scaley是负数)
+		boundboxMin[0], boundboxMax[1], // gridx, gridy
+		int(config.Opacity*255), // alpha 值
 	)
 
-	// 执行查询
+	fmt.Printf("执行SQL:\n%s\n", sql)
+
+	// 8. 执行查询
 	var result struct {
 		PNG []byte
 	}
 
-	db.Raw(sql).Scan(&result)
+	err := db.Raw(sql).Scan(&result).Error
+	if err != nil {
+		fmt.Printf("SQL执行错误: %v\n", err)
+		return nil
+	}
 
-	// 3. 保存到缓存
-	if result.PNG != nil {
+	// 9. 保存到缓存
+	if result.PNG != nil && len(result.PNG) > 0 {
 		saveTileCache(db, cacheTableName, x, y, z, result.PNG)
 	}
 
