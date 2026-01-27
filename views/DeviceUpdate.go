@@ -310,7 +310,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 		if contains(mainRouterIP, ip) == true {
 			continue // 跳过当前循环，处理下一个IP
 		}
-		wg.Add(1)            // 增加等待组计数
+		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
 
@@ -367,7 +367,7 @@ func (uc *UserController) fetchDeviceName(ctx context.Context, ip string) (Devic
 	}
 
 	// 构造请求URL，使用配置的端口号
-	url := fmt.Sprintf("http://%s:8181/geo/GetDeviceName", ip)
+	url := fmt.Sprintf("http://%s:8181/share/GetDeviceName", ip)
 
 	// 创建HTTP GET请求，并绑定上下文
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -498,7 +498,7 @@ func UpdateDB(TableName string, DB *gorm.DB, DeviceDB *gorm.DB) bool {
 // 获取远程设备的DSN
 func getRemoteDSN(ip string) (string, error) {
 	// 1. 获取加密的DSN
-	encryptedDSNUrl := fmt.Sprintf("http://%s:8181/geo/GetEncryptedDSN", ip)
+	encryptedDSNUrl := fmt.Sprintf("http://%s:8181/share/GetEncryptedDSN", ip)
 	resp, err := http.Get(encryptedDSNUrl)
 	if err != nil {
 		return "", fmt.Errorf("获取加密DSN失败: %v", err)
@@ -522,7 +522,7 @@ func getRemoteDSN(ip string) (string, error) {
 	}
 	encryptedDSN := dsnResponse.Data
 	// 2. 获取DeviceName作为解密密钥
-	deviceNameUrl := fmt.Sprintf("http://%s:8181/geo/GetDeviceName", ip)
+	deviceNameUrl := fmt.Sprintf("http://%s:8181/share/GetDeviceName", ip)
 	resp2, err := http.Get(deviceNameUrl)
 	if err != nil {
 		return "", fmt.Errorf("获取DeviceName失败: %v", err)
@@ -545,7 +545,7 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 	ip := jsonData.IP
 	TableName := jsonData.TableName
 	//获取更新对象的所有表
-	url := fmt.Sprintf("http://%s:8181/geo/GetSchema", ip)
+	url := fmt.Sprintf("http://%s:8181/share/GetSchema", ip)
 	resp, _ := http.Get(url)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)

@@ -447,7 +447,7 @@ func (uc *UserController) GenerateReport(c *gin.Context) {
 	url := &url.URL{
 		Scheme: "http",
 		Host:   host,
-		Path:   "/geo/OutFile/" + taskid + "/项目用地范围地类情况.docx",
+		Path:   "/geo/OutFile/" + taskid + fmt.Sprintf("/%s_%s.docx", report.ReportName, timestamp),
 	}
 
 	// 14. 返回成功响应
