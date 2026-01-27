@@ -263,4 +263,14 @@ func GeoRouters(r *gin.Engine) {
 		api3.DELETE("/:id", UserController.DeleteNetMap)
 		api3.POST("/batch-delete", UserController.BatchDeleteNetMaps)
 	}
+	api4 := r.Group("/wmts")
+	{
+		// 新增 WMTS 路由
+		api4.POST("/publish", UserController.PublishWMTS)                // 发布 WMTS 服务
+		api4.GET("/:layername/:z/:x/:y.png", UserController.GetWMTSTile) // 获取瓦片
+		api4.GET("/style", UserController.UpdateWMTSStyle)               // 更新样式
+		api4.DELETE("/:layername", UserController.UnpublishWMTS)
+		api4.DELETE("/:layername/cache", UserController.ClearWMTSCache)       // 清空缓存
+		api4.GET("/:layername/cache/stats", UserController.GetWMTSCacheStats) // 缓存统计// 注销服务
+	}
 }
