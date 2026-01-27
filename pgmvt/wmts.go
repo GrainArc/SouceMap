@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"github.com/GrainArc/SouceMap/models"
 	"gorm.io/gorm"
+	"regexp"
+	"strconv"
+	"strings"
 )
 
 type ColorData struct {
@@ -12,9 +15,17 @@ type ColorData struct {
 	AttName   string
 	ColorMap  []CMap
 }
+
 type CMap struct {
 	Property string
 	Color    string
+}
+
+type RGB struct {
+	R int
+	G int
+	B int
+	A int
 }
 
 // GenerateWMTSTile 生成 WMTS 瓦片（带缓存）
@@ -28,7 +39,6 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	}
 
 	// 2. 缓存未命中，生成瓦片
-	// 计算瓦片边界
 	boundboxMin := XyzLonLat(float64(x), float64(y), float64(z))
 	boundboxMax := XyzLonLat(float64(x)+1, float64(y)+1, float64(z))
 
@@ -38,8 +48,8 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 		return nil
 	}
 
-	// 构建 CASE WHEN 语句用于颜色映射
-	colorCaseSQL := buildColorCaseSQL(colorData)
+	// 构建 RGB 三个通道的 CASE WHEN 语句
+	rCaseSQL, gCaseSQL, bCaseSQL := buildColorCaseSQL(colorData)
 
 	// 构建 ST_AsRaster SQL
 	tileSize := config.TileSize
@@ -78,7 +88,7 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	`,
 		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1],
 		tileSize, tileSize,
-		colorCaseSQL, colorCaseSQL, colorCaseSQL,
+		rCaseSQL, gCaseSQL, bCaseSQL,
 		int(config.Opacity*255),
 		layerName,
 		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1],
@@ -91,12 +101,156 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 
 	db.Raw(sql).Scan(&result)
 
-	// 3. 保存到缓存（即使是空瓦片也缓存，避免重复查询）
+	// 3. 保存到缓存
 	if result.PNG != nil {
 		saveTileCache(db, cacheTableName, x, y, z, result.PNG)
 	}
 
 	return result.PNG
+}
+
+// buildColorCaseSQL 构建颜色映射的 CASE WHEN SQL，返回 R、G、B 三个通道
+func buildColorCaseSQL(colorData []ColorData) (string, string, string) {
+	// 默认灰色
+	defaultR, defaultG, defaultB := "128", "128", "128"
+
+	if len(colorData) == 0 || len(colorData[0].ColorMap) == 0 {
+		return defaultR, defaultG, defaultB
+	}
+
+	attName := colorData[0].AttName
+	colorMap := colorData[0].ColorMap
+
+	// 检查是否为"默认"单一颜色模式
+	if attName == "默认" && len(colorMap) > 0 && colorMap[0].Property == "默认" {
+		rgb := parseColor(colorMap[0].Color)
+		return fmt.Sprintf("%d", rgb.R), fmt.Sprintf("%d", rgb.G), fmt.Sprintf("%d", rgb.B)
+	}
+
+	// 构建 CASE WHEN 语句
+	var rCases, gCases, bCases []string
+
+	for _, cmap := range colorMap {
+		rgb := parseColor(cmap.Color)
+
+		// 转义属性值中的单引号
+		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
+
+		rCases = append(rCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.R))
+		gCases = append(gCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.G))
+		bCases = append(bCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.B))
+	}
+
+	rCaseSQL := "CASE " + strings.Join(rCases, " ") + " ELSE 128 END"
+	gCaseSQL := "CASE " + strings.Join(gCases, " ") + " ELSE 128 END"
+	bCaseSQL := "CASE " + strings.Join(bCases, " ") + " ELSE 128 END"
+
+	return rCaseSQL, gCaseSQL, bCaseSQL
+}
+
+// parseColor 解析颜色字符串，支持 hex、rgb、rgba 格式（大小写不敏感）
+func parseColor(color string) RGB {
+	color = strings.TrimSpace(color)
+	colorLower := strings.ToLower(color)
+
+	// 1. 尝试解析 hex 格式：#RRGGBB 或 #RGB
+	if strings.HasPrefix(colorLower, "#") {
+		return parseHexColor(color)
+	}
+
+	// 2. 尝试解析 rgba 格式：rgba(r, g, b, a) 或 RGBA(r, g, b, a)
+	if strings.HasPrefix(colorLower, "rgba") {
+		return parseRGBAColor(color)
+	}
+
+	// 3. 尝试解析 rgb 格式：rgb(r, g, b) 或 RGB(r, g, b)
+	if strings.HasPrefix(colorLower, "rgb") {
+		return parseRGBColor(color)
+	}
+
+	// 默认返回灰色
+	return RGB{R: 128, G: 128, B: 128, A: 255}
+}
+
+// parseHexColor 解析十六进制颜色（支持大小写）
+func parseHexColor(hex string) RGB {
+	hex = strings.TrimPrefix(hex, "#")
+	hex = strings.ToLower(hex) // 转换为小写统一处理
+
+	// 处理简写格式 #RGB -> #RRGGBB
+	if len(hex) == 3 {
+		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+	}
+
+	if len(hex) != 6 {
+		return RGB{R: 128, G: 128, B: 128, A: 255}
+	}
+
+	var r, g, b int
+	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
+	return RGB{R: r, G: g, B: b, A: 255}
+}
+
+// parseRGBColor 解析 rgb(r, g, b) 格式（支持大小写）
+func parseRGBColor(color string) RGB {
+	// 使用正则提取数字（大小写不敏感）
+	re := regexp.MustCompile(`(?i)rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)`)
+	matches := re.FindStringSubmatch(color)
+
+	if len(matches) != 4 {
+		return RGB{R: 128, G: 128, B: 128, A: 255}
+	}
+
+	r, _ := strconv.Atoi(matches[1])
+	g, _ := strconv.Atoi(matches[2])
+	b, _ := strconv.Atoi(matches[3])
+
+	return RGB{
+		R: clamp(r, 0, 255),
+		G: clamp(g, 0, 255),
+		B: clamp(b, 0, 255),
+		A: 255,
+	}
+}
+
+// parseRGBAColor 解析 rgba(r, g, b, a) 格式（支持大小写）
+func parseRGBAColor(color string) RGB {
+	// 使用正则提取数字（大小写不敏感）
+	re := regexp.MustCompile(`(?i)rgba\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)`)
+	matches := re.FindStringSubmatch(color)
+
+	if len(matches) != 5 {
+		return RGB{R: 128, G: 128, B: 128, A: 255}
+	}
+
+	r, _ := strconv.Atoi(matches[1])
+	g, _ := strconv.Atoi(matches[2])
+	b, _ := strconv.Atoi(matches[3])
+	a, _ := strconv.ParseFloat(matches[4], 64)
+
+	// alpha 可能是 0-1 的小数或 0-255 的整数
+	alphaInt := int(a)
+	if a <= 1.0 {
+		alphaInt = int(a * 255)
+	}
+
+	return RGB{
+		R: clamp(r, 0, 255),
+		G: clamp(g, 0, 255),
+		B: clamp(b, 0, 255),
+		A: clamp(alphaInt, 0, 255),
+	}
+}
+
+// clamp 限制值在指定范围内
+func clamp(value, min, max int) int {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
 
 // queryTileCache 查询瓦片缓存
@@ -126,44 +280,8 @@ func saveTileCache(db *gorm.DB, tableName string, x, y, z int, data []byte) erro
 	return db.Exec(sql, x, y, z, data).Error
 }
 
-// buildColorCaseSQL 构建颜色映射的 CASE WHEN SQL
-func buildColorCaseSQL(colorData []ColorData) string {
-	if len(colorData) == 0 {
-		return "128" // 默认灰色
-	}
-
-	// 使用第一个属性的颜色配置
-	if len(colorData[0].ColorMap) == 0 {
-		return "128"
-	}
-
-	attName := colorData[0].AttName
-	caseSQL := "CASE "
-
-	for _, cmap := range colorData[0].ColorMap {
-		// 解析颜色 (假设格式为 #RRGGBB)
-		color := cmap.Color
-		if len(color) == 7 && color[0] == '#' {
-			r, _, _ := hexToRGB(color)
-			caseSQL += fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d ", attName, cmap.Property, r)
-		}
-	}
-
-	caseSQL += "ELSE 128 END" // 默认值
-
-	return caseSQL
-}
-
-// hexToRGB 将十六进制颜色转换为 RGB
-func hexToRGB(hex string) (int, int, int) {
-	var r, g, b int
-	fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b)
-	return r, g, b
-}
-
 // GetEmptyTile 返回空白透明瓦片
 func GetEmptyTile() []byte {
-	// 返回 1x1 透明 PNG
 	emptyPNG := []byte{
 		0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
 		0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,

@@ -136,7 +136,7 @@ func normalizeColor(color string) (string, error) {
 }
 
 // hexToRGB 将 HEX 格式转换为 RGB 格式
-// hexToRGB 将 HEX 格式转换为 RGB 格式
+
 func hexToRGB(hex string) (string, error) {
 	// 移除 # 前缀
 	hex = strings.TrimPrefix(hex, "#")
