@@ -647,7 +647,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",             // 错误提示信息
+			"message": "删除记录失败",       // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -657,9 +657,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,          // 状态码：请求成功
+			"code":    200,                    // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,            // 删除的记录数量
+			"count":   0,                      // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -667,7 +667,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",            // 成功提示信息
+		"message": "清空记录成功",      // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
@@ -2492,17 +2492,77 @@ type OffsetData struct {
 	YOffset   float64 `json:"yOffset"` // 米
 }
 
-// 地球半径（米）
-const EarthRadiusMeters = 6371000.0
+const (
+	EarthRadiusMeters = 6378137.0           // WGS84椭球体长半轴，更精确
+	EarthFlattening   = 1.0 / 298.257223563 // WGS84扁率
+	DegreesToRadians  = math.Pi / 180.0
+	RadiansToDegrees  = 180.0 / math.Pi
+)
 
-// 米转度数
-func metersToDegreesLat(meters float64) float64 {
-	return meters / (EarthRadiusMeters / 180.0 * math.Pi)
+// 计算给定纬度处的地球半径（考虑椭球体形状）
+func getEarthRadiusAtLatitude(latitude float64) float64 {
+	latRad := latitude * DegreesToRadians
+	sinLat := math.Sin(latRad)
+	cosLat := math.Cos(latRad)
+
+	// WGS84椭球体参数
+	a := EarthRadiusMeters         // 长半轴
+	b := a * (1 - EarthFlattening) // 短半轴
+
+	// 计算该纬度处的地球半径
+	numerator := math.Pow(a*a*cosLat, 2) + math.Pow(b*b*sinLat, 2)
+	denominator := math.Pow(a*cosLat, 2) + math.Pow(b*sinLat, 2)
+
+	return math.Sqrt(numerator / denominator)
 }
 
+// 计算纬度方向的子午线曲率半径
+func getMeridionalRadiusOfCurvature(latitude float64) float64 {
+	latRad := latitude * DegreesToRadians
+	sinLat := math.Sin(latRad)
+
+	a := EarthRadiusMeters
+	e2 := 2*EarthFlattening - EarthFlattening*EarthFlattening // 第一偏心率的平方
+
+	return a * (1 - e2) / math.Pow(1-e2*sinLat*sinLat, 1.5)
+}
+
+// 计算纬度方向的卯酉圈曲率半径
+func getPrimeVerticalRadiusOfCurvature(latitude float64) float64 {
+	latRad := latitude * DegreesToRadians
+	sinLat := math.Sin(latRad)
+
+	a := EarthRadiusMeters
+	e2 := 2*EarthFlattening - EarthFlattening*EarthFlattening
+
+	return a / math.Sqrt(1-e2*sinLat*sinLat)
+}
+
+// 高精度米转纬度度数
+func metersToDegreesLat(meters float64, latitude float64) float64 {
+	// 使用子午线曲率半径
+	M := getMeridionalRadiusOfCurvature(latitude)
+	return meters * RadiansToDegrees / M
+}
+
+// 高精度米转经度度数
 func metersToDegreeeLon(meters float64, latitude float64) float64 {
-	// 经度的度数取决于纬度
-	return meters / (EarthRadiusMeters * math.Cos(latitude*math.Pi/180.0) / 180.0 * math.Pi)
+	// 使用卯酉圈曲率半径
+	N := getPrimeVerticalRadiusOfCurvature(latitude)
+	latRad := latitude * DegreesToRadians
+	return meters * RadiansToDegrees / (N * math.Cos(latRad))
+}
+
+// 更精确的度数转米（用于验证）
+func degreesToMetersLat(degrees float64, latitude float64) float64 {
+	M := getMeridionalRadiusOfCurvature(latitude)
+	return degrees * DegreesToRadians * M
+}
+
+func degreesToMetersLon(degrees float64, latitude float64) float64 {
+	N := getPrimeVerticalRadiusOfCurvature(latitude)
+	latRad := latitude * DegreesToRadians
+	return degrees * DegreesToRadians * N * math.Cos(latRad)
 }
 
 func (uc *UserController) OffsetFeature(c *gin.Context) {
@@ -2630,7 +2690,7 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	}
 
 	// 转换单位：米 -> 度数
-	offsetLat := metersToDegreesLat(jsonData.YOffset)
+	offsetLat := metersToDegreesLat(jsonData.YOffset, centerLat)
 	offsetLon := metersToDegreeeLon(jsonData.XOffset, centerLat)
 
 	// 3. 执行平移操作（使用转换后的度数）
