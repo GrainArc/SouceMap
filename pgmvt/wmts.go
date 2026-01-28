@@ -3,11 +3,11 @@ package pgmvt
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/models"
 	"gorm.io/gorm"
-	"math"
-	"regexp"
-	"strconv"
+	"log"
+
 	"strings"
 )
 
@@ -29,300 +29,203 @@ type RGB struct {
 	A int
 }
 
-// GenerateWMTSTile 生成 WMTS 瓦片（修复版）
 func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
 	cacheTableName := layerName + "_wmts"
-
-	// 1. 先查询缓存
+	// 1. 查询缓存
 	cachedTile := queryTileCache(db, cacheTableName, x, y, z)
 	if cachedTile != nil {
 		return cachedTile
 	}
-
-	// 2. 计算瓦片经纬度边界 (Web Mercator 瓦片转 WGS84 坐标)
-	// 注意：Y轴在切片方案中通常是向下的，但在地理坐标中纬度是向上的
-	boundboxMin := XyzLonLat(float64(x), float64(y), float64(z))     // 西北角 (Left-Top) ? 需确认 XyzLonLat 返回的是 min还是max
-	boundboxMax := XyzLonLat(float64(x)+1, float64(y)+1, float64(z)) // 东南角 (Right-Bottom)
-
-	// XyzLonLat 通常返回的是 [Lon, Lat]。
-	// 对于 Google/OSM 瓦片方案：
-	// (x, y) 对应瓦片的 西北角 (MinLon, MaxLat)
-	// (x+1, y+1) 对应瓦片的 东南角 (MaxLon, MinLat)
-	// 因此我们需要整理出正确的 Min/Max 用于 PostGIS
-
-	minLon := math.Min(boundboxMin[0], boundboxMax[0])
-	maxLon := math.Max(boundboxMin[0], boundboxMax[0])
-	minLat := math.Min(boundboxMin[1], boundboxMax[1])
-	maxLat := math.Max(boundboxMin[1], boundboxMax[1])
-
-	// 3. 预检查数据 (这一步保留，为了性能)
+	// 2. 计算瓦片边界
+	bounds := Gogeo.CalculateTileBounds(x, y, z)
+	// 3. 预检查数据
 	var dataCount int64
 	checkSQL := fmt.Sprintf(`
         SELECT COUNT(*) 
         FROM "%s" 
         WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-    `, layerName, minLon, minLat, maxLon, maxLat)
-
+    `, layerName, bounds.MinLon, bounds.MinLat, bounds.MaxLon, bounds.MaxLat)
 	db.Raw(checkSQL).Scan(&dataCount)
 	if dataCount == 0 {
-		return nil
+		return GetEmptyTile()
 	}
-
 	// 4. 解析颜色配置
 	var colorData []ColorData
 	if err := json.Unmarshal(config.ColorConfig, &colorData); err != nil {
+		log.Printf("解析颜色配置失败: %v", err)
 		return nil
 	}
-	rCaseSQL, gCaseSQL, bCaseSQL := buildColorCaseSQL(colorData)
+	// 5. 从PostgreSQL查询矢量数据
+	features, err := queryVectorFeatures(db, layerName, bounds)
 
+	if err != nil {
+		log.Printf("查询矢量数据失败: %v", err)
+		return nil
+	}
+	if len(features) == 0 {
+		return GetEmptyTile()
+	}
+	// 6. 创建Gogeo配置
 	tileSize := config.TileSize
 	if tileSize == 0 {
 		tileSize = 256
 	}
-
-	// 5. 计算分辨率 (度/像素)
-	// 因为是 WGS84 (4326)，X 和 Y 方向的度数跨度可能不同，必须分别计算
-	scaleX := (maxLon - minLon) / float64(tileSize)
-	scaleY := (maxLat - minLat) / float64(tileSize)
-	// 注意：在 PostGIS Raster 中，ScaleY 通常为负数表示向下，
-	// 但这里我们用 ST_MakeEmptyRaster 的 upperlefty 参数控制，scale传正数或负数取决于函数定义，
-	// 这里的逻辑我们在 SQL 中显式处理。
-
-	// 6. 构建核心 SQL
-	// 关键点：
-	// 1. canvas CTE: 创建一个标准的参考栅格。
-	// 2. ST_Intersection: 裁剪几何体。
-	// 3. ST_AsRaster(geom, ref_rast): 强制对齐到 canvas。
-	sql := fmt.Sprintf(`
-        WITH 
-        -- 1. 定义参考画布 (空白栅格)
-        -- 参数: width, height, upperleftx, upperlefty, scalex, scaley, skewx, skewy, srid
-        canvas AS (
-            SELECT ST_MakeEmptyRaster(
-                %d, %d, 
-                %v, %v, 
-                %v, -%v, 
-                0, 0, 
-                4326
-            ) AS rast
-        ),
-        -- 2. 获取并处理矢量数据
-        features AS (
-            SELECT 
-                -- 裁剪几何体到瓦片边界，解决跨边界要素问题
-                ST_Intersection(
-                    ST_Transform(geom, 4326), 
-                    ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-                ) as geom,
-                (%s) as r_val,
-                (%s) as g_val,
-                (%s) as b_val
-            FROM "%s"
-            WHERE 
-                -- 空间索引过滤
-                geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-        ),
-        -- 3. 将矢量烧录到栅格 (使用 canvas 作为对齐参考)
-        rasterized AS (
-            SELECT 
-                ST_AsRaster(
-                    f.geom, 
-                    c.rast, -- 关键：传入 canvas.rast 作为参考栅格！
-                    ARRAY['8BUI', '8BUI', '8BUI', '8BUI'], 
-                    ARRAY[f.r_val, f.g_val, f.b_val, %d], -- RGBA
-                    ARRAY[0, 0, 0, 0] -- NoData 值
-                ) as rast
-            FROM features f, canvas c
-            WHERE NOT ST_IsEmpty(f.geom) -- 排除裁剪后为空的几何体
-        )
-        -- 4. 合并并输出 PNG
-        SELECT ST_AsPNG(
-            ST_Union(rast)
-        ) AS png
-        FROM rasterized
-    `,
-		// ST_MakeEmptyRaster 参数
-		tileSize, tileSize, // width, height
-		minLon, maxLat, // upperleft_x, upperleft_y (注意：栅格原点通常在左上角，所以是 MaxLat)
-		scaleX, scaleY, // scalex, scaley (SQL中加了负号)
-
-		// ST_Intersection 的 Envelope 参数
-		minLon, minLat, maxLon, maxLat,
-
-		// 颜色 SQL
-		rCaseSQL, gCaseSQL, bCaseSQL,
-		layerName,
-
-		// WHERE clause 的 Envelope 参数
-		minLon, minLat, maxLon, maxLat,
-
-		// Alpha 值
-		int(config.Opacity*255),
-	)
-
-	// fmt.Printf("执行SQL:\n%s\n", sql) // 调试用
-
-	// 7. 执行查询
-	var result struct {
-		PNG []byte
+	gogeoConfig := Gogeo.VectorTileConfig{
+		TileSize: int(tileSize),
+		Opacity:  config.Opacity,
+		ColorMap: convertColorConfig(colorData),
 	}
+	// 7. 创建瓦片生成器
+	generator := Gogeo.NewVectorTileGenerator(gogeoConfig)
+	// 8. 创建矢量图层
+	vectorLayer, err := generator.CreateVectorLayerFromWKB(features, 4326)
 
-	err := db.Raw(sql).Scan(&result).Error
 	if err != nil {
-		fmt.Printf("WMTS SQL执行错误: %v\n", err)
+		log.Printf("创建矢量图层失败: %v", err)
 		return nil
 	}
 
-	// 8. 保存缓存
-	if result.PNG != nil && len(result.PNG) > 0 {
-		saveTileCache(db, cacheTableName, x, y, z, result.PNG)
+	defer vectorLayer.Close()
+	// 9. 栅格化生成PNG
+	pngData, err := generator.RasterizeVectorLayer(vectorLayer, Gogeo.VectorTileBounds{
+		MinLon: bounds.MinLon,
+		MinLat: bounds.MinLat,
+		MaxLon: bounds.MaxLon,
+		MaxLat: bounds.MaxLat,
+	})
+	fmt.Println(pngData)
+	if err != nil {
+		log.Printf("栅格化失败: %v", err)
+		return nil
 	}
-
-	return result.PNG
+	// 10. 保存缓存
+	if pngData != nil && len(pngData) > 0 {
+		saveTileCache(db, cacheTableName, x, y, z, pngData)
+	}
+	return pngData
 }
 
-// buildColorCaseSQL 构建颜色映射的 CASE WHEN SQL，返回 R、G、B 三个通道
-func buildColorCaseSQL(colorData []ColorData) (string, string, string) {
-	// 默认灰色
-	defaultR, defaultG, defaultB := "128", "128", "128"
-
-	if len(colorData) == 0 || len(colorData[0].ColorMap) == 0 {
-		return defaultR, defaultG, defaultB
+func queryVectorFeatures(db *gorm.DB, tableName string, bounds Gogeo.VectorTileBounds) ([]Gogeo.VectorFeature, error) {
+	// 构建边界框WKT
+	boxWKT := fmt.Sprintf("POLYGON((%f %f, %f %f, %f %f, %f %f, %f %f))",
+		bounds.MinLon, bounds.MinLat,
+		bounds.MaxLon, bounds.MinLat,
+		bounds.MaxLon, bounds.MaxLat,
+		bounds.MinLon, bounds.MaxLat,
+		bounds.MinLon, bounds.MinLat,
+	)
+	// 获取字段列表
+	var columns []struct {
+		ColumnName string `gorm:"column:column_name"`
 	}
-
-	attName := colorData[0].AttName
-	colorMap := colorData[0].ColorMap
-
-	// 检查是否为"默认"单一颜色模式
-	if attName == "默认" && len(colorMap) > 0 && colorMap[0].Property == "默认" {
-		rgb := parseColor(colorMap[0].Color)
-		return fmt.Sprintf("%d", rgb.R), fmt.Sprintf("%d", rgb.G), fmt.Sprintf("%d", rgb.B)
+	err := db.Raw(fmt.Sprintf(`
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_name = '%s' 
+		AND column_name != 'geom'
+		ORDER BY ordinal_position
+	`, tableName)).Scan(&columns).Error
+	if err != nil {
+		return nil, fmt.Errorf("获取字段列表失败: %v", err)
 	}
-
-	// 构建 CASE WHEN 语句
-	var rCases, gCases, bCases []string
-
-	for _, cmap := range colorMap {
-		rgb := parseColor(cmap.Color)
-
-		// 转义属性值中的单引号
-		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
-
-		rCases = append(rCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.R))
-		gCases = append(gCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.G))
-		bCases = append(bCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.B))
+	var fieldList []string
+	for _, col := range columns {
+		fieldList = append(fieldList, col.ColumnName)
 	}
-
-	rCaseSQL := "CASE " + strings.Join(rCases, " ") + " ELSE 128 END"
-	gCaseSQL := "CASE " + strings.Join(gCases, " ") + " ELSE 128 END"
-	bCaseSQL := "CASE " + strings.Join(bCases, " ") + " ELSE 128 END"
-
-	return rCaseSQL, gCaseSQL, bCaseSQL
+	fieldListStr := strings.Join(fieldList, ", ")
+	// 查询数据
+	query := fmt.Sprintf(`
+		SELECT 
+			ST_AsBinary(
+				ST_Transform(
+					ST_Intersection(
+						ST_Transform(geom, 4326),
+						ST_GeomFromText('%s', 4326)
+					),
+					4326
+				)
+			) as geom,
+			%s
+		FROM "%s"
+		WHERE ST_Intersects(
+			ST_Transform(geom, 4326),
+			ST_GeomFromText('%s', 4326)
+		)
+		AND NOT ST_IsEmpty(
+			ST_Intersection(
+				ST_Transform(geom, 4326),
+				ST_GeomFromText('%s', 4326)
+			)
+		)
+	`, boxWKT, fieldListStr, tableName, boxWKT, boxWKT)
+	rows, err := db.Raw(query).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("执行查询失败: %v", err)
+	}
+	defer rows.Close()
+	columnNames, _ := rows.Columns()
+	columnMap := make(map[string]int)
+	for i, name := range columnNames {
+		columnMap[name] = i
+	}
+	var features []Gogeo.VectorFeature
+	for rows.Next() {
+		values := make([]interface{}, len(columnNames))
+		valuePtrs := make([]interface{}, len(columnNames))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+		feature := Gogeo.VectorFeature{
+			Attributes: make(map[string]string),
+		}
+		// 提取几何
+		if geomIdx, ok := columnMap["geom"]; ok {
+			if wkb, ok := values[geomIdx].([]byte); ok {
+				feature.WKB = wkb
+			}
+		}
+		// 提取属性
+		for _, col := range columns {
+			if idx, ok := columnMap[col.ColumnName]; ok {
+				if values[idx] != nil {
+					feature.Attributes[col.ColumnName] = fmt.Sprintf("%v", values[idx])
+				}
+			}
+		}
+		features = append(features, feature)
+	}
+	return features, nil
 }
-
-// parseColor 解析颜色字符串，支持 hex、rgb、rgba 格式（大小写不敏感）
-func parseColor(color string) RGB {
-	color = strings.TrimSpace(color)
-	colorLower := strings.ToLower(color)
-
-	// 1. 尝试解析 hex 格式：#RRGGBB 或 #RGB
-	if strings.HasPrefix(colorLower, "#") {
-		return parseHexColor(color)
+func convertColorConfig(colorData []ColorData) []Gogeo.VectorColorRule {
+	if len(colorData) == 0 {
+		return []Gogeo.VectorColorRule{}
 	}
+	cd := colorData[0]
 
-	// 2. 尝试解析 rgba 格式：rgba(r, g, b, a) 或 RGBA(r, g, b, a)
-	if strings.HasPrefix(colorLower, "rgba") {
-		return parseRGBAColor(color)
+	// 单一默认颜色
+	if cd.AttName == "默认" && len(cd.ColorMap) > 0 && cd.ColorMap[0].Property == "默认" {
+		return []Gogeo.VectorColorRule{
+			{
+				AttributeName:  "默认",
+				AttributeValue: "默认",
+				Color:          cd.ColorMap[0].Color,
+			},
+		}
 	}
-
-	// 3. 尝试解析 rgb 格式：rgb(r, g, b) 或 RGB(r, g, b)
-	if strings.HasPrefix(colorLower, "rgb") {
-		return parseRGBColor(color)
+	// 按属性值映射
+	colorValues := make(map[string]string)
+	for _, cmap := range cd.ColorMap {
+		colorValues[cmap.Property] = cmap.Color
 	}
-
-	// 默认返回灰色
-	return RGB{R: 128, G: 128, B: 128, A: 255}
-}
-
-// parseHexColor 解析十六进制颜色（支持大小写）
-func parseHexColor(hex string) RGB {
-	hex = strings.TrimPrefix(hex, "#")
-	hex = strings.ToLower(hex) // 转换为小写统一处理
-
-	// 处理简写格式 #RGB -> #RRGGBB
-	if len(hex) == 3 {
-		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+	return []Gogeo.VectorColorRule{
+		{
+			AttributeName: cd.AttName,
+			ColorValues:   colorValues,
+		},
 	}
-
-	if len(hex) != 6 {
-		return RGB{R: 128, G: 128, B: 128, A: 255}
-	}
-
-	var r, g, b int
-	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
-	return RGB{R: r, G: g, B: b, A: 255}
-}
-
-// parseRGBColor 解析 rgb(r, g, b) 格式（支持大小写）
-func parseRGBColor(color string) RGB {
-	// 使用正则提取数字（大小写不敏感）
-	re := regexp.MustCompile(`(?i)rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)`)
-	matches := re.FindStringSubmatch(color)
-
-	if len(matches) != 4 {
-		return RGB{R: 128, G: 128, B: 128, A: 255}
-	}
-
-	r, _ := strconv.Atoi(matches[1])
-	g, _ := strconv.Atoi(matches[2])
-	b, _ := strconv.Atoi(matches[3])
-
-	return RGB{
-		R: clamp(r, 0, 255),
-		G: clamp(g, 0, 255),
-		B: clamp(b, 0, 255),
-		A: 255,
-	}
-}
-
-// parseRGBAColor 解析 rgba(r, g, b, a) 格式（支持大小写）
-func parseRGBAColor(color string) RGB {
-	// 使用正则提取数字（大小写不敏感）
-	re := regexp.MustCompile(`(?i)rgba\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)`)
-	matches := re.FindStringSubmatch(color)
-
-	if len(matches) != 5 {
-		return RGB{R: 128, G: 128, B: 128, A: 255}
-	}
-
-	r, _ := strconv.Atoi(matches[1])
-	g, _ := strconv.Atoi(matches[2])
-	b, _ := strconv.Atoi(matches[3])
-	a, _ := strconv.ParseFloat(matches[4], 64)
-
-	// alpha 可能是 0-1 的小数或 0-255 的整数
-	alphaInt := int(a)
-	if a <= 1.0 {
-		alphaInt = int(a * 255)
-	}
-
-	return RGB{
-		R: clamp(r, 0, 255),
-		G: clamp(g, 0, 255),
-		B: clamp(b, 0, 255),
-		A: clamp(alphaInt, 0, 255),
-	}
-}
-
-// clamp 限制值在指定范围内
-func clamp(value, min, max int) int {
-	if value < min {
-		return min
-	}
-	if value > max {
-		return max
-	}
-	return value
 }
 
 // queryTileCache 查询瓦片缓存
