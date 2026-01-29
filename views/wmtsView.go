@@ -171,7 +171,6 @@ func (uc *UserController) GetWMTSTile(c *gin.Context) {
 	}
 
 	// 2. 生成瓦片
-
 	pngData := pgmvt.GenerateWMTSTile(x, y, z, layerName, wmtsSchema, DB)
 
 	if pngData != nil {

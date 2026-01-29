@@ -29,11 +29,11 @@ type RGB struct {
 	A int
 }
 
-func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
+// GenerateWMTSTile 生成WMTS瓦片
+func GenerateWMTSTile(x, y, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
 	cacheTableName := layerName + "_wmts"
 	// 1. 查询缓存
-	cachedTile := queryTileCache(db, cacheTableName, x, y, z)
-	if cachedTile != nil {
+	if cachedTile := queryTileCache(db, cacheTableName, x, y, z); cachedTile != nil {
 		return cachedTile
 	}
 	// 2. 计算瓦片边界
@@ -49,23 +49,27 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	if dataCount == 0 {
 		return GetEmptyTile()
 	}
-	// 4. 解析颜色配置
+	// 4. 获取几何类型
+	geomType, err := Gogeo.GetTableGeometryType(db, layerName)
+	if err != nil {
+		log.Printf("获取几何类型失败: %v", err)
+		return GetEmptyTile()
+	}
+	// 5. 解析颜色配置
 	var colorData []ColorData
 	if err := json.Unmarshal(config.ColorConfig, &colorData); err != nil {
 		log.Printf("解析颜色配置失败: %v", err)
-		return nil
-	}
-	// 5. 从PostgreSQL查询矢量数据
-	features, err := queryVectorFeatures(db, layerName, bounds)
-
-	if err != nil {
-		log.Printf("查询矢量数据失败: %v", err)
-		return nil
-	}
-	if len(features) == 0 {
 		return GetEmptyTile()
 	}
-	// 6. 创建Gogeo配置
+	// 6. 查询矢量数据
+	features, err := queryVectorFeatures(db, layerName, bounds)
+	if err != nil || len(features) == 0 {
+		if err != nil {
+			log.Printf("查询矢量数据失败: %v", err)
+		}
+		return GetEmptyTile()
+	}
+	// 7. 准备配置
 	tileSize := config.TileSize
 	if tileSize == 0 {
 		tileSize = 256
@@ -75,36 +79,32 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 		Opacity:  config.Opacity,
 		ColorMap: convertColorConfig(colorData),
 	}
-	// 7. 创建瓦片生成器
-	generator := Gogeo.NewVectorTileGenerator(gogeoConfig)
-	// 8. 创建矢量图层
-	vectorLayer, err := generator.CreateVectorLayerFromWKB(features, 4326)
-
-	if err != nil {
-		log.Printf("创建矢量图层失败: %v", err)
-		return nil
-	}
-
-	defer vectorLayer.Close()
-	// 9. 栅格化生成PNG
-	pngData, err := generator.RasterizeVectorLayer(vectorLayer, Gogeo.VectorTileBounds{
-		MinLon: bounds.MinLon,
-		MinLat: bounds.MinLat,
-		MaxLon: bounds.MaxLon,
-		MaxLat: bounds.MaxLat,
+	// 8. 提交到GDAL工作池
+	pool := Gogeo.GetGDALWorkerPool()
+	result := pool.Submit(&Gogeo.TileRequest{
+		Features: features,
+		SRID:     4326,
+		GeomType: geomType,
+		Bounds: Gogeo.VectorTileBounds{
+			MinLon: bounds.MinLon,
+			MinLat: bounds.MinLat,
+			MaxLon: bounds.MaxLon,
+			MaxLat: bounds.MaxLat,
+		},
+		Config: gogeoConfig,
 	})
-	fmt.Println(pngData)
-	if err != nil {
-		log.Printf("栅格化失败: %v", err)
-		return nil
+	if result.Err != nil {
+		log.Printf("瓦片生成失败 [%d/%d/%d]: %v", z, x, y, result.Err)
+		return GetEmptyTile()
 	}
-	// 10. 保存缓存
-	if pngData != nil && len(pngData) > 0 {
-		saveTileCache(db, cacheTableName, x, y, z, pngData)
+	// 9. 异步保存缓存
+	if result.Data != nil && len(result.Data) > 0 {
+		go func(data []byte) {
+			saveTileCache(db, cacheTableName, x, y, z, data)
+		}(result.Data)
 	}
-	return pngData
+	return result.Data
 }
-
 func queryVectorFeatures(db *gorm.DB, tableName string, bounds Gogeo.VectorTileBounds) ([]Gogeo.VectorFeature, error) {
 	// 构建边界框WKT
 	boxWKT := fmt.Sprintf("POLYGON((%f %f, %f %f, %f %f, %f %f, %f %f))",
