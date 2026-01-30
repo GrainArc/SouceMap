@@ -29,7 +29,7 @@ type RGB struct {
 	A int
 }
 
-// GenerateWMTSTile 生成 WMTS 瓦片（彻底修复边界一致性）
+// GenerateWMTSTile 生成 WMTS 瓦片（性能优化版）
 func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
 	cacheTableName := layerName + "_wmts"
 
@@ -64,18 +64,8 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	extMaxLat := maxLat + scaleY
 	extTileSize := tileSize + 2
 
-	// 5. 预检查数据
-	var dataCount int64
-	checkSQL := fmt.Sprintf(`
-        SELECT COUNT(*) 
-        FROM "%s" 
-        WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-    `, layerName, extMinLon, extMinLat, extMaxLon, extMaxLat)
-
-	db.Raw(checkSQL).Scan(&dataCount)
-	if dataCount == 0 {
-		return nil
-	}
+	// 5. 根据缩放级别计算简化容差（关键优化）
+	simplifyTolerance := calcSimplifyTolerance(z, scaleX, scaleY)
 
 	// 6. 解析颜色配置
 	var colorData []ColorData
@@ -84,88 +74,14 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	}
 
 	alpha := int(config.Opacity * 255)
-	colorGroupSQL := buildColorGroupSQL(colorData, layerName)
 
-	// 7. 核心 SQL：生成扩展栅格 -> ST_Clip 精确裁剪
-	sql := fmt.Sprintf(`
-        WITH 
-        -- 扩展查询边界
-        ext_bounds AS (
-            SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS geom
-        ),
-        -- 精确瓦片边界
-        tile_bounds AS (
-            SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS geom
-        ),
-        -- 扩展栅格模板 (tileSize + 2)
-        ext_raster AS (
-            SELECT ST_AddBand(
-                ST_MakeEmptyRaster(
-                    %d, %d, 
-                    %v, %v, 
-                    %v, -%v, 
-                    0, 0, 
-                    4326
-                ),
-                ARRAY[
-                    ROW(1, '8BUI'::text, 0, 0),
-                    ROW(2, '8BUI'::text, 0, 0),
-                    ROW(3, '8BUI'::text, 0, 0),
-                    ROW(4, '8BUI'::text, 0, 0)
-                ]::addbandarg[]
-            ) AS rast
-        ),
-        -- 按颜色分组
-        color_groups AS (
-            %s
-        ),
-        -- 栅格化到扩展栅格
-        rasterized AS (
-            SELECT 
-                ST_AsRaster(
-                    cg.geom,
-                    ext.rast,
-                    ARRAY['8BUI', '8BUI', '8BUI', '8BUI'],
-                    ARRAY[cg.r_val::double precision, cg.g_val::double precision, cg.b_val::double precision, %d::double precision],
-                    ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision],
-                    true
-                ) AS rast
-            FROM color_groups cg, ext_raster ext
-            WHERE cg.geom IS NOT NULL AND NOT ST_IsEmpty(cg.geom)
-        ),
-        -- 合并扩展栅格
-        merged_ext AS (
-            SELECT ST_Union(rast, 'LAST') AS rast
-            FROM (
-                SELECT rast FROM ext_raster
-                UNION ALL
-                SELECT rast FROM rasterized WHERE rast IS NOT NULL
-            ) sub
-        ),
-        -- 裁剪到精确瓦片大小
-        clipped AS (
-            SELECT ST_Clip(
-                rast,
-                (SELECT geom FROM tile_bounds),
-                ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision],
-                true
-            ) AS rast
-            FROM merged_ext
-        )
-        SELECT ST_AsPNG(rast) AS png FROM clipped
-    `,
-		// ext_bounds
+	// 7. 构建优化后的 SQL
+	sql := buildOptimizedSQL(
+		layerName, colorData,
 		extMinLon, extMinLat, extMaxLon, extMaxLat,
-		// tile_bounds
 		minLon, minLat, maxLon, maxLat,
-		// ext_raster (扩展尺寸)
-		extTileSize, extTileSize,
-		extMinLon, extMaxLat,
-		scaleX, scaleY,
-		// color_groups SQL
-		colorGroupSQL,
-		// alpha
-		alpha,
+		int(extTileSize), scaleX, scaleY,
+		simplifyTolerance, alpha,
 	)
 
 	var result struct {
@@ -174,7 +90,6 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 
 	err := db.Raw(sql).Scan(&result).Error
 	if err != nil {
-		fmt.Printf("WMTS SQL执行错误: %v\n", err)
 		return nil
 	}
 
@@ -183,6 +98,125 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	}
 
 	return result.PNG
+}
+
+// calcSimplifyTolerance 根据缩放级别计算几何简化容差
+func calcSimplifyTolerance(z int, scaleX, scaleY float64) float64 {
+	// 低于像素分辨率的细节不需要保留
+	pixelSize := math.Max(scaleX, scaleY)
+
+	// 缩放级别越低，简化程度越高
+	switch {
+	case z <= 8:
+		return pixelSize * 4
+	case z <= 12:
+		return pixelSize * 2
+	case z <= 16:
+		return pixelSize
+	default:
+		return pixelSize * 0.5
+	}
+}
+
+// buildOptimizedSQL 构建优化后的 SQL
+func buildOptimizedSQL(
+	layerName string, colorData []ColorData,
+	extMinLon, extMinLat, extMaxLon, extMaxLat float64,
+	minLon, minLat, maxLon, maxLat float64,
+	extTileSize int, scaleX, scaleY float64,
+	simplifyTolerance float64, alpha int,
+) string {
+	// 构建颜色 CASE 表达式
+	rCase, gCase, bCase := buildColorCaseExpr(colorData)
+
+	sql := fmt.Sprintf(`
+        WITH 
+        ext_raster AS (
+            SELECT ST_AddBand(
+                ST_MakeEmptyRaster(%d, %d, %v, %v, %v, -%v, 0, 0, 4326),
+                ARRAY[
+                    ROW(1, '8BUI', 0, 0),
+                    ROW(2, '8BUI', 0, 0),
+                    ROW(3, '8BUI', 0, 0),
+                    ROW(4, '8BUI', 0, 0)
+                ]::addbandarg[]
+            ) AS rast
+        ),
+        features AS (
+            SELECT 
+                ST_SimplifyPreserveTopology(geom, %v) AS geom,
+                (%s)::int AS r, (%s)::int AS g, (%s)::int AS b
+            FROM "%s"
+            WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
+        ),
+        grouped AS (
+            SELECT r, g, b, ST_Collect(geom) AS geom
+            FROM features
+            WHERE geom IS NOT NULL
+            GROUP BY r, g, b
+        ),
+        rasterized AS (
+            SELECT ST_AsRaster(
+                g.geom, e.rast,
+                ARRAY['8BUI', '8BUI', '8BUI', '8BUI'],
+                ARRAY[g.r, g.g, g.b, %d]::float8[],
+                ARRAY[0, 0, 0, 0]::float8[],
+                true
+            ) AS rast
+            FROM grouped g, ext_raster e
+            WHERE NOT ST_IsEmpty(g.geom)
+        ),
+        merged AS (
+            SELECT ST_Union(rast, 'LAST') AS rast
+            FROM (
+                SELECT rast FROM ext_raster
+                UNION ALL
+                SELECT rast FROM rasterized WHERE rast IS NOT NULL
+            ) t
+        )
+        SELECT ST_AsPNG(
+            ST_Clip(rast, ST_MakeEnvelope(%v, %v, %v, %v, 4326), ARRAY[0,0,0,0]::float8[], true)
+        ) AS png
+        FROM merged
+    `,
+		extTileSize, extTileSize, extMinLon, extMaxLat, scaleX, scaleY,
+		simplifyTolerance,
+		rCase, gCase, bCase,
+		layerName,
+		extMinLon, extMinLat, extMaxLon, extMaxLat,
+		alpha,
+		minLon, minLat, maxLon, maxLat,
+	)
+
+	return sql
+}
+
+// buildColorCaseExpr 构建颜色 CASE 表达式
+func buildColorCaseExpr(colorData []ColorData) (string, string, string) {
+	if len(colorData) == 0 || len(colorData[0].ColorMap) == 0 {
+		return "128", "128", "128"
+	}
+
+	attName := colorData[0].AttName
+	colorMap := colorData[0].ColorMap
+
+	if attName == "默认" && len(colorMap) > 0 && colorMap[0].Property == "默认" {
+		rgb := parseColor(colorMap[0].Color)
+		return fmt.Sprintf("%d", rgb.R), fmt.Sprintf("%d", rgb.G), fmt.Sprintf("%d", rgb.B)
+	}
+
+	var rParts, gParts, bParts []string
+	for _, cm := range colorMap {
+		rgb := parseColor(cm.Color)
+		prop := strings.ReplaceAll(cm.Property, "'", "''")
+		rParts = append(rParts, fmt.Sprintf("WHEN \"%s\"='%s' THEN %d", attName, prop, rgb.R))
+		gParts = append(gParts, fmt.Sprintf("WHEN \"%s\"='%s' THEN %d", attName, prop, rgb.G))
+		bParts = append(bParts, fmt.Sprintf("WHEN \"%s\"='%s' THEN %d", attName, prop, rgb.B))
+	}
+
+	return "CASE " + strings.Join(rParts, " ") + " ELSE 128 END",
+		"CASE " + strings.Join(gParts, " ") + " ELSE 128 END",
+		"CASE " + strings.Join(bParts, " ") + " ELSE 128 END"
 }
 
 // buildColorGroupSQL 构建按颜色分组合并几何的 SQL
