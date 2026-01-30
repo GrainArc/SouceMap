@@ -305,7 +305,6 @@ func (uc *UserController) ClearWMTSCache(c *gin.Context) {
 	})
 }
 
-// GetWMTSCacheStats 获取缓存统计信息
 func (uc *UserController) GetWMTSCacheStats(c *gin.Context) {
 	layerName := strings.ToLower(c.Param("layername"))
 
@@ -315,8 +314,36 @@ func (uc *UserController) GetWMTSCacheStats(c *gin.Context) {
 	}
 
 	DB := models.DB
+
+	// 先查询 WmtsSchema 获取图层配置信息
+	var wmtsSchema models.WmtsSchema
+	if err := DB.Where("layer_name = ?", layerName).First(&wmtsSchema).Error; err != nil {
+		response.Error(c, 200, "查询图层配置失败")
+		return
+	}
+
 	cacheTableName := layerName + "_wmts"
 
+	// 检查缓存表是否存在
+	var exists bool
+	checkSQL := `
+		SELECT EXISTS (
+			SELECT FROM information_schema.tables 
+			WHERE table_schema = 'public' 
+			AND table_name = ?
+		)
+	`
+	if err := DB.Raw(checkSQL, cacheTableName).Scan(&exists).Error; err != nil {
+		response.Error(c, 200, "检查缓存表失败")
+		return
+	}
+
+	if !exists {
+		response.Error(c, 200, fmt.Sprintf("缓存表 %s 不存在", cacheTableName))
+		return
+	}
+
+	// 查询缓存统计信息
 	var stats struct {
 		Count     int64
 		TotalSize int64
@@ -325,14 +352,19 @@ func (uc *UserController) GetWMTSCacheStats(c *gin.Context) {
 	sql := fmt.Sprintf(`
 		SELECT 
 			COUNT(*) as count,
-			SUM(LENGTH(byte)) as total_size
+			COALESCE(SUM(LENGTH(byte)), 0) as total_size
 		FROM "%s"
 	`, cacheTableName)
 
-	DB.Raw(sql).Scan(&stats)
+	if err := DB.Raw(sql).Scan(&stats).Error; err != nil {
+		response.Error(c, 200, "查询缓存统计信息失败")
+		return
+	}
 
 	response.Success(c, gin.H{
 		"layer_name":       layerName,
+		"tile_size":        wmtsSchema.TileSize,
+		"opacity":          wmtsSchema.Opacity,
 		"cached_tiles":     stats.Count,
 		"total_size_bytes": stats.TotalSize,
 		"total_size_mb":    float64(stats.TotalSize) / 1024 / 1024,
