@@ -29,7 +29,7 @@ type RGB struct {
 	A int
 }
 
-// GenerateWMTSTile 生成 WMTS 瓦片（彻底修复边界缝隙）
+// GenerateWMTSTile 生成 WMTS 瓦片（彻底修复边界一致性）
 func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
 	cacheTableName := layerName + "_wmts"
 
@@ -48,48 +48,57 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	minLat := math.Min(boundboxMin[1], boundboxMax[1])
 	maxLat := math.Max(boundboxMin[1], boundboxMax[1])
 
-	// 3. 预检查数据
+	tileSize := config.TileSize
+	if tileSize == 0 {
+		tileSize = 256
+	}
+
+	// 3. 计算像素分辨率
+	scaleX := (maxLon - minLon) / float64(tileSize)
+	scaleY := (maxLat - minLat) / float64(tileSize)
+
+	// 4. 扩展范围（各边扩展1像素）
+	extMinLon := minLon - scaleX
+	extMaxLon := maxLon + scaleX
+	extMinLat := minLat - scaleY
+	extMaxLat := maxLat + scaleY
+	extTileSize := tileSize + 2
+
+	// 5. 预检查数据
 	var dataCount int64
 	checkSQL := fmt.Sprintf(`
         SELECT COUNT(*) 
         FROM "%s" 
         WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-    `, layerName, minLon, minLat, maxLon, maxLat)
+    `, layerName, extMinLon, extMinLat, extMaxLon, extMaxLat)
 
 	db.Raw(checkSQL).Scan(&dataCount)
 	if dataCount == 0 {
 		return nil
 	}
 
-	// 4. 解析颜色配置
+	// 6. 解析颜色配置
 	var colorData []ColorData
 	if err := json.Unmarshal(config.ColorConfig, &colorData); err != nil {
 		return nil
 	}
 
-	tileSize := config.TileSize
-	if tileSize == 0 {
-		tileSize = 256
-	}
-
-	// 5. 计算分辨率和像素缓冲距离
-	scaleX := (maxLon - minLon) / float64(tileSize)
-	scaleY := (maxLat - minLat) / float64(tileSize)
-	// 半像素缓冲，确保边界像素被填充
-	pixelBuffer := math.Max(scaleX, scaleY) * 0.5
-
 	alpha := int(config.Opacity * 255)
+	colorGroupSQL := buildColorGroupSQL(colorData, layerName)
 
-	// 6. 构建颜色分组 SQL
-	colorGroupSQL := buildColorGroupSQL(colorData, layerName, pixelBuffer)
-
-	// 7. 核心 SQL
+	// 7. 核心 SQL：生成扩展栅格 -> ST_Clip 精确裁剪
 	sql := fmt.Sprintf(`
         WITH 
+        -- 扩展查询边界
+        ext_bounds AS (
+            SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS geom
+        ),
+        -- 精确瓦片边界
         tile_bounds AS (
             SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS geom
         ),
-        ref_raster AS (
+        -- 扩展栅格模板 (tileSize + 2)
+        ext_raster AS (
             SELECT ST_AddBand(
                 ST_MakeEmptyRaster(
                     %d, %d, 
@@ -106,37 +115,56 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
                 ]::addbandarg[]
             ) AS rast
         ),
+        -- 按颜色分组
         color_groups AS (
             %s
         ),
+        -- 栅格化到扩展栅格
         rasterized AS (
             SELECT 
                 ST_AsRaster(
                     cg.geom,
-                    ref.rast,
+                    ext.rast,
                     ARRAY['8BUI', '8BUI', '8BUI', '8BUI'],
                     ARRAY[cg.r_val::double precision, cg.g_val::double precision, cg.b_val::double precision, %d::double precision],
                     ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision],
-                    true  -- touched=true: 填充所有接触到的像素
+                    true
                 ) AS rast
-            FROM color_groups cg, ref_raster ref
+            FROM color_groups cg, ext_raster ext
             WHERE cg.geom IS NOT NULL AND NOT ST_IsEmpty(cg.geom)
         ),
-        merged AS (
+        -- 合并扩展栅格
+        merged_ext AS (
             SELECT ST_Union(rast, 'LAST') AS rast
             FROM (
-                SELECT rast FROM ref_raster
+                SELECT rast FROM ext_raster
                 UNION ALL
                 SELECT rast FROM rasterized WHERE rast IS NOT NULL
             ) sub
+        ),
+        -- 裁剪到精确瓦片大小
+        clipped AS (
+            SELECT ST_Clip(
+                rast,
+                (SELECT geom FROM tile_bounds),
+                ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision],
+                true
+            ) AS rast
+            FROM merged_ext
         )
-        SELECT ST_AsPNG(rast) AS png FROM merged
+        SELECT ST_AsPNG(rast) AS png FROM clipped
     `,
+		// ext_bounds
+		extMinLon, extMinLat, extMaxLon, extMaxLat,
+		// tile_bounds
 		minLon, minLat, maxLon, maxLat,
-		tileSize, tileSize,
-		minLon, maxLat,
+		// ext_raster (扩展尺寸)
+		extTileSize, extTileSize,
+		extMinLon, extMaxLat,
 		scaleX, scaleY,
+		// color_groups SQL
 		colorGroupSQL,
+		// alpha
 		alpha,
 	)
 
@@ -157,19 +185,19 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	return result.PNG
 }
 
-// buildColorGroupSQL 构建按颜色分组合并几何的 SQL（带像素缓冲）
-func buildColorGroupSQL(colorData []ColorData, layerName string, pixelBuffer float64) string {
+// buildColorGroupSQL 构建按颜色分组合并几何的 SQL
+func buildColorGroupSQL(colorData []ColorData, layerName string) string {
+	baseTemplate := `
+        SELECT 
+            %d AS r_val, %d AS g_val, %d AS b_val,
+            ST_Union(geom) AS geom
+        FROM "%s"
+        WHERE geom && (SELECT geom FROM ext_bounds)%s
+        GROUP BY 1, 2, 3
+    `
+
 	if len(colorData) == 0 || len(colorData[0].ColorMap) == 0 {
-		return fmt.Sprintf(`
-            SELECT 
-                128 AS r_val, 128 AS g_val, 128 AS b_val,
-                ST_Buffer(
-                    ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
-                    %v
-                ) AS geom
-            FROM "%s"
-            WHERE geom && (SELECT geom FROM tile_bounds)
-        `, pixelBuffer, layerName)
+		return fmt.Sprintf(baseTemplate, 128, 128, 128, layerName, "")
 	}
 
 	attName := colorData[0].AttName
@@ -177,36 +205,15 @@ func buildColorGroupSQL(colorData []ColorData, layerName string, pixelBuffer flo
 
 	if attName == "默认" && len(colorMap) > 0 && colorMap[0].Property == "默认" {
 		rgb := parseColor(colorMap[0].Color)
-		return fmt.Sprintf(`
-            SELECT 
-                %d AS r_val, %d AS g_val, %d AS b_val,
-                ST_Buffer(
-                    ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
-                    %v
-                ) AS geom
-            FROM "%s"
-            WHERE geom && (SELECT geom FROM tile_bounds)
-        `, rgb.R, rgb.G, rgb.B, pixelBuffer, layerName)
+		return fmt.Sprintf(baseTemplate, rgb.R, rgb.G, rgb.B, layerName, "")
 	}
 
 	var unionParts []string
 	for _, cmap := range colorMap {
 		rgb := parseColor(cmap.Color)
 		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
-
-		part := fmt.Sprintf(`
-            SELECT 
-                %d AS r_val, %d AS g_val, %d AS b_val,
-                ST_Buffer(
-                    ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
-                    %v
-                ) AS geom
-            FROM "%s"
-            WHERE geom && (SELECT geom FROM tile_bounds)
-              AND "%s" = '%s'
-            GROUP BY 1, 2, 3
-        `, rgb.R, rgb.G, rgb.B, pixelBuffer, layerName, attName, escapedProperty)
-
+		condition := fmt.Sprintf(` AND "%s" = '%s'`, attName, escapedProperty)
+		part := fmt.Sprintf(baseTemplate, rgb.R, rgb.G, rgb.B, layerName, condition)
 		unionParts = append(unionParts, part)
 	}
 
@@ -215,20 +222,8 @@ func buildColorGroupSQL(colorData []ColorData, layerName string, pixelBuffer flo
 		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
 		conditions = append(conditions, fmt.Sprintf(`"%s" = '%s'`, attName, escapedProperty))
 	}
-
-	defaultPart := fmt.Sprintf(`
-        SELECT 
-            128 AS r_val, 128 AS g_val, 128 AS b_val,
-            ST_Buffer(
-                ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
-                %v
-            ) AS geom
-        FROM "%s"
-        WHERE geom && (SELECT geom FROM tile_bounds)
-          AND NOT (%s)
-        GROUP BY 1, 2, 3
-    `, pixelBuffer, layerName, strings.Join(conditions, " OR "))
-
+	defaultCondition := fmt.Sprintf(` AND NOT (%s)`, strings.Join(conditions, " OR "))
+	defaultPart := fmt.Sprintf(baseTemplate, 128, 128, 128, layerName, defaultCondition)
 	unionParts = append(unionParts, defaultPart)
 
 	return strings.Join(unionParts, "\nUNION ALL\n")
