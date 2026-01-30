@@ -74,6 +74,7 @@ func GeoRouters(r *gin.Engine) {
 		editRouter.POST("/GetGeoFromSchema", UserController.GetGeoFromSchema)
 		editRouter.POST("/AddGeoToSchema", UserController.AddGeoToSchema)
 		editRouter.POST("/DelGeoToSchema", UserController.DelGeoToSchema)
+		editRouter.POST("/DelGeosToSchema", UserController.DelGeosToSchema)
 	}
 	tempLayerRouter := r.Group("/temp_layer")
 	{
