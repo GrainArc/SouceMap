@@ -29,7 +29,7 @@ type RGB struct {
 	A int
 }
 
-// GenerateWMTSTile 生成 WMTS 瓦片（修复版）
+// GenerateWMTSTile 生成 WMTS 瓦片（彻底修复边界缝隙）
 func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
 	cacheTableName := layerName + "_wmts"
 
@@ -66,24 +66,30 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 	if err := json.Unmarshal(config.ColorConfig, &colorData); err != nil {
 		return nil
 	}
-	rCaseSQL, gCaseSQL, bCaseSQL := buildColorCaseSQL(colorData)
 
 	tileSize := config.TileSize
 	if tileSize == 0 {
 		tileSize = 256
 	}
 
-	// 5. 计算分辨率
+	// 5. 计算分辨率和像素缓冲距离
 	scaleX := (maxLon - minLon) / float64(tileSize)
 	scaleY := (maxLat - minLat) / float64(tileSize)
+	// 半像素缓冲，确保边界像素被填充
+	pixelBuffer := math.Max(scaleX, scaleY) * 0.5
 
 	alpha := int(config.Opacity * 255)
 
-	// 6. 构建核心 SQL - 使用透明基础栅格确保输出完整瓦片
+	// 6. 构建颜色分组 SQL
+	colorGroupSQL := buildColorGroupSQL(colorData, layerName, pixelBuffer)
+
+	// 7. 核心 SQL
 	sql := fmt.Sprintf(`
         WITH 
-        -- 1. 创建带透明波段的基础栅格（确保输出完整瓦片大小）
-        canvas AS (
+        tile_bounds AS (
+            SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS geom
+        ),
+        ref_raster AS (
             SELECT ST_AddBand(
                 ST_MakeEmptyRaster(
                     %d, %d, 
@@ -100,62 +106,40 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
                 ]::addbandarg[]
             ) AS rast
         ),
-        -- 2. 获取并处理矢量数据
-        features AS (
-            SELECT 
-                ST_Intersection(
-                    geom, 
-                    ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-                ) as geom,
-                (%s)::integer as r_val,
-                (%s)::integer as g_val,
-                (%s)::integer as b_val
-            FROM "%s"
-            WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
+        color_groups AS (
+            %s
         ),
-        -- 3. 将矢量烧录到栅格（使用 canvas 作为对齐参考）
         rasterized AS (
             SELECT 
                 ST_AsRaster(
-                    f.geom, 
-                    c.rast,
-                    ARRAY['8BUI', '8BUI', '8BUI', '8BUI'], 
-                    ARRAY[f.r_val::double precision, f.g_val::double precision, f.b_val::double precision, %d::double precision],
-                    ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision]
-                ) as rast
-            FROM features f, canvas c
-            WHERE NOT ST_IsEmpty(f.geom)
+                    cg.geom,
+                    ref.rast,
+                    ARRAY['8BUI', '8BUI', '8BUI', '8BUI'],
+                    ARRAY[cg.r_val::double precision, cg.g_val::double precision, cg.b_val::double precision, %d::double precision],
+                    ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision],
+                    true  -- touched=true: 填充所有接触到的像素
+                ) AS rast
+            FROM color_groups cg, ref_raster ref
+            WHERE cg.geom IS NOT NULL AND NOT ST_IsEmpty(cg.geom)
         ),
-        -- 4. 合并所有栅格（基础透明栅格 + 数据栅格）
-        all_rasters AS (
-            SELECT rast FROM canvas
-            UNION ALL
-            SELECT rast FROM rasterized WHERE rast IS NOT NULL
+        merged AS (
+            SELECT ST_Union(rast, 'LAST') AS rast
+            FROM (
+                SELECT rast FROM ref_raster
+                UNION ALL
+                SELECT rast FROM rasterized WHERE rast IS NOT NULL
+            ) sub
         )
-        -- 5. 输出 PNG
-        SELECT ST_AsPNG(ST_Union(rast)) AS png
-        FROM all_rasters
+        SELECT ST_AsPNG(rast) AS png FROM merged
     `,
-		// canvas 参数
+		minLon, minLat, maxLon, maxLat,
 		tileSize, tileSize,
 		minLon, maxLat,
 		scaleX, scaleY,
-
-		// ST_Intersection envelope
-		minLon, minLat, maxLon, maxLat,
-
-		// 颜色 SQL
-		rCaseSQL, gCaseSQL, bCaseSQL,
-		layerName,
-
-		// WHERE envelope
-		minLon, minLat, maxLon, maxLat,
-
-		// Alpha
+		colorGroupSQL,
 		alpha,
 	)
 
-	// 7. 执行查询
 	var result struct {
 		PNG []byte
 	}
@@ -166,12 +150,88 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 		return nil
 	}
 
-	// 8. 保存缓存
 	if result.PNG != nil && len(result.PNG) > 0 {
 		saveTileCache(db, cacheTableName, x, y, z, result.PNG)
 	}
 
 	return result.PNG
+}
+
+// buildColorGroupSQL 构建按颜色分组合并几何的 SQL（带像素缓冲）
+func buildColorGroupSQL(colorData []ColorData, layerName string, pixelBuffer float64) string {
+	if len(colorData) == 0 || len(colorData[0].ColorMap) == 0 {
+		return fmt.Sprintf(`
+            SELECT 
+                128 AS r_val, 128 AS g_val, 128 AS b_val,
+                ST_Buffer(
+                    ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
+                    %v
+                ) AS geom
+            FROM "%s"
+            WHERE geom && (SELECT geom FROM tile_bounds)
+        `, pixelBuffer, layerName)
+	}
+
+	attName := colorData[0].AttName
+	colorMap := colorData[0].ColorMap
+
+	if attName == "默认" && len(colorMap) > 0 && colorMap[0].Property == "默认" {
+		rgb := parseColor(colorMap[0].Color)
+		return fmt.Sprintf(`
+            SELECT 
+                %d AS r_val, %d AS g_val, %d AS b_val,
+                ST_Buffer(
+                    ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
+                    %v
+                ) AS geom
+            FROM "%s"
+            WHERE geom && (SELECT geom FROM tile_bounds)
+        `, rgb.R, rgb.G, rgb.B, pixelBuffer, layerName)
+	}
+
+	var unionParts []string
+	for _, cmap := range colorMap {
+		rgb := parseColor(cmap.Color)
+		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
+
+		part := fmt.Sprintf(`
+            SELECT 
+                %d AS r_val, %d AS g_val, %d AS b_val,
+                ST_Buffer(
+                    ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
+                    %v
+                ) AS geom
+            FROM "%s"
+            WHERE geom && (SELECT geom FROM tile_bounds)
+              AND "%s" = '%s'
+            GROUP BY 1, 2, 3
+        `, rgb.R, rgb.G, rgb.B, pixelBuffer, layerName, attName, escapedProperty)
+
+		unionParts = append(unionParts, part)
+	}
+
+	var conditions []string
+	for _, cmap := range colorMap {
+		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
+		conditions = append(conditions, fmt.Sprintf(`"%s" = '%s'`, attName, escapedProperty))
+	}
+
+	defaultPart := fmt.Sprintf(`
+        SELECT 
+            128 AS r_val, 128 AS g_val, 128 AS b_val,
+            ST_Buffer(
+                ST_Intersection(ST_Union(geom), (SELECT geom FROM tile_bounds)),
+                %v
+            ) AS geom
+        FROM "%s"
+        WHERE geom && (SELECT geom FROM tile_bounds)
+          AND NOT (%s)
+        GROUP BY 1, 2, 3
+    `, pixelBuffer, layerName, strings.Join(conditions, " OR "))
+
+	unionParts = append(unionParts, defaultPart)
+
+	return strings.Join(unionParts, "\nUNION ALL\n")
 }
 
 // buildColorCaseSQL 构建颜色映射的 CASE WHEN SQL，返回 R、G、B 三个通道
