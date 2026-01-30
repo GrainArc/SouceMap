@@ -39,23 +39,16 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 		return cachedTile
 	}
 
-	// 2. 计算瓦片经纬度边界 (Web Mercator 瓦片转 WGS84 坐标)
-	// 注意：Y轴在切片方案中通常是向下的，但在地理坐标中纬度是向上的
-	boundboxMin := XyzLonLat(float64(x), float64(y), float64(z))     // 西北角 (Left-Top) ? 需确认 XyzLonLat 返回的是 min还是max
-	boundboxMax := XyzLonLat(float64(x)+1, float64(y)+1, float64(z)) // 东南角 (Right-Bottom)
-
-	// XyzLonLat 通常返回的是 [Lon, Lat]。
-	// 对于 Google/OSM 瓦片方案：
-	// (x, y) 对应瓦片的 西北角 (MinLon, MaxLat)
-	// (x+1, y+1) 对应瓦片的 东南角 (MaxLon, MinLat)
-	// 因此我们需要整理出正确的 Min/Max 用于 PostGIS
+	// 2. 计算瓦片经纬度边界
+	boundboxMin := XyzLonLat(float64(x), float64(y), float64(z))
+	boundboxMax := XyzLonLat(float64(x)+1, float64(y)+1, float64(z))
 
 	minLon := math.Min(boundboxMin[0], boundboxMax[0])
 	maxLon := math.Max(boundboxMin[0], boundboxMax[0])
 	minLat := math.Min(boundboxMin[1], boundboxMax[1])
 	maxLat := math.Max(boundboxMin[1], boundboxMax[1])
 
-	// 3. 预检查数据 (这一步保留，为了性能)
+	// 3. 预检查数据
 	var dataCount int64
 	checkSQL := fmt.Sprintf(`
         SELECT COUNT(*) 
@@ -80,87 +73,87 @@ func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsS
 		tileSize = 256
 	}
 
-	// 5. 计算分辨率 (度/像素)
-	// 因为是 WGS84 (4326)，X 和 Y 方向的度数跨度可能不同，必须分别计算
+	// 5. 计算分辨率
 	scaleX := (maxLon - minLon) / float64(tileSize)
 	scaleY := (maxLat - minLat) / float64(tileSize)
-	// 注意：在 PostGIS Raster 中，ScaleY 通常为负数表示向下，
-	// 但这里我们用 ST_MakeEmptyRaster 的 upperlefty 参数控制，scale传正数或负数取决于函数定义，
-	// 这里的逻辑我们在 SQL 中显式处理。
 
-	// 6. 构建核心 SQL
-	// 关键点：
-	// 1. canvas CTE: 创建一个标准的参考栅格。
-	// 2. ST_Intersection: 裁剪几何体。
-	// 3. ST_AsRaster(geom, ref_rast): 强制对齐到 canvas。
+	alpha := int(config.Opacity * 255)
+
+	// 6. 构建核心 SQL - 使用透明基础栅格确保输出完整瓦片
 	sql := fmt.Sprintf(`
         WITH 
-        -- 1. 定义参考画布 (空白栅格)
-        -- 参数: width, height, upperleftx, upperlefty, scalex, scaley, skewx, skewy, srid
+        -- 1. 创建带透明波段的基础栅格（确保输出完整瓦片大小）
         canvas AS (
-            SELECT ST_MakeEmptyRaster(
-                %d, %d, 
-                %v, %v, 
-                %v, -%v, 
-                0, 0, 
-                4326
+            SELECT ST_AddBand(
+                ST_MakeEmptyRaster(
+                    %d, %d, 
+                    %v, %v, 
+                    %v, -%v, 
+                    0, 0, 
+                    4326
+                ),
+                ARRAY[
+                    ROW(1, '8BUI'::text, 0, 0),
+                    ROW(2, '8BUI'::text, 0, 0),
+                    ROW(3, '8BUI'::text, 0, 0),
+                    ROW(4, '8BUI'::text, 0, 0)
+                ]::addbandarg[]
             ) AS rast
         ),
         -- 2. 获取并处理矢量数据
         features AS (
             SELECT 
-                -- 裁剪几何体到瓦片边界，解决跨边界要素问题
                 ST_Intersection(
-                    ST_Transform(geom, 4326), 
+                    geom, 
                     ST_MakeEnvelope(%v, %v, %v, %v, 4326)
                 ) as geom,
-                (%s) as r_val,
-                (%s) as g_val,
-                (%s) as b_val
+                (%s)::integer as r_val,
+                (%s)::integer as g_val,
+                (%s)::integer as b_val
             FROM "%s"
-            WHERE 
-                -- 空间索引过滤
-                geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
+            WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
         ),
-        -- 3. 将矢量烧录到栅格 (使用 canvas 作为对齐参考)
+        -- 3. 将矢量烧录到栅格（使用 canvas 作为对齐参考）
         rasterized AS (
             SELECT 
                 ST_AsRaster(
                     f.geom, 
-                    c.rast, -- 关键：传入 canvas.rast 作为参考栅格！
+                    c.rast,
                     ARRAY['8BUI', '8BUI', '8BUI', '8BUI'], 
-                    ARRAY[f.r_val, f.g_val, f.b_val, %d], -- RGBA
-                    ARRAY[0, 0, 0, 0] -- NoData 值
+                    ARRAY[f.r_val::double precision, f.g_val::double precision, f.b_val::double precision, %d::double precision],
+                    ARRAY[0::double precision, 0::double precision, 0::double precision, 0::double precision]
                 ) as rast
             FROM features f, canvas c
-            WHERE NOT ST_IsEmpty(f.geom) -- 排除裁剪后为空的几何体
+            WHERE NOT ST_IsEmpty(f.geom)
+        ),
+        -- 4. 合并所有栅格（基础透明栅格 + 数据栅格）
+        all_rasters AS (
+            SELECT rast FROM canvas
+            UNION ALL
+            SELECT rast FROM rasterized WHERE rast IS NOT NULL
         )
-        -- 4. 合并并输出 PNG
-        SELECT ST_AsPNG(
-            ST_Union(rast)
-        ) AS png
-        FROM rasterized
+        -- 5. 输出 PNG
+        SELECT ST_AsPNG(ST_Union(rast)) AS png
+        FROM all_rasters
     `,
-		// ST_MakeEmptyRaster 参数
-		tileSize, tileSize, // width, height
-		minLon, maxLat, // upperleft_x, upperleft_y (注意：栅格原点通常在左上角，所以是 MaxLat)
-		scaleX, scaleY, // scalex, scaley (SQL中加了负号)
+		// canvas 参数
+		tileSize, tileSize,
+		minLon, maxLat,
+		scaleX, scaleY,
 
-		// ST_Intersection 的 Envelope 参数
+		// ST_Intersection envelope
 		minLon, minLat, maxLon, maxLat,
 
 		// 颜色 SQL
 		rCaseSQL, gCaseSQL, bCaseSQL,
 		layerName,
 
-		// WHERE clause 的 Envelope 参数
+		// WHERE envelope
 		minLon, minLat, maxLon, maxLat,
 
-		// Alpha 值
-		int(config.Opacity*255),
+		// Alpha
+		alpha,
 	)
-
-	// fmt.Printf("执行SQL:\n%s\n", sql) // 调试用
 
 	// 7. 执行查询
 	var result struct {
