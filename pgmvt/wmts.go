@@ -3,10 +3,11 @@ package pgmvt
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/models"
 	"gorm.io/gorm"
-	"regexp"
-	"strconv"
+	"log"
+
 	"strings"
 )
 
@@ -28,229 +29,203 @@ type RGB struct {
 	A int
 }
 
-// GenerateWMTSTile 生成 WMTS 瓦片（带缓存）
-func GenerateWMTSTile(x int, y int, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
+// GenerateWMTSTile 生成WMTS瓦片
+func GenerateWMTSTile(x, y, z int, layerName string, config models.WmtsSchema, db *gorm.DB) []byte {
 	cacheTableName := layerName + "_wmts"
-
-	// 1. 先查询缓存
-	cachedTile := queryTileCache(db, cacheTableName, x, y, z)
-	if cachedTile != nil {
+	// 1. 查询缓存
+	if cachedTile := queryTileCache(db, cacheTableName, x, y, z); cachedTile != nil {
 		return cachedTile
 	}
-
-	// 2. 缓存未命中，生成瓦片
-	boundboxMin := XyzLonLat(float64(x), float64(y), float64(z))
-	boundboxMax := XyzLonLat(float64(x)+1, float64(y)+1, float64(z))
-
-	// 解析颜色配置
+	// 2. 计算瓦片边界
+	bounds := Gogeo.CalculateTileBounds(x, y, z)
+	// 3. 预检查数据
+	var dataCount int64
+	checkSQL := fmt.Sprintf(`
+        SELECT COUNT(*) 
+        FROM "%s" 
+        WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
+    `, layerName, bounds.MinLon, bounds.MinLat, bounds.MaxLon, bounds.MaxLat)
+	db.Raw(checkSQL).Scan(&dataCount)
+	if dataCount == 0 {
+		return GetEmptyTile()
+	}
+	// 4. 获取几何类型
+	geomType, err := Gogeo.GetTableGeometryType(db, layerName)
+	if err != nil {
+		log.Printf("获取几何类型失败: %v", err)
+		return GetEmptyTile()
+	}
+	// 5. 解析颜色配置
 	var colorData []ColorData
 	if err := json.Unmarshal(config.ColorConfig, &colorData); err != nil {
-		return nil
+		log.Printf("解析颜色配置失败: %v", err)
+		return GetEmptyTile()
 	}
-
-	// 构建 RGB 三个通道的 CASE WHEN 语句
-	rCaseSQL, gCaseSQL, bCaseSQL := buildColorCaseSQL(colorData)
-
-	// 构建 ST_AsRaster SQL
+	// 6. 查询矢量数据
+	features, err := queryVectorFeatures(db, layerName, bounds)
+	if err != nil || len(features) == 0 {
+		if err != nil {
+			log.Printf("查询矢量数据失败: %v", err)
+		}
+		return GetEmptyTile()
+	}
+	// 7. 准备配置
 	tileSize := config.TileSize
 	if tileSize == 0 {
 		tileSize = 256
 	}
-
-	sql := fmt.Sprintf(`
-		WITH tile_geom AS (
-			SELECT ST_MakeEnvelope(%v, %v, %v, %v, 4326) AS bbox
-		),
-		rasterized AS (
-			SELECT ST_AsRaster(
-				ST_Transform(geom, 4326),
-				(SELECT bbox FROM tile_geom),
-				%d, %d,
-				ARRAY['8BUI', '8BUI', '8BUI', '8BUI']::text[],
-				ARRAY[
-					%s,  -- R
-					%s,  -- G
-					%s,  -- B
-					%d   -- A (opacity)
-				]::double precision[],
-				ARRAY[0, 0, 0, 0]::double precision[]
-			) AS rast
-			FROM "%s"
-			WHERE geom && ST_MakeEnvelope(%v, %v, %v, %v, 4326)
-		),
-		merged AS (
-			SELECT ST_Union(rast) AS rast
-			FROM rasterized
-		)
-		SELECT ST_AsPNG(rast) AS png
-		FROM merged
-		WHERE rast IS NOT NULL
-	`,
-		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1],
-		tileSize, tileSize,
-		rCaseSQL, gCaseSQL, bCaseSQL,
-		int(config.Opacity*255),
-		layerName,
-		boundboxMin[0], boundboxMin[1], boundboxMax[0], boundboxMax[1],
+	gogeoConfig := Gogeo.VectorTileConfig{
+		TileSize: int(tileSize),
+		Opacity:  config.Opacity,
+		ColorMap: convertColorConfig(colorData),
+	}
+	// 8. 提交到GDAL工作池
+	pool := Gogeo.GetGDALWorkerPool()
+	result := pool.Submit(&Gogeo.TileRequest{
+		Features: features,
+		SRID:     4326,
+		GeomType: geomType,
+		Bounds: Gogeo.VectorTileBounds{
+			MinLon: bounds.MinLon,
+			MinLat: bounds.MinLat,
+			MaxLon: bounds.MaxLon,
+			MaxLat: bounds.MaxLat,
+		},
+		Config: gogeoConfig,
+	})
+	if result.Err != nil {
+		log.Printf("瓦片生成失败 [%d/%d/%d]: %v", z, x, y, result.Err)
+		return GetEmptyTile()
+	}
+	// 9. 异步保存缓存
+	if result.Data != nil && len(result.Data) > 0 {
+		go func(data []byte) {
+			saveTileCache(db, cacheTableName, x, y, z, data)
+		}(result.Data)
+	}
+	return result.Data
+}
+func queryVectorFeatures(db *gorm.DB, tableName string, bounds Gogeo.VectorTileBounds) ([]Gogeo.VectorFeature, error) {
+	// 构建边界框WKT
+	boxWKT := fmt.Sprintf("POLYGON((%f %f, %f %f, %f %f, %f %f, %f %f))",
+		bounds.MinLon, bounds.MinLat,
+		bounds.MaxLon, bounds.MinLat,
+		bounds.MaxLon, bounds.MaxLat,
+		bounds.MinLon, bounds.MaxLat,
+		bounds.MinLon, bounds.MinLat,
 	)
-
-	// 执行查询
-	var result struct {
-		PNG []byte
+	// 获取字段列表
+	var columns []struct {
+		ColumnName string `gorm:"column:column_name"`
 	}
-
-	db.Raw(sql).Scan(&result)
-
-	// 3. 保存到缓存
-	if result.PNG != nil {
-		saveTileCache(db, cacheTableName, x, y, z, result.PNG)
+	err := db.Raw(fmt.Sprintf(`
+		SELECT column_name
+		FROM information_schema.columns
+		WHERE table_name = '%s' 
+		AND column_name != 'geom'
+		ORDER BY ordinal_position
+	`, tableName)).Scan(&columns).Error
+	if err != nil {
+		return nil, fmt.Errorf("获取字段列表失败: %v", err)
 	}
-
-	return result.PNG
+	var fieldList []string
+	for _, col := range columns {
+		fieldList = append(fieldList, col.ColumnName)
+	}
+	fieldListStr := strings.Join(fieldList, ", ")
+	// 查询数据
+	query := fmt.Sprintf(`
+		SELECT 
+			ST_AsBinary(
+				ST_Transform(
+					ST_Intersection(
+						ST_Transform(geom, 4326),
+						ST_GeomFromText('%s', 4326)
+					),
+					4326
+				)
+			) as geom,
+			%s
+		FROM "%s"
+		WHERE ST_Intersects(
+			ST_Transform(geom, 4326),
+			ST_GeomFromText('%s', 4326)
+		)
+		AND NOT ST_IsEmpty(
+			ST_Intersection(
+				ST_Transform(geom, 4326),
+				ST_GeomFromText('%s', 4326)
+			)
+		)
+	`, boxWKT, fieldListStr, tableName, boxWKT, boxWKT)
+	rows, err := db.Raw(query).Rows()
+	if err != nil {
+		return nil, fmt.Errorf("执行查询失败: %v", err)
+	}
+	defer rows.Close()
+	columnNames, _ := rows.Columns()
+	columnMap := make(map[string]int)
+	for i, name := range columnNames {
+		columnMap[name] = i
+	}
+	var features []Gogeo.VectorFeature
+	for rows.Next() {
+		values := make([]interface{}, len(columnNames))
+		valuePtrs := make([]interface{}, len(columnNames))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+		if err := rows.Scan(valuePtrs...); err != nil {
+			continue
+		}
+		feature := Gogeo.VectorFeature{
+			Attributes: make(map[string]string),
+		}
+		// 提取几何
+		if geomIdx, ok := columnMap["geom"]; ok {
+			if wkb, ok := values[geomIdx].([]byte); ok {
+				feature.WKB = wkb
+			}
+		}
+		// 提取属性
+		for _, col := range columns {
+			if idx, ok := columnMap[col.ColumnName]; ok {
+				if values[idx] != nil {
+					feature.Attributes[col.ColumnName] = fmt.Sprintf("%v", values[idx])
+				}
+			}
+		}
+		features = append(features, feature)
+	}
+	return features, nil
 }
-
-// buildColorCaseSQL 构建颜色映射的 CASE WHEN SQL，返回 R、G、B 三个通道
-func buildColorCaseSQL(colorData []ColorData) (string, string, string) {
-	// 默认灰色
-	defaultR, defaultG, defaultB := "128", "128", "128"
-
-	if len(colorData) == 0 || len(colorData[0].ColorMap) == 0 {
-		return defaultR, defaultG, defaultB
+func convertColorConfig(colorData []ColorData) []Gogeo.VectorColorRule {
+	if len(colorData) == 0 {
+		return []Gogeo.VectorColorRule{}
 	}
+	cd := colorData[0]
 
-	attName := colorData[0].AttName
-	colorMap := colorData[0].ColorMap
-
-	// 检查是否为"默认"单一颜色模式
-	if attName == "默认" && len(colorMap) > 0 && colorMap[0].Property == "默认" {
-		rgb := parseColor(colorMap[0].Color)
-		return fmt.Sprintf("%d", rgb.R), fmt.Sprintf("%d", rgb.G), fmt.Sprintf("%d", rgb.B)
+	// 单一默认颜色
+	if cd.AttName == "默认" && len(cd.ColorMap) > 0 && cd.ColorMap[0].Property == "默认" {
+		return []Gogeo.VectorColorRule{
+			{
+				AttributeName:  "默认",
+				AttributeValue: "默认",
+				Color:          cd.ColorMap[0].Color,
+			},
+		}
 	}
-
-	// 构建 CASE WHEN 语句
-	var rCases, gCases, bCases []string
-
-	for _, cmap := range colorMap {
-		rgb := parseColor(cmap.Color)
-
-		// 转义属性值中的单引号
-		escapedProperty := strings.ReplaceAll(cmap.Property, "'", "''")
-
-		rCases = append(rCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.R))
-		gCases = append(gCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.G))
-		bCases = append(bCases, fmt.Sprintf("WHEN \"%s\" = '%s' THEN %d", attName, escapedProperty, rgb.B))
+	// 按属性值映射
+	colorValues := make(map[string]string)
+	for _, cmap := range cd.ColorMap {
+		colorValues[cmap.Property] = cmap.Color
 	}
-
-	rCaseSQL := "CASE " + strings.Join(rCases, " ") + " ELSE 128 END"
-	gCaseSQL := "CASE " + strings.Join(gCases, " ") + " ELSE 128 END"
-	bCaseSQL := "CASE " + strings.Join(bCases, " ") + " ELSE 128 END"
-
-	return rCaseSQL, gCaseSQL, bCaseSQL
-}
-
-// parseColor 解析颜色字符串，支持 hex、rgb、rgba 格式（大小写不敏感）
-func parseColor(color string) RGB {
-	color = strings.TrimSpace(color)
-	colorLower := strings.ToLower(color)
-
-	// 1. 尝试解析 hex 格式：#RRGGBB 或 #RGB
-	if strings.HasPrefix(colorLower, "#") {
-		return parseHexColor(color)
+	return []Gogeo.VectorColorRule{
+		{
+			AttributeName: cd.AttName,
+			ColorValues:   colorValues,
+		},
 	}
-
-	// 2. 尝试解析 rgba 格式：rgba(r, g, b, a) 或 RGBA(r, g, b, a)
-	if strings.HasPrefix(colorLower, "rgba") {
-		return parseRGBAColor(color)
-	}
-
-	// 3. 尝试解析 rgb 格式：rgb(r, g, b) 或 RGB(r, g, b)
-	if strings.HasPrefix(colorLower, "rgb") {
-		return parseRGBColor(color)
-	}
-
-	// 默认返回灰色
-	return RGB{R: 128, G: 128, B: 128, A: 255}
-}
-
-// parseHexColor 解析十六进制颜色（支持大小写）
-func parseHexColor(hex string) RGB {
-	hex = strings.TrimPrefix(hex, "#")
-	hex = strings.ToLower(hex) // 转换为小写统一处理
-
-	// 处理简写格式 #RGB -> #RRGGBB
-	if len(hex) == 3 {
-		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
-	}
-
-	if len(hex) != 6 {
-		return RGB{R: 128, G: 128, B: 128, A: 255}
-	}
-
-	var r, g, b int
-	fmt.Sscanf(hex, "%02x%02x%02x", &r, &g, &b)
-	return RGB{R: r, G: g, B: b, A: 255}
-}
-
-// parseRGBColor 解析 rgb(r, g, b) 格式（支持大小写）
-func parseRGBColor(color string) RGB {
-	// 使用正则提取数字（大小写不敏感）
-	re := regexp.MustCompile(`(?i)rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)`)
-	matches := re.FindStringSubmatch(color)
-
-	if len(matches) != 4 {
-		return RGB{R: 128, G: 128, B: 128, A: 255}
-	}
-
-	r, _ := strconv.Atoi(matches[1])
-	g, _ := strconv.Atoi(matches[2])
-	b, _ := strconv.Atoi(matches[3])
-
-	return RGB{
-		R: clamp(r, 0, 255),
-		G: clamp(g, 0, 255),
-		B: clamp(b, 0, 255),
-		A: 255,
-	}
-}
-
-// parseRGBAColor 解析 rgba(r, g, b, a) 格式（支持大小写）
-func parseRGBAColor(color string) RGB {
-	// 使用正则提取数字（大小写不敏感）
-	re := regexp.MustCompile(`(?i)rgba\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)`)
-	matches := re.FindStringSubmatch(color)
-
-	if len(matches) != 5 {
-		return RGB{R: 128, G: 128, B: 128, A: 255}
-	}
-
-	r, _ := strconv.Atoi(matches[1])
-	g, _ := strconv.Atoi(matches[2])
-	b, _ := strconv.Atoi(matches[3])
-	a, _ := strconv.ParseFloat(matches[4], 64)
-
-	// alpha 可能是 0-1 的小数或 0-255 的整数
-	alphaInt := int(a)
-	if a <= 1.0 {
-		alphaInt = int(a * 255)
-	}
-
-	return RGB{
-		R: clamp(r, 0, 255),
-		G: clamp(g, 0, 255),
-		B: clamp(b, 0, 255),
-		A: clamp(alphaInt, 0, 255),
-	}
-}
-
-// clamp 限制值在指定范围内
-func clamp(value, min, max int) int {
-	if value < min {
-		return min
-	}
-	if value > max {
-		return max
-	}
-	return value
 }
 
 // queryTileCache 查询瓦片缓存

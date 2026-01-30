@@ -153,7 +153,7 @@ func clearWMTSCache(db *gorm.DB, tableName string) error {
 func (uc *UserController) GetWMTSTile(c *gin.Context) {
 	layerName := strings.ToLower(c.Param("layername"))
 	x, _ := strconv.Atoi(c.Param("x"))
-	y, _ := strconv.Atoi(strings.TrimSuffix(c.Param("y"), ".png"))
+	y, _ := strconv.Atoi(strings.TrimSuffix(c.Param("y.png"), ".png"))
 	z, _ := strconv.Atoi(c.Param("z"))
 
 	DB := models.DB
