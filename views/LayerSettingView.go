@@ -3,6 +3,7 @@ package views
 import (
 	"fmt"
 	"github.com/GrainArc/SouceMap/models"
+	"github.com/GrainArc/SouceMap/response"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 	"log"
@@ -333,7 +334,7 @@ func (uc *UserController) AddUpdateColorSet(c *gin.Context) {
 	}
 
 	// 判断是否为默认配置
-	fmt.Println(validColorMaps)
+
 	isDefaultConfig := len(validColorMaps) == 1 && validColorMaps[0].Property == "默认"
 
 	var data []models.AttColor
@@ -532,6 +533,26 @@ func getTablePropertyValues(db *gorm.DB, tableName, columnName string) ([]string
 	}
 
 	return properties, nil
+}
+
+type TPData struct {
+	TableName  string `json:"table_name"`
+	ColumnName string `json:"column_name"`
+}
+
+func (uc *UserController) GetTablePropertyValues(c *gin.Context) {
+	DB := models.DB
+	var tpData TPData
+	if err := c.BindJSON(&tpData); err != nil {
+		response.Error(c, 200, "参数错误")
+		return
+	}
+	values, err := getTablePropertyValues(DB, tpData.TableName, tpData.ColumnName)
+	if err != nil {
+		response.Error(c, 200, "字段查询为空")
+		return
+	}
+	response.Success(c, values)
 }
 
 // 获取配置表
