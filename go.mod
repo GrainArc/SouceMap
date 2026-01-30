@@ -7,7 +7,7 @@ toolchain go1.21.5
 require (
 	gitee.com/LJ_COOL/go-shp v0.0.0-20250729053739-41b26c177260 // indirect
 	gitee.com/gooffice/gooffice v0.0.0-20211207021629-dc1bc127dc93 // indirect
-	github.com/GrainArc/Gogeo v1.6.3 // indirect
+	github.com/GrainArc/Gogeo v1.6.4 // indirect
 	github.com/andybalholm/brotli v1.0.5 // indirect
 	github.com/axgle/mahonia v0.0.0-20180208002826-3358181d7394 // indirect
 	github.com/bytedance/sonic v1.9.1 // indirect
