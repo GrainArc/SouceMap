@@ -49,6 +49,7 @@ func GeoRouters(r *gin.Engine) {
 		mapRouter.POST("/DownloadSearchGeoFromSchema", UserController.DownloadSearchGeoFromSchema)
 		mapRouter.GET("/GetLayerExtent", UserController.GetLayerExtent)
 		mapRouter.POST("/GetTablePropertyValues", UserController.GetTablePropertyValues)
+		mapRouter.POST("/spatial-refs", UserController.GetSpatialRefs)
 
 	}
 	editRouter := r.Group("/edit")

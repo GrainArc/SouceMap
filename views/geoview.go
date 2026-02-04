@@ -2068,3 +2068,71 @@ func buildDirectoryTree(paths []string) []*models.DirectoryNode {
 
 	return result
 }
+
+type SpatialRefQuery struct {
+	Keyword  string `json:"keyword"`
+	Page     int    `json:"page"`
+	PageSize int    `json:"page_size"`
+}
+
+// 精简返回结构
+type SpatialRefOption struct {
+	SRID int    `json:"srid"`
+	Name string `json:"name"`
+}
+
+// 原始查询结构
+type rawSpatialRef struct {
+	SRID   int
+	SRText string
+}
+
+// 解析 srtext 提取坐标系名称
+func parseSRTextName(srtext string) string {
+	// 匹配 PROJCS["名称",...] 或 GEOGCS["名称",...]
+	re := regexp.MustCompile(`^(?:PROJCS|GEOGCS)\["([^"]+)"`)
+	matches := re.FindStringSubmatch(srtext)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
+}
+func (h *UserController) GetSpatialRefs(c *gin.Context) {
+	var query SpatialRefQuery
+	if err := c.BindJSON(&query); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	DB := models.DB
+	var raws []rawSpatialRef
+	var total int64
+	db := DB.Table("spatial_ref_sys").Select("srid, srtext")
+	// 只查询有 PROJCS 或 GEOGCS 的记录
+	db = db.Where("srtext ~ '^(PROJCS|GEOGCS)'")
+	if query.Keyword != "" {
+		db = db.Where("srtext ILIKE ?", "%"+query.Keyword+"%")
+	}
+	db.Count(&total)
+	offset := (query.Page - 1) * query.PageSize
+	if err := db.Offset(offset).Limit(query.PageSize).Find(&raws).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	// 转换为精简结构
+	options := make([]SpatialRefOption, 0, len(raws))
+	for _, raw := range raws {
+		name := parseSRTextName(raw.SRText)
+		if name != "" {
+			options = append(options, SpatialRefOption{
+				SRID: raw.SRID,
+				Name: name,
+			})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"data":      options,
+		"total":     total,
+		"page":      query.Page,
+		"page_size": query.PageSize,
+	})
+}
