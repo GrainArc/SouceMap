@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"regexp"
 	"runtime"
 
 	"fmt"
@@ -200,11 +201,6 @@ func getIPv4FromIfconfigALL() ([]string, error) {
 
 // GetAllLocalIPv4 获取所有符合条件的 IPv4 地址，支持备选方案
 func GetAllLocalIPv4() ([]string, error) {
-	// 首先尝试使用标准库方法
-	ipPrefixes, _ := getIPv4FromInterfaces()
-	if len(ipPrefixes) != 0 {
-		return ipPrefixes, nil
-	}
 
 	ipPrefixes, err := getIPv4FromIfconfig()
 	if err == nil {
@@ -237,7 +233,7 @@ func getIPv4FromIpconfig() ([]string, error) {
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		// 查找 IPv4 地址行
-		if strings.Contains(line, "IPv4 Address") || strings.Contains(line, "IPv4 地址") {
+		if strings.Contains(line, "IPv4") || strings.Contains(line, "IPv4") {
 			parts := strings.Split(line, ":")
 			if len(parts) >= 2 {
 				ip := strings.TrimSpace(parts[1])
@@ -302,7 +298,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 	semaphore := make(chan struct{}, maxConcurrency) // 信号量通道，控制并发数
 
 	// 获取主路由器IP，用于过滤自身IP
-	mainRouterIP, _ := getIPv4FromIfconfigALL()
+	mainRouterIP := Mainips
 
 	// 遍历所有IP地址，为每个非主路由器IP启动goroutine
 	for _, ip := range ips {
@@ -310,7 +306,7 @@ func (uc *UserController) GetAllDeviceName(c *gin.Context) {
 		if contains(mainRouterIP, ip) == true {
 			continue // 跳过当前循环，处理下一个IP
 		}
-		wg.Add(1)            // 增加等待组计数
+		wg.Add(1) // 增加等待组计数
 		go func(ip string) { // 启动goroutine处理单个IP
 			defer wg.Done() // goroutine结束时减少等待组计数
 
@@ -538,7 +534,18 @@ func getRemoteDSN(ip string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("解密DSN失败: %v", err)
 	}
+
+	// 4. ✅ 替换 host 为提供的 ip
+	dsn = replaceHostInDSN(dsn, ip)
+
 	return dsn, nil
+}
+
+// ✅ 新增辅助函数：替换 DSN 中的 host
+func replaceHostInDSN(dsn string, newIP string) string {
+	// 使用正则表达式替换 host=xxx 为 host=newIP
+	re := regexp.MustCompile(`host=[^\s]+`)
+	return re.ReplaceAllString(dsn, fmt.Sprintf("host=%s", newIP))
 }
 
 func UpdateDeviceSingle(jsonData UpdateData) bool {
@@ -563,6 +570,7 @@ func UpdateDeviceSingle(jsonData UpdateData) bool {
 		fmt.Println("获取远程DSN失败:", err)
 		return false
 	}
+	fmt.Println(DSN)
 	DeviceDB, _ := gorm.Open(postgres.Open(DSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	// 确保数据库连接被正确释放
 	defer func() {
