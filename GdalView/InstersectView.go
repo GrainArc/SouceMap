@@ -7,6 +7,7 @@ import (
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/pgmvt"
+	"github.com/GrainArc/SouceMap/services"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -19,7 +20,9 @@ import (
 
 // 任务状态枚举
 type TaskStatus string
-type UserController struct{}
+type UserController struct {
+	rasterService *services.RasterService
+}
 
 const (
 	TaskStatusPending   TaskStatus = "pending"

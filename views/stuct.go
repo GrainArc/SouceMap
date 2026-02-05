@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/GrainArc/SouceMap/methods"
 	"github.com/GrainArc/SouceMap/models"
+	"github.com/GrainArc/SouceMap/services"
 	"github.com/paulmach/orb/geojson"
 )
 

@@ -4,6 +4,7 @@ import "gorm.io/datatypes"
 
 type RasterRecord struct {
 	ID         int64          `gorm:"primary_key;autoIncrement"`
+	TaskID     string         `gorm:"type:varchar(200)"`
 	SourcePath string         `gorm:"type:varchar(255)"` //栅格源路径
 	OutputPath string         `gorm:"type:varchar(255)"` //栅格操作的输出路径，投影接口是直接修改原始数据则不填这项
 	Status     int            //栅格操作运行状态 0 运行中 1 执行完成  2 执行失败
