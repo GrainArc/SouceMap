@@ -180,9 +180,7 @@ func GDALRouters(r *gin.Engine) {
 		mapRouter.POST("/raster/band/SetDescription", UserController.SetBandDescription) // 设置描述
 		mapRouter.GET("/raster/band/GetDescription", UserController.GetBandDescription)  // 获取描述
 		mapRouter.GET("/raster/band/GetScaleOffset", UserController.GetBandScaleOffset)  // 获取缩放偏移
-		// ==================== 元数据操作（续） ====================
-		mapRouter.GET("/raster/band/GetScaleOffset", UserController.GetBandScaleOffset) // 获取缩放偏移
-		mapRouter.GET("/raster/band/GetUnitType", UserController.GetBandUnitType)       // 获取单位类型
+		mapRouter.GET("/raster/band/GetUnitType", UserController.GetBandUnitType)        // 获取单位类型
 	}
 	{
 		// ==================== 栅格计算器 ====================

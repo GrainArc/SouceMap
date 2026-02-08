@@ -95,3 +95,77 @@ func (h *UserController) GetMosaicPreview(c *gin.Context) {
 		"data": resp,
 	})
 }
+
+func (h *UserController) DefineProjection(c *gin.Context) {
+	var req services.DefineProjectionRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	resp, err := h.rasterService.StartDefineProjectionTask(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "任务已提交",
+		"data":    resp,
+	})
+}
+
+// DefineProjectionWithGeoTransform 定义投影并设置地理变换
+func (h *UserController) DefineProjectionWithGeoTransform(c *gin.Context) {
+	var req services.DefineProjectionWithGeoTransformRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	resp, err := h.rasterService.StartDefineProjectionWithGeoTransformTask(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "任务已提交",
+		"data":    resp,
+	})
+}
+
+// ReprojectRaster 栅格重投影
+func (h *UserController) ReprojectRaster(c *gin.Context) {
+	var req services.ReprojectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	resp, err := h.rasterService.StartReprojectTask(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "任务已提交",
+		"data":    resp,
+	})
+}
+
+// GetProjectionInfo 获取栅格投影信息
+func (h *UserController) GetProjectionInfo(c *gin.Context) {
+	sourcePath := c.Query("source_path")
+	if sourcePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source_path不能为空"})
+		return
+	}
+	info, err := h.rasterService.GetProjectionInfo(sourcePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": info,
+	})
+}
