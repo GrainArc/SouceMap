@@ -151,6 +151,7 @@ func migrateAllTables(db *gorm.DB) error {
 		&NetMap{},
 		&DynamicRaster{},
 		&WmtsSchema{},
+		&RasterRecord{},
 	}
 
 	return db.AutoMigrate(models...)

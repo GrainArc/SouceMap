@@ -2083,8 +2083,8 @@ type SpatialRefOption struct {
 
 // 原始查询结构
 type rawSpatialRef struct {
-	SRID   int
-	SRText string
+	SRID   int    `gorm:"column:srid"` // 或试试 auth_srid
+	SRText string `gorm:"column:srtext"`
 }
 
 // 解析 srtext 提取坐标系名称
