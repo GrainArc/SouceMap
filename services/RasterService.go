@@ -2,14 +2,17 @@ package services
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/GrainArc/Gogeo"
 	"github.com/GrainArc/SouceMap/config"
 	"github.com/GrainArc/SouceMap/models"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+	"gorm.io/gorm"
 	"os"
 	"path/filepath"
+	"regexp"
 )
 
 // ClipRequest 裁剪请求参数
@@ -99,7 +102,18 @@ func (s *RasterService) executeClipTask(taskID string, req *ClipRequest, outputD
 		finalStatus = 2
 		return
 	}
+	epsg := rd.GetEPSGCode()
+	if epsg == 0 {
+		epsg = 4490
+	}
+	reprojectLayer, err := layer.ReprojectLayer(epsg)
+	if err != nil {
+		finalStatus = 2
+		return
+	}
+
 	defer layer.Close()
+
 	// 构建裁剪选项
 	options := &Gogeo.ClipOptions{
 		OutputDir:         outputDir,
@@ -110,11 +124,12 @@ func (s *RasterService) executeClipTask(taskID string, req *ClipRequest, outputD
 		OverwriteExisting: true,
 	}
 	// 执行裁剪
-	_, err = rd.ClipRasterByLayer(layer, options)
+	_, err = rd.ClipRasterByLayer(reprojectLayer, options)
 	if err != nil {
 		finalStatus = 2
 		return
 	}
+
 }
 
 // GetTaskStatus 查询任务状态
@@ -165,6 +180,58 @@ type MosaicPreviewResponse struct {
 	DataType      string  `json:"data_type"`
 	Projection    string  `json:"projection"`
 	EstimatedSize int64   `json:"estimated_size"` // 预估大小(字节)
+}
+
+// 分页查询请求参数
+type QueryRasterTasksRequest struct {
+	Page     int    `json:"page"`
+	PageSize int    `json:"pageSize"`
+	Status   *int   `json:"status"` // 可选，按状态筛选
+	TaskID   string `json:"taskId"` // 可选，按任务ID筛选
+}
+
+// 分页查询响应数据
+type QueryRasterTasksResponse struct {
+	Total    int64                 `json:"total"`
+	Page     int                   `json:"page"`
+	PageSize int                   `json:"page_size"`
+	List     []models.RasterRecord `json:"list"`
+}
+
+// Service 层方法
+func (s *RasterService) GetTaskList(page, pageSize int, status *int, taskID string) (*QueryRasterTasksResponse, error) {
+	var total int64
+	var records []models.RasterRecord
+	db := models.DB
+	query := db.Model(&models.RasterRecord{})
+
+	// 条件筛选
+	if status != nil {
+		query = query.Where("status = ?", *status)
+	}
+	if taskID != "" {
+		query = query.Where("task_id LIKE ?", "%"+taskID+"%")
+	}
+
+	// 获取总数
+	if err := query.Count(&total).Error; err != nil {
+		return nil, err
+	}
+
+	// 分页查询
+	offset := (page - 1) * pageSize
+	if err := query.Offset(offset).Limit(pageSize).
+		Order("id DESC").
+		Find(&records).Error; err != nil {
+		return nil, err
+	}
+
+	return &QueryRasterTasksResponse{
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+		List:     records,
+	}, nil
 }
 
 // StartMosaicTask 启动异步镶嵌任务
@@ -394,6 +461,47 @@ type ProjectionInfo struct {
 }
 
 // ==================== 服务方法 ====================
+// 解析 srtext 提取坐标系名称
+func parseSRTextName(srtext string) string {
+	// 匹配 PROJCS["名称",...] 或 GEOGCS["名称",...]
+	re := regexp.MustCompile(`^(?:PROJCS|GEOGCS)\["([^"]+)"`)
+	matches := re.FindStringSubmatch(srtext)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+	return ""
+}
+
+// GetSpatialRefByEPSG 根据EPSG代码查询坐标系名称
+// 参数: epsg - EPSG代码 (例如: 4326)
+
+func GetSpatialRefByEPSG(epsg int) (string, error) {
+	DB := models.DB
+	type rawSpatialRef struct {
+		SRID   int    `gorm:"column:srid"` // 或试试 auth_srid
+		SRText string `gorm:"column:srtext"`
+	}
+	var raw rawSpatialRef
+
+	// 根据 SRID 查询
+	if err := DB.Table("spatial_ref_sys").
+		Select("srid, srtext").
+		Where("srid = ?", epsg).
+		First(&raw).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("EPSG代码 %d 不存在", epsg)
+		}
+		return "", err
+	}
+
+	// 解析坐标系名称
+	name := parseSRTextName(raw.SRText)
+	if name == "" {
+		return "", fmt.Errorf("无法解析EPSG代码 %d 的坐标系名称", epsg)
+	}
+
+	return name, nil
+}
 
 // GetProjectionInfo 获取栅格投影信息
 func (s *RasterService) GetProjectionInfo(sourcePath string) (*ProjectionInfo, error) {
@@ -404,13 +512,19 @@ func (s *RasterService) GetProjectionInfo(sourcePath string) (*ProjectionInfo, e
 	defer rd.Close()
 
 	info := rd.GetInfo()
+	Projection := ""
+	epsg := rd.GetEPSGCode()
+	if epsg != 0 {
+		Projection, _ = GetSpatialRefByEPSG(epsg)
+	}
+
 	minX, minY, maxX, maxY := rd.GetBounds()
 
 	return &ProjectionInfo{
 		Width:        info.Width,
 		Height:       info.Height,
 		BandCount:    info.BandCount,
-		Projection:   info.Projection,
+		Projection:   Projection,
 		GeoTransform: info.GeoTransform,
 		HasGeoInfo:   info.HasGeoInfo,
 		Bounds:       [4]float64{minX, minY, maxX, maxY},
@@ -654,4 +768,170 @@ func (s *RasterService) executeReprojectTask(taskID string, req *ReprojectReques
 
 func createDirIfNotExist(dir string) error {
 	return os.MkdirAll(dir, 0755)
+}
+
+// ==================== 栅格重采样相关 ====================
+
+// ResampleRequest 重采样请求参数
+type ResampleRequest struct {
+	SourcePath     string  `json:"source_path" binding:"required"` // 源文件路径
+	OutputName     string  `json:"output_name"`                    // 输出文件名
+	OutputFormat   string  `json:"output_format"`                  // 输出格式: GTiff, JPEG, PNG
+	ResampleMethod int     `json:"resample_method"`                // 重采样方法: 0-最近邻,1-双线性,2-三次卷积,3-三次样条,4-Lanczos
+	TargetResX     float64 `json:"target_res_x"`                   // 目标X分辨率（与ScaleFactor/TargetSize三选一）
+	TargetResY     float64 `json:"target_res_y"`                   // 目标Y分辨率
+	ScaleFactor    float64 `json:"scale_factor"`                   // 缩放因子（>1放大，<1缩小）
+	TargetWidth    int     `json:"target_width"`                   // 目标宽度
+	TargetHeight   int     `json:"target_height"`                  // 目标高度
+	NoDataValue    float64 `json:"nodata_value"`                   // NoData值
+	HasNoData      bool    `json:"has_nodata"`                     // 是否设置NoData
+}
+
+// ResampleResponse 重采样响应
+type ResampleResponse struct {
+	TaskID     string `json:"task_id"`
+	OutputPath string `json:"output_path"`
+	Message    string `json:"message"`
+}
+
+// ResamplePreviewRequest 重采样预览请求
+type ResamplePreviewRequest struct {
+	SourcePath     string  `json:"source_path" binding:"required"`
+	ResampleMethod int     `json:"resample_method"`
+	TargetResX     float64 `json:"target_res_x"`
+	TargetResY     float64 `json:"target_res_y"`
+	ScaleFactor    float64 `json:"scale_factor"`
+	TargetWidth    int     `json:"target_width"`
+	TargetHeight   int     `json:"target_height"`
+}
+
+// ResamplePreviewResponse 重采样预览响应
+type ResamplePreviewResponse struct {
+	OriginalWidth  int     `json:"original_width"`
+	OriginalHeight int     `json:"original_height"`
+	OriginalResX   float64 `json:"original_res_x"`
+	OriginalResY   float64 `json:"original_res_y"`
+	TargetWidth    int     `json:"target_width"`
+	TargetHeight   int     `json:"target_height"`
+	TargetResX     float64 `json:"target_res_x"`
+	TargetResY     float64 `json:"target_res_y"`
+	BandCount      int     `json:"band_count"`
+	EstimatedSize  int64   `json:"estimated_size"` // 预估大小(字节)
+}
+
+// StartResampleTask 启动重采样任务
+func (s *RasterService) StartResampleTask(req *ResampleRequest) (*ResampleResponse, error) {
+	if _, err := os.Stat(req.SourcePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("文件不存在: %s", req.SourcePath)
+	}
+
+	taskID := uuid.New().String()
+	outputDir := filepath.Join(config.MainConfig.Download, taskID)
+	if err := createDirIfNotExist(outputDir); err != nil {
+		return nil, err
+	}
+
+	if req.OutputFormat == "" {
+		req.OutputFormat = "GTiff"
+	}
+	if req.OutputName == "" {
+		req.OutputName = "resampled"
+	}
+
+	ext := getFormatExtension(req.OutputFormat)
+	outputPath := filepath.Join(outputDir, req.OutputName+ext)
+
+	argsJSON, _ := json.Marshal(req)
+	record := &models.RasterRecord{
+		TaskID:     taskID,
+		SourcePath: req.SourcePath,
+		OutputPath: outputPath,
+		Status:     0,
+		TypeName:   "resample",
+		Args:       datatypes.JSON(argsJSON),
+	}
+
+	if err := models.DB.Create(record).Error; err != nil {
+		return nil, fmt.Errorf("创建任务记录失败: %w", err)
+	}
+
+	go s.executeResampleTask(taskID, req, outputPath)
+
+	return &ResampleResponse{
+		TaskID:     taskID,
+		OutputPath: outputPath,
+		Message:    "重采样任务已提交",
+	}, nil
+}
+
+// executeResampleTask 执行重采样任务
+func (s *RasterService) executeResampleTask(taskID string, req *ResampleRequest, outputPath string) {
+	var finalStatus int = 1
+	defer func() {
+		if r := recover(); r != nil {
+			finalStatus = 2
+		}
+		models.DB.Model(&models.RasterRecord{}).Where("task_id = ?", taskID).Update("status", finalStatus)
+	}()
+
+	rd, err := Gogeo.OpenRasterDataset(req.SourcePath, false)
+	if err != nil {
+		finalStatus = 2
+		return
+	}
+	defer rd.Close()
+
+	options := &Gogeo.ResampleOptions{
+		Method:       Gogeo.ResampleMethod(req.ResampleMethod),
+		TargetResX:   req.TargetResX,
+		TargetResY:   req.TargetResY,
+		ScaleFactor:  req.ScaleFactor,
+		TargetWidth:  req.TargetWidth,
+		TargetHeight: req.TargetHeight,
+		NoDataValue:  req.NoDataValue,
+		HasNoData:    req.HasNoData,
+	}
+
+	if err := rd.ResampleToFile(outputPath, req.OutputFormat, options); err != nil {
+		finalStatus = 2
+		return
+	}
+}
+
+// GetResamplePreview 获取重采样预览信息
+func (s *RasterService) GetResamplePreview(req *ResamplePreviewRequest) (*ResamplePreviewResponse, error) {
+	rd, err := Gogeo.OpenRasterDataset(req.SourcePath, false)
+	if err != nil {
+		return nil, fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer rd.Close()
+
+	options := &Gogeo.ResampleOptions{
+		Method:       Gogeo.ResampleMethod(req.ResampleMethod),
+		TargetResX:   req.TargetResX,
+		TargetResY:   req.TargetResY,
+		ScaleFactor:  req.ScaleFactor,
+		TargetWidth:  req.TargetWidth,
+		TargetHeight: req.TargetHeight,
+	}
+
+	info, err := rd.GetResampleInfo(options)
+	if err != nil {
+		return nil, fmt.Errorf("获取重采样信息失败: %w", err)
+	}
+
+	estimatedSize, _ := rd.EstimateResampleSize(options)
+
+	return &ResamplePreviewResponse{
+		OriginalWidth:  info.OriginalWidth,
+		OriginalHeight: info.OriginalHeight,
+		OriginalResX:   info.OriginalResX,
+		OriginalResY:   info.OriginalResY,
+		TargetWidth:    info.TargetWidth,
+		TargetHeight:   info.TargetHeight,
+		TargetResX:     info.TargetResX,
+		TargetResY:     info.TargetResY,
+		BandCount:      info.BandCount,
+		EstimatedSize:  estimatedSize,
+	}, nil
 }

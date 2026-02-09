@@ -77,12 +77,17 @@ func GDALRouters(r *gin.Engine) {
 	{
 		mapRouter.POST("/raster/ClipRaster", UserController.ClipRaster) // 初始化
 		mapRouter.GET("/raster/GetRasterTaskStatus", UserController.GetRasterTaskStatus)
+		mapRouter.POST("/raster/GetRasterTaskList", UserController.GetRasterTaskList)
+		mapRouter.GET("/raster/DeleteRasterTask", UserController.DeleteRasterTask)
 		mapRouter.POST("/raster/MosaicRaster", UserController.MosaicRaster)
 		mapRouter.POST("/raster/GetMosaicPreview", UserController.GetMosaicPreview)
 		mapRouter.GET("/raster/GetProjectionInfo", UserController.GetProjectionInfo)                                // 获取投影信息
 		mapRouter.POST("/raster/DefineProjection", UserController.DefineProjection)                                 // 定义投影
 		mapRouter.POST("/raster/DefineProjectionWithGeoTransform", UserController.DefineProjectionWithGeoTransform) // 定义投影+地理变换
 		mapRouter.POST("/raster/ReprojectRaster", UserController.ReprojectRaster)
+		mapRouter.POST("/raster/ResampleRaster", UserController.ResampleRaster)         // 栅格重采样
+		mapRouter.POST("/raster/GetResamplePreview", UserController.GetResamplePreview) // 重采样预览
+
 	}
 	// 在路由配置文件中添加以下路由
 

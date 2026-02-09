@@ -1,6 +1,7 @@
 package GdalView
 
 import (
+	"github.com/GrainArc/SouceMap/models"
 	"github.com/GrainArc/SouceMap/services"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -52,6 +53,49 @@ func (h *UserController) GetRasterTaskStatus(c *gin.Context) {
 			"output_path": record.OutputPath,
 			"source_path": record.SourcePath,
 		},
+	})
+}
+
+// Controller 方法
+func (h *UserController) GetRasterTaskList(c *gin.Context) {
+	var req services.QueryRasterTasksRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误"})
+		return
+	}
+
+	// 调用 service 层
+	result, err := h.rasterService.GetTaskList(req.Page, req.PageSize, req.Status, req.TaskID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": result,
+	})
+}
+func (h *UserController) DeleteRasterTask(c *gin.Context) {
+	taskID := c.Query("taskId")
+	if taskID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "参数错误: taskId必填"})
+		return
+	}
+
+	result := models.DB.Where("task_id = ?", taskID).Delete(&models.RasterRecord{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除失败"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "任务不存在"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"msg":  "删除成功",
 	})
 }
 
@@ -167,5 +211,46 @@ func (h *UserController) GetProjectionInfo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
 		"data": info,
+	})
+}
+
+// ResampleRaster 栅格重采样
+func (h *UserController) ResampleRaster(c *gin.Context) {
+	var req services.ResampleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp, err := h.rasterService.StartResampleTask(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "任务已提交",
+		"data":    resp,
+	})
+}
+
+// GetResamplePreview 获取重采样预览信息
+func (h *UserController) GetResamplePreview(c *gin.Context) {
+	var req services.ResamplePreviewRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp, err := h.rasterService.GetResamplePreview(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": resp,
 	})
 }

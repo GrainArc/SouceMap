@@ -2097,6 +2097,34 @@ func parseSRTextName(srtext string) string {
 	}
 	return ""
 }
+
+// GetSpatialRefByEPSG 根据EPSG代码查询坐标系名称
+// 参数: epsg - EPSG代码 (例如: 4326)
+
+func GetSpatialRefByEPSG(epsg int) (string, error) {
+	DB := models.DB
+	var raw rawSpatialRef
+
+	// 根据 SRID 查询
+	if err := DB.Table("spatial_ref_sys").
+		Select("srid, srtext").
+		Where("srid = ?", epsg).
+		First(&raw).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("EPSG代码 %d 不存在", epsg)
+		}
+		return "", err
+	}
+
+	// 解析坐标系名称
+	name := parseSRTextName(raw.SRText)
+	if name == "" {
+		return "", fmt.Errorf("无法解析EPSG代码 %d 的坐标系名称", epsg)
+	}
+
+	return name, nil
+}
+
 func (h *UserController) GetSpatialRefs(c *gin.Context) {
 	var query SpatialRefQuery
 	if err := c.BindJSON(&query); err != nil {
