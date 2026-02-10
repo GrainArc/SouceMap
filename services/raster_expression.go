@@ -23,12 +23,15 @@ type ExpressionRequest struct {
 }
 
 // ExpressionWithConditionRequest 条件表达式计算请求
+
 type ExpressionWithConditionRequest struct {
 	SourcePath  string  `json:"source_path" binding:"required"`
 	Expression  string  `json:"expression" binding:"required"`
 	Condition   string  `json:"condition"`
 	NoDataValue float64 `json:"nodata_value"`
 	OutputName  string  `json:"output_name"`
+	TargetBand  int     `json:"target_band"` // >0: 写入源数据集的指定波段后导出; 0: 创建单波段新文件
+	SetNoData   bool    `json:"set_nodata"`  // 是否将nodata_value设为波段NoData元数据
 }
 
 // ConditionalReplaceRequest 条件替换请求
@@ -149,7 +152,7 @@ func (s *RasterService) StartExpressionTask(req *ExpressionRequest) (*CalcOperat
 		SourcePath: req.SourcePath,
 		OutputPath: outputPath,
 		Status:     0,
-		TypeName:   "expression_calc",
+		TypeName:   "栅格表达式计算",
 		Args:       datatypes.JSON(argsJSON),
 	}
 
@@ -270,27 +273,57 @@ func (s *RasterService) executeExpressionWithConditionTask(taskID string, req *E
 	defer rd.Close()
 
 	calc := rd.NewBandCalculator()
-	result, err := calc.CalculateWithCondition(req.Expression, req.Condition, req.NoDataValue)
-	if err != nil {
-		finalStatus = 2
-		return
-	}
 
-	newRD, err := rd.CreateSingleBandDataset(result, Gogeo.BandReal64)
-	if err != nil {
-		finalStatus = 2
-		return
-	}
-	defer newRD.Close()
+	if req.TargetBand > 0 {
+		// ━━━━━━━━━━━━━━━━━━
+		// 模式一: 写入源数据集的指定波段，然后导出完整数据集
+		// 使用 CalculateWithConditionAndWrite 零拷贝直写，C层一次完成
+		// ━━━━━━━━━━
+		if err := calc.CalculateWithConditionAndWrite(
+			req.Expression,
+			req.Condition,
+			req.NoDataValue,
+			req.TargetBand,
+			req.SetNoData,
+		); err != nil {
+			finalStatus = 2
+			return
+		}
 
-	if err := newRD.SetBandNoDataValue(1, req.NoDataValue); err != nil {
-		finalStatus = 2
-		return
-	}
+		// 导出整个数据集（包含所有原始波段，目标波段已被覆写）
+		if err := rd.ExportToFile(outputPath, "GTiff", nil); err != nil {
+			finalStatus = 2
+			return
+		}
+	} else {
+		// ━━━━━━━━━━
+		// 模式二: 创建单波段新文件输出
+		// ━━━━━━━━━━
+		result, err := calc.CalculateWithCondition(req.Expression, req.Condition, req.NoDataValue)
+		if err != nil {
+			finalStatus = 2
+			return
+		}
 
-	if err := newRD.ExportToFile(outputPath, "GTiff", nil); err != nil {
-		finalStatus = 2
-		return
+		newRD, err := rd.CreateSingleBandDataset(result, Gogeo.BandReal64)
+		if err != nil {
+			finalStatus = 2
+			return
+		}
+		defer newRD.Close()
+
+		// 设置NoData元数据
+		if req.SetNoData {
+			if err := newRD.SetBandNoDataValue(1, req.NoDataValue); err != nil {
+				finalStatus = 2
+				return
+			}
+		}
+
+		if err := newRD.ExportToFile(outputPath, "GTiff", nil); err != nil {
+			finalStatus = 2
+			return
+		}
 	}
 }
 
