@@ -89,7 +89,12 @@ func (m *TileServerManager) AddService(raster *models.DynamicRaster) error {
 	if err := m.db.Create(raster).Error; err != nil {
 		return fmt.Errorf("failed to save service config: %w", err)
 	}
-
+	if cacheService := GetTileCacheService(); cacheService != nil {
+		if err := cacheService.EnsureCacheTable(raster.Name); err != nil {
+			// 缓存表创建失败不影响主流程，仅记录日志
+			fmt.Printf("[WARN] failed to create cache table for %s: %v\n", raster.Name, err)
+		}
+	}
 	return nil
 }
 
@@ -123,7 +128,11 @@ func (m *TileServerManager) DeleteService(name string) error {
 	if result.RowsAffected == 0 {
 		return fmt.Errorf("service not found: %s", name)
 	}
-
+	if cacheService := GetTileCacheService(); cacheService != nil {
+		if err := cacheService.DropCacheTable(name); err != nil {
+			fmt.Printf("[WARN] failed to drop cache table for %s: %v\n", name, err)
+		}
+	}
 	return nil
 }
 
@@ -185,7 +194,9 @@ func (m *TileServerManager) StartServer(name string) error {
 	// 保存到内存
 	m.servers[name] = server
 	m.configs[name] = &raster
-
+	if cacheService := GetTileCacheService(); cacheService != nil {
+		_ = cacheService.EnsureCacheTable(name)
+	}
 	return nil
 }
 
@@ -273,6 +284,7 @@ func (m *TileServerManager) CloseAll() {
 // RefreshService 刷新服务（重新加载）
 func (m *TileServerManager) RefreshService(name string) error {
 	m.StopServer(name)
+
 	return m.StartServer(name)
 }
 

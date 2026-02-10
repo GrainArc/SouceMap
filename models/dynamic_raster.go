@@ -2,6 +2,11 @@
 package models
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"fmt"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -28,4 +33,24 @@ type DynamicRaster struct {
 // TableName 指定表名
 func (DynamicRaster) TableName() string {
 	return "dynamic_raster"
+}
+
+// TileCacheTableName 根据服务名生成安全的缓存表名
+func TileCacheTableName(serviceName string) string {
+	safe := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
+	if safe.MatchString(serviceName) && len(serviceName) <= 50 {
+		return fmt.Sprintf("tile_cache_%s", strings.ToLower(serviceName))
+	}
+	hash := md5.Sum([]byte(serviceName))
+	return fmt.Sprintf("tile_cache_%s", hex.EncodeToString(hash[:]))
+}
+
+// TileCache 瓦片缓存记录
+type TileCache struct {
+	Z        int    `gorm:"column:z;primaryKey" json:"z"`
+	X        int    `gorm:"column:x;primaryKey" json:"x"`
+	Y        int    `gorm:"column:y;primaryKey" json:"y"`
+	TileData []byte `gorm:"column:tile_data;type:bytea" json:"-"`
+	TileType string `gorm:"column:tile_type;size:20;primaryKey;default:'raster'" json:"tile_type"`
+	Encoding string `gorm:"column:encoding;size:20;primaryKey;default:''" json:"encoding"`
 }

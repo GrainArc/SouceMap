@@ -358,7 +358,7 @@ func (uc *UserController) GetDynamicRasterTileJSON(c *gin.Context) {
 // 瓦片获取接口
 // ============================================
 
-// GetDynamicRasterTile 获取动态栅格瓦片
+// GetDynamicRasterTile 获取动态栅格瓦片（修改）
 func (uc *UserController) GetDynamicRasterTile(c *gin.Context) {
 	name := c.Param("name")
 	z, err := strconv.Atoi(c.Param("z"))
@@ -391,9 +391,28 @@ func (uc *UserController) GetDynamicRasterTile(c *gin.Context) {
 		return
 	}
 
-	var tileData []byte
+	// === 缓存查询 ===
+	tileType := "raster"
+	encoding := ""
+	if config.ServiceType == "terrain" {
+		tileType = "terrain"
+		encoding = config.Encoding
+	}
 
-	// 根据服务类型获取瓦片
+	cacheService := services.GetTileCacheService()
+	if cacheService != nil {
+		if cachedData, found, err := cacheService.GetCachedTile(name, z, x, y, tileType, encoding); err == nil && found {
+			c.Header("Content-Type", "image/png")
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Header("X-Tile-Cache", "HIT")
+			c.Data(http.StatusOK, "image/png", cachedData)
+			return
+		}
+	}
+
+	// === 动态切片 ===
+	var tileData []byte
 	if config.ServiceType == "terrain" {
 		tileData, err = server.GetTerrainTile(z, x, y, config.Encoding)
 	} else {
@@ -405,14 +424,24 @@ func (uc *UserController) GetDynamicRasterTile(c *gin.Context) {
 		return
 	}
 
+	// === 异步写入缓存 ===
+	if cacheService != nil {
+		go func(svcName string, tz, tx, ty int, tt, te string, data []byte) {
+			if err := cacheService.SetCachedTile(svcName, tz, tx, ty, tt, te, data); err != nil {
+				fmt.Printf("[WARN] failed to cache tile %s/%d/%d/%d: %v\n", svcName, tz, tx, ty, err)
+			}
+		}(name, z, x, y, tileType, encoding, tileData)
+	}
+
 	// 设置响应头
 	c.Header("Content-Type", "image/png")
 	c.Header("Cache-Control", "public, max-age=86400")
 	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("X-Tile-Cache", "MISS")
 	c.Data(http.StatusOK, "image/png", tileData)
 }
 
-// GetDynamicTerrainTile 获取地形瓦片（单独接口）
+// GetDynamicTerrainTile 获取地形瓦片（修改）
 func (uc *UserController) GetDynamicTerrainTile(c *gin.Context) {
 	name := c.Param("name")
 	z, _ := strconv.Atoi(c.Param("z"))
@@ -434,15 +463,40 @@ func (uc *UserController) GetDynamicTerrainTile(c *gin.Context) {
 		return
 	}
 
+	// === 缓存查询 ===
+	tileType := "terrain"
+	cacheService := services.GetTileCacheService()
+	if cacheService != nil {
+		if cachedData, found, err := cacheService.GetCachedTile(name, z, x, y, tileType, encoding); err == nil && found {
+			c.Header("Content-Type", "image/png")
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.Header("Access-Control-Allow-Origin", "*")
+			c.Header("X-Tile-Cache", "HIT")
+			c.Data(http.StatusOK, "image/png", cachedData)
+			return
+		}
+	}
+
+	// === 动态切片 ===
 	tileData, err := server.GetTerrainTile(z, x, y, encoding)
 	if err != nil {
 		c.String(http.StatusInternalServerError, "failed to get terrain tile: %s", err.Error())
 		return
 	}
 
+	// === 异步写入缓存 ===
+	if cacheService != nil {
+		go func(svcName string, tz, tx, ty int, tt, te string, data []byte) {
+			if err := cacheService.SetCachedTile(svcName, tz, tx, ty, tt, te, data); err != nil {
+				fmt.Printf("[WARN] failed to cache terrain tile %s/%d/%d/%d: %v\n", svcName, tz, tx, ty, err)
+			}
+		}(name, z, x, y, tileType, encoding, tileData)
+	}
+
 	c.Header("Content-Type", "image/png")
 	c.Header("Cache-Control", "public, max-age=86400")
 	c.Header("Access-Control-Allow-Origin", "*")
+	c.Header("X-Tile-Cache", "MISS")
 	c.Data(http.StatusOK, "image/png", tileData)
 }
 
