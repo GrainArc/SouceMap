@@ -59,13 +59,18 @@ type PaletteInfoResponse struct {
 
 // ==================== 波段操作请求 ====================
 
-// SetColorInterpRequest 设置颜色解释请求
+// BandColorInterpItem 单个波段颜色解释设置项
+type BandColorInterpItem struct {
+	BandIndex   int `json:"band_index" binding:"required,min=1"`
+	ColorInterp int `json:"color_interp" binding:"min=0,max=13"`
+}
+
+// SetColorInterpRequest 设置颜色解释请求（支持批量）
 type SetColorInterpRequest struct {
-	SourcePath  string `json:"source_path" binding:"required"`
-	BandIndex   int    `json:"band_index" binding:"required,min=1"`
-	ColorInterp int    `json:"color_interp" binding:"min=0,max=13"`
-	InPlace     bool   `json:"in_place"`
-	OutputName  string `json:"output_name"`
+	SourcePath string                `json:"source_path" binding:"required"`
+	Bands      []BandColorInterpItem `json:"bands" binding:"required,min=1"`
+	InPlace    bool                  `json:"in_place"`
+	OutputName string                `json:"output_name"`
 }
 
 // SetNoDataRequest 设置NoData请求
@@ -90,6 +95,7 @@ type AddBandRequest struct {
 	SourcePath  string  `json:"source_path" binding:"required"`
 	DataType    int     `json:"data_type"`
 	ColorInterp int     `json:"color_interp"`
+	InPlace     bool    `json:"in_place"`
 	NoDataValue float64 `json:"nodata_value"`
 	OutputName  string  `json:"output_name"`
 }
@@ -98,6 +104,7 @@ type AddBandRequest struct {
 type RemoveBandRequest struct {
 	SourcePath string `json:"source_path" binding:"required"`
 	BandIndex  int    `json:"band_index" binding:"required,min=1"`
+	InPlace    bool   `json:"in_place"`
 	OutputName string `json:"output_name"`
 }
 
@@ -105,15 +112,22 @@ type RemoveBandRequest struct {
 type ReorderBandsRequest struct {
 	SourcePath string `json:"source_path" binding:"required"`
 	BandOrder  []int  `json:"band_order" binding:"required,min=1"`
+	InPlace    bool   `json:"in_place"`
 	OutputName string `json:"output_name"`
 }
 
-// ConvertBandTypeRequest 转换波段数据类型请求
+// BandTypeConvertItem 单个波段类型转换项
+type BandTypeConvertItem struct {
+	BandIndex int `json:"band_index" binding:"required,min=1"`
+	NewType   int `json:"new_type" binding:"required"`
+}
+
+// ConvertBandTypeRequest 转换波段数据类型请求（支持批量）
 type ConvertBandTypeRequest struct {
-	SourcePath string `json:"source_path" binding:"required"`
-	BandIndex  int    `json:"band_index" binding:"required,min=1"`
-	NewType    int    `json:"new_type" binding:"required"`
-	OutputName string `json:"output_name"`
+	SourcePath string                `json:"source_path" binding:"required"`
+	Bands      []BandTypeConvertItem `json:"bands" binding:"required,min=1"`
+	InPlace    bool                  `json:"in_place"`
+	OutputName string                `json:"output_name"`
 }
 
 // BandMathRequest 波段运算请求
@@ -417,19 +431,18 @@ func (s *RasterService) executeSetColorInterpTask(taskID string, req *SetColorIn
 		}
 		models.DB.Model(&models.RasterRecord{}).Where("task_id = ?", taskID).Update("status", finalStatus)
 	}()
-
 	rd, err := Gogeo.OpenRasterDataset(req.SourcePath, false)
 	if err != nil {
 		finalStatus = 2
 		return
 	}
 	defer rd.Close()
-
-	if err := rd.SetBandColorInterpretation(req.BandIndex, Gogeo.ColorInterpretation(req.ColorInterp)); err != nil {
-		finalStatus = 2
-		return
+	for _, item := range req.Bands {
+		if err := rd.SetBandColorInterpretation(item.BandIndex, Gogeo.ColorInterpretation(item.ColorInterp), req.InPlace); err != nil {
+			finalStatus = 2
+			return
+		}
 	}
-
 	if !req.InPlace {
 		if err := rd.ExportToFile(outputPath, "GTiff", nil); err != nil {
 			finalStatus = 2
@@ -496,7 +509,7 @@ func (s *RasterService) executeSetNoDataTask(taskID string, req *SetNoDataReques
 	}
 	defer rd.Close()
 
-	if err := rd.SetBandNoDataValue(req.BandIndex, req.NoDataValue); err != nil {
+	if err := rd.SetBandNoDataValue(req.BandIndex, req.NoDataValue, req.InPlace); err != nil {
 		finalStatus = 2
 		return
 	}
@@ -562,7 +575,7 @@ func (s *RasterService) executeAddBandTask(taskID string, req *AddBandRequest, o
 	}
 	defer rd.Close()
 
-	if err := rd.AddBand(Gogeo.BandDataType(req.DataType), Gogeo.ColorInterpretation(req.ColorInterp), req.NoDataValue); err != nil {
+	if err := rd.AddBand(Gogeo.BandDataType(req.DataType), Gogeo.ColorInterpretation(req.ColorInterp), req.NoDataValue, req.InPlace); err != nil {
 		finalStatus = 2
 		return
 	}
@@ -626,7 +639,7 @@ func (s *RasterService) executeRemoveBandTask(taskID string, req *RemoveBandRequ
 	}
 	defer rd.Close()
 
-	if err := rd.RemoveBand(req.BandIndex); err != nil {
+	if err := rd.RemoveBand(req.BandIndex, req.InPlace); err != nil {
 		finalStatus = 2
 		return
 	}
@@ -690,7 +703,7 @@ func (s *RasterService) executeReorderBandsTask(taskID string, req *ReorderBands
 	}
 	defer rd.Close()
 
-	if err := rd.ReorderBands(req.BandOrder); err != nil {
+	if err := rd.ReorderBands(req.BandOrder, req.InPlace); err != nil {
 		finalStatus = 2
 		return
 	}
@@ -1221,7 +1234,7 @@ func (s *RasterService) executeSetPaletteTask(taskID string, req *SetPaletteRequ
 	}
 	defer ct.Destroy()
 
-	if err := rd.SetBandColorTable(req.BandIndex, ct); err != nil {
+	if err := rd.SetBandColorTable(req.BandIndex, ct, req.InPlace); err != nil {
 		finalStatus = 2
 		return
 	}
@@ -1652,19 +1665,18 @@ func (s *RasterService) executeConvertBandTypeTask(taskID string, req *ConvertBa
 		}
 		models.DB.Model(&models.RasterRecord{}).Where("task_id = ?", taskID).Update("status", finalStatus)
 	}()
-
 	rd, err := Gogeo.OpenRasterDataset(req.SourcePath, false)
 	if err != nil {
 		finalStatus = 2
 		return
 	}
 	defer rd.Close()
-
-	if err := rd.ConvertBandDataType(req.BandIndex, Gogeo.BandDataType(req.NewType)); err != nil {
-		finalStatus = 2
-		return
+	for _, item := range req.Bands {
+		if err := rd.ConvertBandDataType(item.BandIndex, Gogeo.BandDataType(item.NewType), req.InPlace); err != nil {
+			finalStatus = 2
+			return
+		}
 	}
-
 	if err := rd.ExportToFile(outputPath, "GTiff", nil); err != nil {
 		finalStatus = 2
 		return

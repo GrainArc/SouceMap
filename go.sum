@@ -29,6 +29,7 @@ github.com/GrainArc/Gogeo v1.6.7/go.mod h1:SzJOAPk/q+T0o2BGY320CcK+XckRXKo4ngr1L
 github.com/GrainArc/Gogeo v1.6.8/go.mod h1:SzJOAPk/q+T0o2BGY320CcK+XckRXKo4ngr1LSTNEEQ=
 github.com/GrainArc/Gogeo v1.6.9/go.mod h1:SzJOAPk/q+T0o2BGY320CcK+XckRXKo4ngr1LSTNEEQ=
 github.com/GrainArc/Gogeo v1.6.10/go.mod h1:SzJOAPk/q+T0o2BGY320CcK+XckRXKo4ngr1LSTNEEQ=
+github.com/GrainArc/Gogeo v1.6.11/go.mod h1:SzJOAPk/q+T0o2BGY320CcK+XckRXKo4ngr1LSTNEEQ=
 github.com/adrg/strutil v0.1.0/go.mod h1:pXRr2+IyX5AEPAF5icj/EeTaiflPSD2hvGjnguilZgE=
 github.com/adrg/sysfont v0.1.1/go.mod h1:19nTHzfIn/HbngFMet+yNAvwSQYtOJYMI7vWexLWyNw=
 github.com/adrg/xdg v0.2.1/go.mod h1:ZuOshBmzV4Ta+s23hdfFZnBsdzmoR3US0d7ErpqSbTQ=
