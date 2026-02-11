@@ -314,7 +314,7 @@ func (s *RasterService) executeExpressionWithConditionTask(taskID string, req *E
 
 		// 设置NoData元数据
 		if req.SetNoData {
-			if err := newRD.SetBandNoDataValue(1, req.NoDataValue); err != nil {
+			if err := newRD.SetBandNoDataValue(1, req.NoDataValue, false); err != nil {
 				finalStatus = 2
 				return
 			}
