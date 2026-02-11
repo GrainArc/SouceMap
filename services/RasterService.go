@@ -344,7 +344,7 @@ func (s *RasterService) mosaicWithPriority(req *MosaicRequest, baseOptions *Goge
 		return err
 	}
 	defer result.Close()
-	return result.SaveToFile(outputPath, req.OutputFormat, nil)
+	return result.ExportToFile(outputPath, req.OutputFormat, nil)
 }
 
 // GetMosaicPreview 获取镶嵌预览信息
@@ -940,7 +940,8 @@ func (s *RasterService) GetResamplePreview(req *ResamplePreviewRequest) (*Resamp
 
 // BuildOverviewsRequest 构建金字塔请求
 type BuildOverviewsRequest struct {
-	SourcePath string `json:"source_path" binding:"required"` // 源文件路径Levels     []int  `json:"levels"`// 缩放因子，如 [2,4,8,16,32]，空则自动计算
+	SourcePath string `json:"source_path" binding:"required"` // 源文件路径
+	Levels     []int  `json:"levels"`                         // 缩放因子，如 [2,4,8,16,32]，空则自动计算
 	Resampling string `json:"resampling"`                     // 重采样方法: NEAREST,BILINEAR,CUBIC,AVERAGE,GAUSS,LANCZOS,MODE
 }
 
