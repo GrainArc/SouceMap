@@ -254,3 +254,65 @@ func (h *UserController) GetResamplePreview(c *gin.Context) {
 		"data": resp,
 	})
 }
+
+// BuildOverviews 构建金字塔
+func (h *UserController) BuildOverviews(c *gin.Context) {
+	var req services.BuildOverviewsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp, err := h.rasterService.StartBuildOverviewsTask(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "任务已提交",
+		"data":    resp,
+	})
+}
+
+// RemoveOverviews 删除金字塔
+func (h *UserController) RemoveOverviews(c *gin.Context) {
+	var req services.RemoveOverviewsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp, err := h.rasterService.StartRemoveOverviewsTask(&req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": "任务已提交",
+		"data":    resp,
+	})
+}
+
+// GetOverviewInfo 获取金字塔信息
+func (h *UserController) GetOverviewInfo(c *gin.Context) {
+	sourcePath := c.Query("source_path")
+	if sourcePath == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "source_path不能为空"})
+		return
+	}
+
+	info, err := h.rasterService.GetOverviewInfo(sourcePath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": info,
+	})
+}

@@ -935,3 +935,157 @@ func (s *RasterService) GetResamplePreview(req *ResamplePreviewRequest) (*Resamp
 		EstimatedSize:  estimatedSize,
 	}, nil
 }
+
+// ==================== 金字塔构建相关 ====================
+
+// BuildOverviewsRequest 构建金字塔请求
+type BuildOverviewsRequest struct {
+	SourcePath string `json:"source_path" binding:"required"` // 源文件路径Levels     []int  `json:"levels"`// 缩放因子，如 [2,4,8,16,32]，空则自动计算
+	Resampling string `json:"resampling"`                     // 重采样方法: NEAREST,BILINEAR,CUBIC,AVERAGE,GAUSS,LANCZOS,MODE
+}
+
+// RemoveOverviewsRequest 删除金字塔请求
+type RemoveOverviewsRequest struct {
+	SourcePath string `json:"source_path" binding:"required"`
+}
+
+// OverviewInfoResponse 金字塔信息响应
+type OverviewInfoResponse struct {
+	HasOverviews  bool `json:"has_overviews"`
+	OverviewCount int  `json:"overview_count"`
+}
+
+// StartBuildOverviewsTask 启动构建金字塔任务
+func (s *RasterService) StartBuildOverviewsTask(req *BuildOverviewsRequest) (*ProjectionResponse, error) {
+	if _, err := os.Stat(req.SourcePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("文件不存在: %s", req.SourcePath)
+	}
+
+	if req.Resampling == "" {
+		req.Resampling = "NEAREST"
+	}
+
+	taskID := uuid.New().String()
+
+	argsJSON, _ := json.Marshal(req)
+	record := &models.RasterRecord{
+		TaskID:     taskID,
+		SourcePath: req.SourcePath,
+		OutputPath: req.SourcePath, // 金字塔直接写入源文件(.ovr)
+		Status:     0,
+		TypeName:   "build_overviews",
+		Args:       datatypes.JSON(argsJSON),
+	}
+
+	if err := models.DB.Create(record).Error; err != nil {
+		return nil, fmt.Errorf("创建任务记录失败: %w", err)
+	}
+
+	go s.executeBuildOverviewsTask(taskID, req)
+
+	return &ProjectionResponse{
+		TaskID:     taskID,
+		OutputPath: req.SourcePath,
+		Message:    "金字塔构建任务已提交",
+	}, nil
+}
+
+// executeBuildOverviewsTask 执行构建金字塔任务
+func (s *RasterService) executeBuildOverviewsTask(taskID string, req *BuildOverviewsRequest) {
+	var finalStatus int = 1
+	defer func() {
+		if r := recover(); r != nil {
+			finalStatus = 2
+		}
+		models.DB.Model(&models.RasterRecord{}).Where("task_id = ?", taskID).Update("status", finalStatus)
+	}()
+
+	rd, err := Gogeo.OpenRasterDataset(req.SourcePath, false)
+	if err != nil {
+		finalStatus = 2
+		return
+	}
+	defer rd.Close()
+
+	resampling := Gogeo.ResampleOverview(req.Resampling)
+
+	if len(req.Levels) > 0 {
+		if err := rd.BuildOverviews(req.Levels, resampling); err != nil {
+			finalStatus = 2
+			return
+		}
+	} else {
+		if err := rd.BuildOverviewsAuto(resampling); err != nil {
+			finalStatus = 2
+			return
+		}
+	}
+}
+
+// StartRemoveOverviewsTask 启动删除金字塔任务
+func (s *RasterService) StartRemoveOverviewsTask(req *RemoveOverviewsRequest) (*ProjectionResponse, error) {
+	if _, err := os.Stat(req.SourcePath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("文件不存在: %s", req.SourcePath)
+	}
+
+	taskID := uuid.New().String()
+
+	argsJSON, _ := json.Marshal(req)
+	record := &models.RasterRecord{
+		TaskID:     taskID,
+		SourcePath: req.SourcePath,
+		OutputPath: req.SourcePath,
+		Status:     0,
+		TypeName:   "remove_overviews",
+		Args:       datatypes.JSON(argsJSON),
+	}
+
+	if err := models.DB.Create(record).Error; err != nil {
+		return nil, fmt.Errorf("创建任务记录失败: %w", err)
+	}
+
+	go s.executeRemoveOverviewsTask(taskID, req)
+
+	return &ProjectionResponse{
+		TaskID:     taskID,
+		OutputPath: req.SourcePath,
+		Message:    "金字塔删除任务已提交",
+	}, nil
+}
+
+// executeRemoveOverviewsTask 执行删除金字塔任务
+func (s *RasterService) executeRemoveOverviewsTask(taskID string, req *RemoveOverviewsRequest) {
+	var finalStatus int = 1
+	defer func() {
+		if r := recover(); r != nil {
+			finalStatus = 2
+		}
+		models.DB.Model(&models.RasterRecord{}).Where("task_id = ?", taskID).Update("status", finalStatus)
+	}()
+
+	rd, err := Gogeo.OpenRasterDataset(req.SourcePath, false)
+	if err != nil {
+		finalStatus = 2
+		return
+	}
+	defer rd.Close()
+
+	if err := rd.RemoveOverviews(); err != nil {
+		finalStatus = 2
+		return
+	}
+}
+
+// GetOverviewInfo 获取金字塔信息（同步，无需异步）
+func (s *RasterService) GetOverviewInfo(sourcePath string) (*OverviewInfoResponse, error) {
+	rd, err := Gogeo.OpenRasterDataset(sourcePath, false)
+	if err != nil {
+		return nil, fmt.Errorf("打开文件失败: %w", err)
+	}
+	defer rd.Close()
+
+	return &OverviewInfoResponse{
+		HasOverviews:  rd.HasOverviews(),
+		OverviewCount: rd.GetOverviewCount(),
+	}, nil
+}

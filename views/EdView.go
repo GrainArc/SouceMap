@@ -614,7 +614,8 @@ func (uc *UserController) GetChangeRecord(c *gin.Context) {
 	DB.Where("username = ?", username).Find(&aa)
 
 	// 转换为响应结构体
-	var response []GeoRecordResponse
+	response := make([]GeoRecordResponse, 0) // Initialize as empty slice
+
 	for _, record := range aa {
 		response = append(response, GeoRecordResponse{
 			TableName: record.TableName,

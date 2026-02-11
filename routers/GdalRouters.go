@@ -87,6 +87,10 @@ func GDALRouters(r *gin.Engine) {
 		mapRouter.POST("/raster/ReprojectRaster", UserController.ReprojectRaster)
 		mapRouter.POST("/raster/ResampleRaster", UserController.ResampleRaster)         // 栅格重采样
 		mapRouter.POST("/raster/GetResamplePreview", UserController.GetResamplePreview) // 重采样预览
+		// 金字塔相关
+		mapRouter.POST("/raster/overviews/build", UserController.BuildOverviews)
+		mapRouter.POST("/raster/overviews/remove", UserController.RemoveOverviews)
+		mapRouter.GET("/raster/overviews/info", UserController.GetOverviewInfo)
 
 	}
 	// 在路由配置文件中添加以下路由
