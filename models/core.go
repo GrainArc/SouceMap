@@ -152,6 +152,8 @@ func migrateAllTables(db *gorm.DB) error {
 		&DynamicRaster{},
 		&WmtsSchema{},
 		&RasterRecord{},
+		&EditSession{},
+		&OriginMapping{},
 	}
 
 	return db.AutoMigrate(models...)
