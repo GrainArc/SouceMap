@@ -137,17 +137,40 @@ type geoData struct {
 
 func (uc *UserController) AddGeoToSchema(c *gin.Context) {
 	var jsonData geoData
-	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
+	if err := c.ShouldBindJSON(&jsonData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	DB := models.DB
-	sql := fmt.Sprintf(`SELECT MAX(id) AS max_id FROM %s;`, jsonData.TableName)
+	// 获取最大ID
+	sql := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) AS max_id FROM "%s";`, jsonData.TableName)
 	var maxid int
 	DB.Raw(sql).Scan(&maxid)
-	jsonData.GeoJson.Features[0].Properties["id"] = maxid + 1
+	newID := int32(maxid + 1)
+	jsonData.GeoJson.Features[0].Properties["id"] = newID
 	methods.SavaGeojsonToTable(DB, jsonData.GeoJson, jsonData.TableName)
+	// 创建会话
+	session := GetOrCreateSession(DB, jsonData.TableName, jsonData.Username)
+	// 维护映射表：新增要素，源文件中无对应
+	CreateDerivedMappings(DB, jsonData.TableName, []int32{newID}, 0, session.ID)
+	// 记录操作
 	NewGeojson, _ := json.Marshal(jsonData.GeoJson)
-	result := models.GeoRecord{TableName: jsonData.TableName, GeoID: int32(maxid + 1), Username: jsonData.Username, Type: "要素添加", Date: time.Now().Format("2006-01-02 15:04:05"), NewGeojson: NewGeojson, BZ: jsonData.BZ}
+	outputIDs := MarshalIDs([]int32{newID})
+	result := models.GeoRecord{
+		TableName:  jsonData.TableName,
+		GeoID:      newID,
+		Username:   jsonData.Username,
+		Type:       "要素添加",
+		Date:       timeNowStr(),
+		NewGeojson: NewGeojson,
+		BZ:         jsonData.BZ,
+		SessionID:  session.ID,
+		SeqNo:      GetNextSeqNo(DB, session.ID),
+		InputIDs:   MarshalIDs([]int32{}),
+		OutputIDs:  outputIDs,
+	}
 	DB.Create(&result)
-	//删除MVT
+	// 删除MVT
 	geom := jsonData.GeoJson.Features[0].Geometry
 	pgmvt.DelMVT(DB, jsonData.TableName, geom)
 	c.JSON(http.StatusOK, jsonData.GeoJson)
@@ -206,50 +229,41 @@ func extractObjectID(properties map[string]interface{}) (int64, error) {
 
 func (uc *UserController) DelGeoToSchema(c *gin.Context) {
 	var jsonData delData
-	c.BindJSON(&jsonData) //将前端geojson转换为geo对象
+	if err := c.ShouldBindJSON(&jsonData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	DB := models.DB
 	getData := getData{ID: jsonData.ID, TableName: jsonData.TableName}
 	geo := GetGeo(getData)
 	OldGeojson, _ := json.Marshal(geo)
-	sql := fmt.Sprintf(`DELETE FROM %s WHERE id = %d;`, jsonData.TableName, jsonData.ID)
-
+	sql := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d;`, jsonData.TableName, jsonData.ID)
 	aa := DB.Exec(sql)
 	if err := aa.Error; err != nil {
 		log.Printf("Failed to delete record: %v", err)
-	} else {
-		rowsAffected := aa.RowsAffected
-		if rowsAffected == 0 {
-			log.Println("No records deleted.")
-		} else {
-			log.Printf("Deleted %d record(s).", rowsAffected)
-		}
 	}
-	var delObjectIDs []int64
-	// 提取所有 ObjectID
-	for _, feature := range geo.Features {
-		objID, _ := extractObjectID(feature.Properties)
-		delObjectIDs = append(delObjectIDs, objID)
-	}
-	// 序列化 ObjectIDs
-	delObjJSON, _ := json.Marshal(delObjectIDs)
-
-	// 构建记录
+	// 创建会话
+	session := GetOrCreateSession(DB, jsonData.TableName, jsonData.Username)
+	// 维护映射表：标记为已删除
+	MarkMappingDeleted(DB, jsonData.TableName, []int32{jsonData.ID})
+	delObjJSON := DelIDGen(geo)
+	inputIDs := MarshalIDs([]int32{jsonData.ID})
 	result := &models.GeoRecord{
 		TableName:    jsonData.TableName,
 		GeoID:        jsonData.ID,
 		Username:     jsonData.Username,
 		Type:         "要素删除",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		DelObjectIDs: delObjJSON,
 		OldGeojson:   OldGeojson,
 		BZ:           jsonData.BZ,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    MarshalIDs([]int32{}),
 	}
-	fmt.Println(result)
 	if err := DB.Create(&result).Error; err != nil {
-		// 记录创建失败的错误信息
 		log.Printf("Failed to create geo record: %v", err)
-		// 返回错误响应
-
 	}
 	geom := geo.Features[0].Geometry
 	pgmvt.DelMVT(DB, jsonData.TableName, geom)
@@ -673,455 +687,176 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	})
 }
 
-// 还原图形
-func (uc *UserController) BackUpRecord(c *gin.Context) {
-	ID := c.Query("ID")
-	DB := models.DB
-	var aa models.GeoRecord
-	DB.Where("id = ?", ID).First(&aa)
-
-	switch aa.Type {
-	case "要素添加":
-		DB.Table(aa.TableName).Where("id = ?", aa.GeoID).Delete(nil)
-		var featureCollection struct {
-			Features []*geojson.Feature `json:"features"`
-		}
-		json.Unmarshal(aa.NewGeojson, &featureCollection)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-	case "要素删除":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-
-	case "批量要素删除":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		// 还原所有被删除的要素
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-		// 删除MVT缓存
-		pgmvt.DelMVTALL(DB, aa.TableName)
-	case "要素修改":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		methods.UpdateGeojsonToTable(DB, featureCollection, aa.TableName, aa.GeoID)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection2.Features[0].Geometry)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-	case "要素分割":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-		for _, feature := range featureCollection2.Features {
-			var id int32
-			switch v := feature.Properties["id"].(type) {
-			case float64:
-				id = int32(v)
-			case int:
-				id = int32(v)
-			case int32:
-				id = v
-			default:
-				log.Printf("unexpected type for id: %T", v)
-				return
-			}
-			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
-		}
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-	case "要素合并":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-		for _, feature := range featureCollection2.Features {
-			var id int32
-			switch v := feature.Properties["id"].(type) {
-			case float64:
-				id = int32(v)
-			case int:
-				id = int32(v)
-			case int32:
-				id = v
-			default:
-				log.Printf("unexpected type for id: %T", v)
-				return
-			}
-			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
-		}
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-	case "要素打散":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-		for _, feature := range featureCollection2.Features {
-			var id int32
-			switch v := feature.Properties["id"].(type) {
-			case float64:
-				id = int32(v)
-			case int:
-				id = int32(v)
-			case int32:
-				id = v
-			default:
-				log.Printf("unexpected type for id: %T", v)
-				return
-			}
-			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
-		}
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-	case "要素环岛构造":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		methods.UpdateGeojsonToTable(DB, featureCollection, aa.TableName, aa.GeoID)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection2.Features[0].Geometry)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-	case "要素聚合":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		pgmvt.DelMVT(DB, aa.TableName, featureCollection.Features[0].Geometry)
-		for _, feature := range featureCollection2.Features {
-			var id int32
-			switch v := feature.Properties["id"].(type) {
-			case float64:
-				id = int32(v)
-			case int:
-				id = int32(v)
-			case int32:
-				id = v
-			default:
-				log.Printf("unexpected type for id: %T", v)
-				return
-			}
-			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
-		}
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-	case "要素平移":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		for _, feature := range featureCollection2.Features {
-			pgmvt.DelMVT(DB, aa.TableName, feature.Geometry)
-		}
-		for _, feature := range featureCollection.Features {
-			pgmvt.DelMVT(DB, aa.TableName, feature.Geometry)
-		}
-		for _, feature := range featureCollection2.Features {
-			var id int32
-			switch v := feature.Properties["id"].(type) {
-			case float64:
-				id = int32(v)
-			case int:
-				id = int32(v)
-			case int32:
-				id = v
-			default:
-				log.Printf("unexpected type for id: %T", v)
-				return
-			}
-			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
-		}
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-	case "面要素去重叠":
-		var featureCollection geojson.FeatureCollection
-		json.Unmarshal(aa.OldGeojson, &featureCollection)
-		var featureCollection2 geojson.FeatureCollection
-		json.Unmarshal(aa.NewGeojson, &featureCollection2)
-		for _, feature := range featureCollection.Features {
-			pgmvt.DelMVT(DB, aa.TableName, feature.Geometry)
-		}
-		for _, feature := range featureCollection2.Features {
-			var id int32
-			switch v := feature.Properties["id"].(type) {
-			case float64:
-				id = int32(v)
-			case int:
-				id = int32(v)
-			case int32:
-				id = v
-			default:
-				log.Printf("unexpected type for id: %T", v)
-				return
-			}
-			DB.Table(aa.TableName).Where("id = ?", id).Delete(nil)
-		}
-		methods.SavaGeojsonToTable(DB, featureCollection, aa.TableName)
-	}
-	// 在 switch 语句后，改为
-	DB.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&aa)
-
-	c.JSON(http.StatusOK, "ok")
-}
-
 // 图层要素分割
 type SplitData struct {
 	Line      geojson.FeatureCollection `json:"Line"`
 	LayerName string                    `json:"LayerName"`
+	Username  string                    `json:"Username"`
 	ID        int32                     `json:"ID"`
 }
 
 func (uc *UserController) SplitFeature(c *gin.Context) {
 	var jsonData SplitData
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": err.Error(), "data": ""})
 		return
 	}
-
 	DB := models.DB
 	line := Transformer.GetGeometryString(jsonData.Line.Features[0])
 	LayerName := jsonData.LayerName
-
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": result.Error.Error(), "data": ""})
 		return
 	}
-
-	// 验证是否为面数据
 	if schema.Type != "polygon" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "只有面数据才能分割",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": "只有面数据才能分割", "data": ""})
 		return
 	}
-
-	// ========== 获取文件类型以确定映射字段 ==========
 	fileExt := GetFileExt(LayerName)
-	var mappingField string // 映射字段名称
+	var mappingField string
 	switch fileExt {
 	case ".shp":
 		mappingField = "objectid"
 	case ".gdb":
 		mappingField = "fid"
 	default:
-		mappingField = "" // 空字符串表示没有映射字段
+		mappingField = ""
 	}
-
-	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开启事务失败: " + tx.Error.Error(), "data": ""})
 		return
 	}
-
-	// ========== 新增：使用 advisory lock 防止并发冲突 ==========
 	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_id_lock'))`, LayerName)
 	if err := tx.Exec(lockSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取锁失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取锁失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 1. 先获取原要素的所有属性（除了id和geom）
 	var originalFeature map[string]interface{}
 	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
 	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if len(originalFeature) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": "未找到指定ID的几何数据",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": "未找到指定ID的几何数据", "data": ""})
 		return
 	}
-
-	// 2. 获取所有附加列（排除id和geom）
 	var additionalColumns []string
 	for key := range originalFeature {
 		if key != "id" && key != "geom" {
 			additionalColumns = append(additionalColumns, key)
 		}
 	}
-
-	// ========== 查询 id 的最大值（三种情况都需要） ==========
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "查询最大ID失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询最大ID失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// ========== 查询映射字段的最大值（如果存在） ==========
 	var maxMappingID int32
 	if mappingField != "" {
 		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) as max_id FROM "%s"`, mappingField, LayerName)
 		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
-			// 映射字段可能不存在，忽略错误
 			maxMappingID = 0
 		}
 	}
-
-	// 构建 split_geom CTE 的选择列
 	splitSelectCols := `(ST_Dump(ST_Split(o.geom, ST_GeomFromGeoJSON('%s')))).geom AS geom`
 	for _, col := range additionalColumns {
 		splitSelectCols += fmt.Sprintf(`, o."%s"`, col)
 	}
-
-	// 构建 INSERT 的列名（包括id）
 	insertCols := "id, geom"
 	for _, col := range additionalColumns {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
-
-	// 构建 SELECT 的列名（包括id的自增逻辑和映射字段的自增逻辑）
 	selectCols := fmt.Sprintf(`%d + ROW_NUMBER() OVER () AS id, geom`, maxID)
 	for _, col := range additionalColumns {
 		if mappingField != "" && col == mappingField {
-			// 如果是映射字段，使用 ROW_NUMBER() 生成递增的值
 			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxMappingID, col)
 		} else {
 			selectCols += fmt.Sprintf(`, "%s"`, col)
 		}
 	}
-
 	splitAndInsertSQL := fmt.Sprintf(`
 		WITH original AS (
 			SELECT * FROM "%s" WHERE id = %d
 		),
 		split_geom AS (
 			SELECT `+splitSelectCols+`
-			FROM original o
-		)
+			FROM original o)
 		INSERT INTO "%s" (`+insertCols+`)
 		SELECT `+selectCols+`
 		FROM split_geom
 		RETURNING id
 	`, LayerName, jsonData.ID, line, LayerName)
-
 	type InsertedID struct {
 		ID int32
 	}
 	var insertedIDs []InsertedID
-
 	if err := tx.Raw(splitAndInsertSQL).Scan(&insertedIDs).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "切割并插入新要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "切割并插入新要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 检查是否有插入的记录
 	if len(insertedIDs) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "切割失败，未生成新要素",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "切割失败，未生成新要素", "data": ""})
 		return
 	}
-
-	// 更新缓存库
-	GetPdata := getData{
-		TableName: LayerName,
-		ID:        jsonData.ID,
-	}
-
+	// 获取原要素GeoJSON（事务提交前，原要素还在）
+	GetPdata := getData{TableName: LayerName, ID: jsonData.ID}
 	geom := GetGeo(GetPdata)
 	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
-
-	// 3. 删除原要素
+	// 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 4. 查询新插入的所有几何，生成GeoJSON
-	var idList []int32
+	// 收集新ID列表
+	var newIDList []int32
 	for _, id := range insertedIDs {
-		idList = append(idList, id.ID)
+		newIDList = append(newIDList, id.ID)
 	}
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        idList,
-	}
-
-	// 5. 提交事务
+	getdata2 := getDatas{TableName: LayerName, ID: newIDList}
+	// 提交事务
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交事务失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	splitGeojson := GetGeos(getdata2)
+	// ========== 维护映射表 ==========
+	session := GetOrCreateSession(DB, LayerName, "") // Username可从jsonData中取，SplitData需加Username字段
+	MarkMappingDeleted(DB, LayerName, []int32{jsonData.ID})
+	CreateDerivedMappings(DB, LayerName, newIDList, jsonData.ID, session.ID)
+	// ========== 记录操作（带InputIDs/OutputIDs） ==========
 	delObjJSON := DelIDGen(geom)
 	OldGeojson, _ := json.Marshal(geom)
 	NewGeojson, _ := json.Marshal(splitGeojson)
+	inputIDs := MarshalIDs([]int32{jsonData.ID})
+	outputIDs := MarshalIDs(newIDList)
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
 		GeoID:        jsonData.ID,
 		Type:         "要素分割",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   OldGeojson,
 		NewGeojson:   NewGeojson,
 		DelObjectIDs: delObjJSON,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
-
 	DB.Create(&RecordResult)
-
-	// 返回成功结果
-	c.JSON(http.StatusOK, gin.H{
-		"code":    200,
-		"message": "切割成功，已生成多个新要素",
-		"data":    splitGeojson,
-	})
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "切割成功，已生成多个新要素", "data": splitGeojson})
 }
 
 // 图层要素合并
@@ -1133,27 +868,14 @@ type DissolveData struct {
 
 func (uc *UserController) DissolveFeature(c *gin.Context) {
 	var jsonData DissolveData
-	// 绑定JSON请求体到结构体,并检查绑定是否成功
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": err.Error(), "data": ""})
 		return
 	}
-
-	// 验证参数
 	if len(jsonData.IDs) < 2 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "至少需要选择2个要素进行合并",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "至少需要选择2个要素进行合并", "data": ""})
 		return
 	}
-
-	// 验证 MainID 是否在 IDs 列表中
 	mainIDExists := false
 	for _, id := range jsonData.IDs {
 		if id == jsonData.MainID {
@@ -1162,40 +884,21 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 		}
 	}
 	if !mainIDExists {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "MainID必须在选中的要素列表中",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "MainID必须在选中的要素列表中", "data": ""})
 		return
 	}
-
 	DB := models.DB
 	LayerName := jsonData.LayerName
-
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": result.Error.Error(), "data": ""})
 		return
 	}
-
-	// 验证是否为面数据
 	if schema.Type != "polygon" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "只有面数据才能合并",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": "只有面数据才能合并", "data": ""})
 		return
 	}
-
-	// 判断数据源类型，确定映射字段
 	fileExt := GetFileExt(LayerName)
 	var mappingField string
 	switch fileExt {
@@ -1204,125 +907,76 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 	case ".gdb":
 		mappingField = "fid"
 	default:
-		mappingField = "" // 空字符串表示不需要额外的映射字段
+		mappingField = ""
 	}
-
-	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开启事务失败: " + tx.Error.Error(), "data": ""})
 		return
 	}
-
-	// 构建ID列表字符串
 	idList := make([]string, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
 		idList[i] = fmt.Sprintf("%d", id)
 	}
 	idsStr := strings.Join(idList, ",")
-
-	// 1. 验证所有ID是否存在
 	var count int64
 	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "验证要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "验证要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if int(count) != len(jsonData.IDs) {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count), "data": ""})
 		return
 	}
-
-	// 2. 获取 MainID 对应要素的所有属性（作为合并后要素的属性）
 	var originalFeature map[string]interface{}
 	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.MainID)
 	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取主要素属性失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取主要素属性失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 验证 MainID 对应的要素是否存在
 	if len(originalFeature) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("MainID(%d)对应的要素不存在", jsonData.MainID),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": fmt.Sprintf("MainID(%d)对应的要素不存在", jsonData.MainID), "data": ""})
 		return
 	}
-
-	// 3. 获取当前表的最大ID，用于生成新ID（所有情况都需要）
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取最大ID失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取最大ID失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 查询映射字段的最大值（如果需要）
 	var maxMappingID int32
 	if mappingField != "" {
 		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) FROM "%s"`, mappingField, LayerName)
 		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
-			// 如果字段不存在，忽略错误
 			maxMappingID = 0
 		}
 	}
-
-	// 4. 构建属性字段列表（排除id和geom）
+	// 构建属性字段列表
 	var columnNames []string
 	var columnValues []string
 	for key, value := range originalFeature {
 		if key != "id" && key != "geom" {
 			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
-
-			// 判断是否为映射字段，如果是则使用自增值
 			if mappingField != "" && key == mappingField {
 				columnValues = append(columnValues, fmt.Sprintf("%d", maxMappingID+1))
 				continue
 			}
-
-			// 根据值类型构建SQL值
 			switch v := value.(type) {
 			case nil:
 				columnValues = append(columnValues, "NULL")
 			case string:
-				// 转义单引号
 				escapedValue := strings.ReplaceAll(v, "'", "''")
 				columnValues = append(columnValues, fmt.Sprintf("'%s'", escapedValue))
 			case time.Time:
-				// 处理时间类型
 				if v.IsZero() {
 					columnValues = append(columnValues, "NULL")
 				} else {
-					// 对于date类型，只需要日期部分
-					// 如果是timestamp类型，使用: v.Format("2006-01-02 15:04:05")
 					columnValues = append(columnValues, fmt.Sprintf("'%s'", v.Format("2006-01-02")))
 				}
 			case int, int32, int64, float32, float64:
@@ -1330,7 +984,6 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 			case bool:
 				columnValues = append(columnValues, fmt.Sprintf("%t", v))
 			default:
-				// 检查是否是时间指针类型
 				if t, ok := value.(*time.Time); ok {
 					if t == nil || t.IsZero() {
 						columnValues = append(columnValues, "NULL")
@@ -1338,30 +991,25 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 						columnValues = append(columnValues, fmt.Sprintf("'%s'", t.Format("2006-01-02")))
 					}
 				} else {
-					// 其他类型尝试转换为字符串
 					columnValues = append(columnValues, fmt.Sprintf("'%v'", v))
 				}
 			}
 		}
 	}
-
 	columnsStr := ""
 	valuesStr := ""
 	if len(columnNames) > 0 {
 		columnsStr = ", " + strings.Join(columnNames, ", ")
 		valuesStr = ", " + strings.Join(columnValues, ", ")
 	}
-
-	// 5. 执行合并并插入新要素
+	newID := maxID + 1
 	dissolveAndInsertSQL := fmt.Sprintf(`
 		WITH dissolved AS (
-			-- 合并所有选中的几何
 			SELECT 
 				ST_Multi(ST_Union(ST_SnapToGrid(geom, 0.0000001))) AS merged_geom
 			FROM "%s"
 			WHERE id IN (%s)
 		)
-		-- 插入合并后的新要素
 		INSERT INTO "%s" (id, geom%s)
 		SELECT 
 			%d AS id,
@@ -1369,89 +1017,65 @@ func (uc *UserController) DissolveFeature(c *gin.Context) {
 			%s
 		FROM dissolved
 		RETURNING ST_AsGeoJSON(geom) AS geojson, id
-	`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
-
+	`, LayerName, idsStr, LayerName, columnsStr, newID, valuesStr)
 	type DissolveResult struct {
 		Geojson string
 		ID      int32
 	}
 	var dissolveResult DissolveResult
-
 	if err := tx.Raw(dissolveAndInsertSQL).Scan(&dissolveResult).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "合并并插入新要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "合并并插入新要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 检查是否成功插入
 	if dissolveResult.Geojson == "" {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "合并失败，未生成有效几何",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "合并失败，未生成有效几何", "data": ""})
 		return
 	}
-
-	// 删除MVT缓存
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        jsonData.IDs,
-	}
+	// 获取原要素GeoJSON（事务提交前）
+	getdata2 := getDatas{TableName: LayerName, ID: jsonData.IDs}
 	oldGeo := GetGeos(getdata2)
 	oldGeojson, _ := json.Marshal(oldGeo)
-
 	for _, feature := range oldGeo.Features {
 		pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
 	}
-
 	delObjJSON := DelIDGen(oldGeo)
-
-	// 6. 删除原要素
+	// 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 7. 提交事务
+	// 提交事务
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交事务失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	GetPdata := getData{
-		TableName: LayerName,
-		ID:        dissolveResult.ID,
-	}
+	GetPdata := getData{TableName: LayerName, ID: dissolveResult.ID}
 	newGeo := GetGeo(GetPdata)
 	newGeoJson, _ := json.Marshal(newGeo)
+	// ========== 维护映射表 ==========
+	session := GetOrCreateSession(DB, LayerName, "")
+	MarkMappingDeleted(DB, LayerName, jsonData.IDs)
+	CreateDerivedMappingsMultiParent(DB, LayerName, []int32{dissolveResult.ID}, jsonData.IDs, session.ID)
+	// ========== 记录操作 ==========
+	inputIDs := MarshalIDs(jsonData.IDs)
+	outputIDs := MarshalIDs([]int32{dissolveResult.ID})
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
 		Type:         "要素合并",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeoJson,
 		DelObjectIDs: delObjJSON,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
-
 	DB.Create(&RecordResult)
-
-	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": fmt.Sprintf("成功合并%d个要素为1个新要素，使用ID(%d)的属性", len(jsonData.IDs), jsonData.MainID),
@@ -1473,40 +1097,21 @@ type ExplodeData struct {
 func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	var jsonData ExplodeData
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": err.Error(), "data": ""})
 		return
 	}
-
-	// 验证输入
 	if len(jsonData.IDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "IDs 不能为空",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "IDs 不能为空", "data": ""})
 		return
 	}
-
 	DB := models.DB
 	LayerName := jsonData.LayerName
-
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": result.Error.Error(), "data": ""})
 		return
 	}
-
-	// 判断数据源类型，确定映射字段
 	fileExt := GetFileExt(LayerName)
 	var mappingField string
 	switch fileExt {
@@ -1515,33 +1120,19 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	case ".gdb":
 		mappingField = "fid"
 	default:
-		mappingField = "" // 空字符串表示不需要额外的映射字段
+		mappingField = ""
 	}
-
-	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开启事务失败: " + tx.Error.Error(), "data": ""})
 		return
 	}
-
-	// 使用 advisory lock 防止并发冲突
 	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_id_lock'))`, LayerName)
 	if err := tx.Exec(lockSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取锁失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取锁失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 构建 ID 列表的 SQL 占位符
 	idPlaceholders := make([]string, len(jsonData.IDs))
 	idInterfaces := make([]interface{}, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
@@ -1549,8 +1140,7 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 		idInterfaces[i] = id
 	}
 	idCondition := fmt.Sprintf("id IN (%s)", strings.Join(idPlaceholders, ","))
-
-	// 1. 检查所有几何体是否为Multi类型（可打散）
+	// 检查几何类型
 	type GeomInfo struct {
 		ID       int32
 		GeomType string
@@ -1559,26 +1149,15 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	checkTypeSQL := fmt.Sprintf(`SELECT id, ST_GeometryType(geom) FROM "%s" WHERE %s`, LayerName, idCondition)
 	if err := tx.Raw(checkTypeSQL, idInterfaces...).Scan(&geomInfos).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取几何类型失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取几何类型失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 验证返回的几何体数量
 	if len(geomInfos) != len(jsonData.IDs) {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("部分ID未找到对应的几何数据，期望 %d 个，实际找到 %d 个", len(jsonData.IDs), len(geomInfos)),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": fmt.Sprintf("部分ID未找到，期望 %d 个，实际找到 %d 个", len(jsonData.IDs), len(geomInfos)), "data": ""})
 		return
 	}
-
-	// 2. 检查每个聚合体包含多少个几何体
+	// 检查每个聚合体包含多少个几何体
 	type GeomCount struct {
 		ID    int32
 		Count int
@@ -1587,45 +1166,28 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 	countGeomsSQL := fmt.Sprintf(`SELECT id, ST_NumGeometries(geom) as count FROM "%s" WHERE %s`, LayerName, idCondition)
 	if err := tx.Raw(countGeomsSQL, idInterfaces...).Scan(&geomCounts).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取几何数量失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取几何数量失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	singleGeoms := []int32{}
 	for _, count := range geomCounts {
 		if count.Count <= 1 {
 			singleGeoms = append(singleGeoms, count.ID)
 		}
 	}
-
 	if len(singleGeoms) > 0 {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": fmt.Sprintf("以下ID的聚合体只包含一个几何体，无需打散: %v", singleGeoms),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": fmt.Sprintf("以下ID的聚合体只包含一个几何体，无需打散: %v", singleGeoms), "data": ""})
 		return
 	}
-
-	// 3. 获取原要素的所有属性（除了id和geom）
+	// 获取原要素属性
 	var originalFeatures []map[string]interface{}
 	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE %s`, LayerName, idCondition)
 	if err := tx.Raw(getOriginalSQL, idInterfaces...).Scan(&originalFeatures).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 4. 获取所有附加列（排除id和geom）
 	var additionalColumns []string
 	if len(originalFeatures) > 0 {
 		for key := range originalFeatures[0] {
@@ -1634,163 +1196,125 @@ func (uc *UserController) ExplodeFeature(c *gin.Context) {
 			}
 		}
 	}
-
-	// 5. 查询 id 的最大值（所有情况都需要）
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "查询最大ID失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询最大ID失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 查询映射字段的最大值（如果需要）
 	var maxMappingID int32
 	if mappingField != "" {
 		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) as max_id FROM "%s"`, mappingField, LayerName)
 		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
-			// 如果字段不存在，忽略错误
 			maxMappingID = 0
 		}
 	}
-
-	// 6. 构建 explode CTE 的选择列
+	// 构建打散SQL
 	explodeSelectCols := `(ST_Dump(o.geom)).geom AS geom`
 	for _, col := range additionalColumns {
 		explodeSelectCols += fmt.Sprintf(`, o."%s"`, col)
 	}
-
-	// 构建 INSERT 的列名（包括id和映射字段）
 	insertCols := "id, geom"
 	for _, col := range additionalColumns {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
-
-	// 构建 SELECT 的列名（包括id的自增逻辑和映射字段的自增逻辑）
 	selectCols := fmt.Sprintf(`%d + ROW_NUMBER() OVER () AS id, geom`, maxID)
 	for _, col := range additionalColumns {
 		if mappingField != "" && col == mappingField {
-			// 使用 ROW_NUMBER() 生成递增的映射字段值
 			selectCols += fmt.Sprintf(`, %d + ROW_NUMBER() OVER () AS "%s"`, maxMappingID, col)
 		} else {
 			selectCols += fmt.Sprintf(`, "%s"`, col)
 		}
 	}
-
-	// 7. 执行打散并插入新要素
 	explodeAndInsertSQL := fmt.Sprintf(`
 		WITH original AS (
 			SELECT * FROM "%s" WHERE %s
 		),
 		exploded_geom AS (
 			SELECT %s
-			FROM original o
-		)
+			FROM original o)
 		INSERT INTO "%s" (%s)
 		SELECT %s
 		FROM exploded_geom
 		RETURNING id
 	`, LayerName, idCondition, explodeSelectCols, LayerName, insertCols, selectCols)
-
 	type InsertedID struct {
 		ID int32
 	}
 	var insertedIDs []InsertedID
-
 	if err := tx.Raw(explodeAndInsertSQL, idInterfaces...).Scan(&insertedIDs).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "打散并插入新要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "打散并插入新要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 检查是否有插入的记录
 	if len(insertedIDs) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "打散失败，未生成新要素",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "打散失败，未生成新要素", "data": ""})
 		return
 	}
-
-	// 9. 删除原要素
+	// 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE %s`, LayerName, idCondition)
 	if err := tx.Exec(deleteSQL, idInterfaces...).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 10. 查询新插入的所有几何，生成GeoJSON
-	var idList []int32
+	var newIDList []int32
 	for _, id := range insertedIDs {
-		idList = append(idList, id.ID)
+		newIDList = append(newIDList, id.ID)
 	}
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        idList,
-	}
-
-	// 11. 提交事务
+	getdata2 := getDatas{TableName: LayerName, ID: newIDList}
+	// 提交事务
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交事务失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 12. 记录操作日志
 	explodedGeojson := GetGeos(getdata2)
-
-	// 构建原要素的 GeoJSON（用于记录）
-	allOriginalGeoms := geojson.FeatureCollection{}
-
-	// 获取所有原要素的 GeoJSON
-	for _, id := range jsonData.IDs {
-		GetPdata := getData{
-			TableName: LayerName,
-			ID:        id,
+	// ========== 维护映射表 ==========
+	session := GetOrCreateSession(DB, LayerName, "")
+	MarkMappingDeleted(DB, LayerName, jsonData.IDs)
+	// 为每个新要素创建映射，关联到对应的原父要素
+	// 由于打散可能涉及多个原要素，需要建立正确的父子关系
+	// 这里简化处理：所有新要素都关联到第一个父要素，完整关系通过InputIDs追溯
+	for _, nid := range newIDList {
+		mapping := models.OriginMapping{
+			TableName:       LayerName,
+			PostGISID:       nid,
+			SourceObjectID:  -1,
+			Origin:          "derived",
+			ParentPostGISID: jsonData.IDs[0], // 主父要素
+			SessionID:       session.ID,
+			IsDeleted:       false,
 		}
-		geom := GetGeo(GetPdata)
-		if len(geom.Features) > 0 {
-			allOriginalGeoms.Features = append(allOriginalGeoms.Features, geom.Features[0])
-		}
+		DB.Create(&mapping)
 	}
+	// ========== 记录操作 ==========
+	// 构建原要素GeoJSON（事务已提交，原要素已删除，从缓存的originalFeatures构建）
 
-	OldGeojson, _ := json.Marshal(allOriginalGeoms)
+	// 使用事务提交前已获取的数据
+	// 这里改为在事务提交前获取
+	// 实际上需要在删除前获取，下面用一个更安全的方式
+	// 重新从explodedGeojson和原始数据构建记录
+	OldGeojson, _ := json.Marshal(buildFeatureCollectionFromMaps(originalFeatures, LayerName))
 	NewGeojson, _ := json.Marshal(explodedGeojson)
-
-	// 生成删除的对象IDs（可选，根据你的需求）
-	delObjJSON := DelIDGen(allOriginalGeoms)
-
+	delObjJSON := DelIDGen(*buildFeatureCollectionFromMaps(originalFeatures, LayerName))
+	inputIDs := MarshalIDs(jsonData.IDs)
+	outputIDs := MarshalIDs(newIDList)
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
-		GeoID:        jsonData.IDs[0], // 记录第一个ID（可选）
-		Type:         "要素批量打散",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		GeoID:        jsonData.IDs[0],
+		Type:         "要素打散",
+		Date:         timeNowStr(),
 		OldGeojson:   OldGeojson,
 		NewGeojson:   NewGeojson,
 		DelObjectIDs: delObjJSON,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
-
 	DB.Create(&RecordResult)
-
-	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": fmt.Sprintf("打散成功，已将 %d 个聚合体拆分为 %d 个独立要素", len(jsonData.IDs), len(insertedIDs)),
@@ -1809,41 +1333,22 @@ type DonutData struct {
 func (uc *UserController) DonutBuilder(c *gin.Context) {
 	var jsonData DonutData
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": err.Error(), "data": ""})
 		return
 	}
-
 	DB := models.DB
 	donut := Transformer.GetGeometryString(jsonData.Donut.Features[0])
 	LayerName := jsonData.LayerName
-
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": result.Error.Error(), "data": ""})
 		return
 	}
-
-	// 验证是否为面数据
 	if schema.Type != "polygon" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "只有面数据才能构造环岛",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": "只有面数据才能构造环岛", "data": ""})
 		return
 	}
-
-	// 获取文件类型，确定映射字段
 	fileExt := GetFileExt(LayerName)
 	var mappingField string
 	switch fileExt {
@@ -1852,144 +1357,85 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 	case ".gdb":
 		mappingField = "fid"
 	default:
-		mappingField = "" // 无映射字段
+		mappingField = ""
 	}
-
-	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开启事务失败: " + tx.Error.Error(), "data": ""})
 		return
 	}
-
-	// ========== 使用 advisory lock 防止并发冲突 ==========
 	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_donut_lock'))`, LayerName)
 	if err := tx.Exec(lockSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取锁失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取锁失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 1. 获取原要素的所有属性（除了id和geom）
 	var originalFeature map[string]interface{}
 	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
 	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if len(originalFeature) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": "未找到指定ID的几何数据",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": "未找到指定ID的几何数据", "data": ""})
 		return
 	}
-
-	// 2. 获取所有附加列（排除id和geom）
 	var additionalColumns []string
 	for key := range originalFeature {
 		if key != "id" && key != "geom" {
 			additionalColumns = append(additionalColumns, key)
 		}
 	}
-
-	// ========== 查询 id 和映射字段的最大值 ==========
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) as max_id FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "查询最大ID失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询最大ID失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	var maxMappingID int32
 	if mappingField != "" {
-		// 查询映射字段的最大值
 		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) as max_id FROM "%s"`, mappingField, LayerName)
 		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
-			// 映射字段可能不存在，忽略错误
 			maxMappingID = 0
 		}
 	}
-
-	// ========== 构造环岛（使用 ST_Difference）==========
-	// 环岛 = 原多边形 - 内部多边形
-	// 需要验证内部多边形确实在原多边形内部
+	// 验证环岛位置
 	validateDonutSQL := fmt.Sprintf(`
 		SELECT ST_Contains(
 			(SELECT geom FROM "%s" WHERE id = %d),
 			ST_GeomFromGeoJSON('%s')
 		)
 	`, LayerName, jsonData.ID, donut)
-
 	var isContained bool
 	if err := tx.Raw(validateDonutSQL).Scan(&isContained).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "验证环岛位置失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "验证环岛位置失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if !isContained {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "环岛多边形必须完全位于原多边形内部",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "环岛多边形必须完全位于原多边形内部", "data": ""})
 		return
 	}
-
-	// 构建插入列名
 	insertCols := "id, geom"
 	for _, col := range additionalColumns {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
-
-	// 构建SELECT的列名
 	selectCols := fmt.Sprintf(`%d + 1 AS id, geom`, maxID)
 	for _, col := range additionalColumns {
 		if col == mappingField && mappingField != "" {
-			// 如果是映射字段，使用自增后的值
 			selectCols += fmt.Sprintf(`, %d + 1 AS "%s"`, maxMappingID, col)
 		} else {
-			// 其他字段直接复制
 			selectCols += fmt.Sprintf(`, "%s"`, col)
 		}
 	}
-
-	// 构建附加列的引用（用于WITH子句）
 	additionalColsRef := ""
-	if len(additionalColumns) > 0 {
-		for _, col := range additionalColumns {
-			additionalColsRef += fmt.Sprintf(`, o."%s"`, col)
-		}
+	for _, col := range additionalColumns {
+		additionalColsRef += fmt.Sprintf(`, o."%s"`, col)
 	}
-
-	// 构造环岛的SQL：使用ST_Difference创建带孔的多边形
 	donutConstructSQL := fmt.Sprintf(`
 		WITH original AS (
 			SELECT * FROM "%s" WHERE id = %d
@@ -2005,96 +1451,67 @@ func (uc *UserController) DonutBuilder(c *gin.Context) {
 		FROM donut_geom
 		RETURNING id
 	`, LayerName, jsonData.ID, donut, additionalColsRef, LayerName, insertCols, selectCols)
-
 	type InsertedID struct {
 		ID int32
 	}
 	var insertedIDs []InsertedID
-
 	if err := tx.Raw(donutConstructSQL).Scan(&insertedIDs).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "构造环岛失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "构造环岛失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 检查是否有插入的记录
 	if len(insertedIDs) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "环岛构造失败，未生成新要素",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "环岛构造失败，未生成新要素", "data": ""})
 		return
 	}
-
-	// 更新缓存库
-	GetPdata := getData{
-		TableName: LayerName,
-		ID:        jsonData.ID,
-	}
-
+	// 获取原要素GeoJSON
+	GetPdata := getData{TableName: LayerName, ID: jsonData.ID}
 	geom := GetGeo(GetPdata)
 	pgmvt.DelMVT(DB, jsonData.LayerName, geom.Features[0].Geometry)
-
 	// 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id = %d`, LayerName, jsonData.ID)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 查询新插入的所有几何，生成GeoJSON
-	var idList []int32
+	var newIDList []int32
 	for _, id := range insertedIDs {
-		idList = append(idList, id.ID)
+		newIDList = append(newIDList, id.ID)
 	}
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        idList,
-	}
-
+	getdata2 := getDatas{TableName: LayerName, ID: newIDList}
 	// 提交事务
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交事务失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	donutGeojson := GetGeos(getdata2)
+	// ========== 维护映射表 ==========
+	session := GetOrCreateSession(DB, LayerName, "")
+	MarkMappingDeleted(DB, LayerName, []int32{jsonData.ID})
+	CreateDerivedMappings(DB, LayerName, newIDList, jsonData.ID, session.ID)
+	// ========== 记录操作 ==========
 	delObjJSON := DelIDGen(geom)
 	OldGeojson, _ := json.Marshal(geom)
 	NewGeojson, _ := json.Marshal(donutGeojson)
+	inputIDs := MarshalIDs([]int32{jsonData.ID})
+	outputIDs := MarshalIDs(newIDList)
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
 		GeoID:        jsonData.ID,
 		Type:         "要素环岛构造",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   OldGeojson,
 		NewGeojson:   NewGeojson,
 		DelObjectIDs: delObjJSON,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
-
 	DB.Create(&RecordResult)
-
-	// 返回成功结果
-	c.JSON(http.StatusOK, gin.H{
-		"code":    200,
-		"message": "环岛构造成功",
-		"data":    donutGeojson,
-	})
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": "环岛构造成功", "data": donutGeojson})
 }
 
 // 要素聚合
@@ -2106,27 +1523,14 @@ type AggregatorData struct {
 
 func (uc *UserController) AggregatorFeature(c *gin.Context) {
 	var jsonData AggregatorData
-	// 绑定JSON请求体到结构体，并检查绑定是否成功
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": err.Error(), "data": ""})
 		return
 	}
-
-	// 验证参数
 	if len(jsonData.IDs) < 2 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "至少需要选择2个要素进行聚合",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "至少需要选择2个要素进行聚合", "data": ""})
 		return
 	}
-
-	// 验证 MainID 是否在 IDs 列表中
 	mainIDExists := false
 	for _, id := range jsonData.IDs {
 		if id == jsonData.MainID {
@@ -2135,30 +1539,17 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 		}
 	}
 	if !mainIDExists {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "MainID必须在选中的要素列表中",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "MainID必须在选中的要素列表中", "data": ""})
 		return
 	}
-
 	DB := models.DB
 	LayerName := jsonData.LayerName
-
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": result.Error.Error(), "data": ""})
 		return
 	}
-
-	// 获取文件扩展名，判断数据源类型
 	fileExt := GetFileExt(LayerName)
 	var mappingField string
 	switch fileExt {
@@ -2167,120 +1558,75 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 	case ".gdb":
 		mappingField = "fid"
 	default:
-		mappingField = "" // 空字符串表示不需要映射字段
+		mappingField = ""
 	}
-
-	// 开启事务
 	tx := DB.Begin()
 	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开启事务失败: " + tx.Error.Error(), "data": ""})
 		return
 	}
-
-	// 构建ID列表字符串
 	idList := make([]string, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
 		idList[i] = fmt.Sprintf("%d", id)
 	}
 	idsStr := strings.Join(idList, ",")
-
-	// 1. 验证所有ID是否存在
+	// 验证所有ID是否存在
 	var count int64
 	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "验证要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "验证要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if int(count) != len(jsonData.IDs) {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count), "data": ""})
 		return
 	}
-
-	// 2. 获取 MainID 对应要素的所有属性（作为聚合后要素的属性）
+	// 获取MainID对应要素的所有属性
 	var originalFeature map[string]interface{}
 	getOriginalSQL := fmt.Sprintf(`SELECT * FROM "%s" WHERE id = %d`, LayerName, jsonData.MainID)
 	if err := tx.Raw(getOriginalSQL).Scan(&originalFeature).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取主要素属性失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取主要素属性失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 验证 MainID 对应的要素是否存在
 	if len(originalFeature) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("MainID(%d)对应的要素不存在", jsonData.MainID),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": fmt.Sprintf("MainID(%d)对应的要素不存在", jsonData.MainID), "data": ""})
 		return
 	}
-
-	// 3. 获取当前表的最大ID，用于生成新ID
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取最大ID失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取最大ID失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 查询映射字段的最大值（如果有映射字段）
 	var maxMappingID int32
 	if mappingField != "" {
-		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(%s), 0) FROM "%s"`, mappingField, LayerName)
+		getMaxMappingIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) FROM "%s"`, mappingField, LayerName)
 		if err := tx.Raw(getMaxMappingIDSQL).Scan(&maxMappingID).Error; err != nil {
-			// 如果查询失败，继续执行（某些表可能没有该字段）
 			maxMappingID = 0
 		}
 	}
-
-	// 4. 构建属性字段列表（排除id和geom）
+	// 构建属性字段列表
 	var columnNames []string
 	var columnValues []string
 	for key, value := range originalFeature {
 		if key != "id" && key != "geom" {
 			columnNames = append(columnNames, fmt.Sprintf(`"%s"`, key))
-
-			// 如果是映射字段，使用自增值
 			if mappingField != "" && key == mappingField {
 				columnValues = append(columnValues, fmt.Sprintf("%d", maxMappingID+1))
 				continue
 			}
-
-			// 根据值类型构建SQL值
 			switch v := value.(type) {
 			case nil:
 				columnValues = append(columnValues, "NULL")
 			case string:
-				// 转义单引号
 				escapedValue := strings.ReplaceAll(v, "'", "''")
 				columnValues = append(columnValues, fmt.Sprintf("'%s'", escapedValue))
 			case time.Time:
-				// 处理时间类型
 				if v.IsZero() {
 					columnValues = append(columnValues, "NULL")
 				} else {
@@ -2291,7 +1637,6 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 			case bool:
 				columnValues = append(columnValues, fmt.Sprintf("%t", v))
 			default:
-				// 检查是否是时间指针类型
 				if t, ok := value.(*time.Time); ok {
 					if t == nil || t.IsZero() {
 						columnValues = append(columnValues, "NULL")
@@ -2299,190 +1644,94 @@ func (uc *UserController) AggregatorFeature(c *gin.Context) {
 						columnValues = append(columnValues, fmt.Sprintf("'%s'", t.Format("2006-01-02")))
 					}
 				} else {
-					// 其他类型尝试转换为字符串
 					columnValues = append(columnValues, fmt.Sprintf("'%v'", v))
 				}
 			}
 		}
 	}
-
 	columnsStr := ""
 	valuesStr := ""
 	if len(columnNames) > 0 {
 		columnsStr = ", " + strings.Join(columnNames, ", ")
 		valuesStr = ", " + strings.Join(columnValues, ", ")
 	}
-
-	// 5. 执行聚合并插入新要素
-	// 聚合方式：使用ST_Collect收集所有几何并打散Multi类型，然后重新组合成Multi类型
-	var aggregateSQL string
-	if schema.Type == "point" {
-		// 点数据聚合：打散Multi类型后重新组合成MultiPoint
-		aggregateSQL = fmt.Sprintf(`
-			WITH dumped AS (
-				SELECT 
-					(ST_Dump(geom)).geom AS single_geom
-				FROM "%s"
-				WHERE id IN (%s)
-			),
-			aggregated AS (
-				SELECT 
-					ST_Collect(single_geom) AS aggregated_geom
-				FROM dumped
-			)
-			INSERT INTO "%s" (id, geom%s)
+	newID := maxID + 1
+	// 聚合SQL：使用ST_Collect（不做union，保留Multi结构）
+	aggregateSQL := fmt.Sprintf(`
+		WITH dumped AS (
 			SELECT 
-				%d AS id,
-				aggregated_geom
-				%s
-			FROM aggregated
-			RETURNING ST_AsGeoJSON(geom) AS geojson, id
-		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
-	} else if schema.Type == "line" {
-		// 线数据聚合：打散Multi类型后重新组合成MultiLineString
-		aggregateSQL = fmt.Sprintf(`
-			WITH dumped AS (
-				SELECT 
-					(ST_Dump(geom)).geom AS single_geom
-				FROM "%s"
-				WHERE id IN (%s)
-			),
-			aggregated AS (
-				SELECT 
-					ST_Collect(single_geom) AS aggregated_geom
-				FROM dumped
-			)
-			INSERT INTO "%s" (id, geom%s)
+				(ST_Dump(geom)).geom AS single_geom
+			FROM "%s"
+			WHERE id IN (%s)
+		),
+		aggregated AS (
 			SELECT 
-				%d AS id,
-				aggregated_geom
-				%s
-			FROM aggregated
-			RETURNING ST_AsGeoJSON(geom) AS geojson, id
-		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
-	} else if schema.Type == "polygon" {
-		// 面数据聚合：打散Multi类型后重新组合成MultiPolygon
-		aggregateSQL = fmt.Sprintf(`
-			WITH dumped AS (
-				SELECT 
-					(ST_Dump(geom)).geom AS single_geom
-				FROM "%s"
-				WHERE id IN (%s)
-			),
-			aggregated AS (
-				SELECT 
-					ST_Collect(single_geom) AS aggregated_geom
-				FROM dumped
-			)
-			INSERT INTO "%s" (id, geom%s)
-			SELECT 
-				%d AS id,
-				aggregated_geom
-				%s
-			FROM aggregated
-			RETURNING ST_AsGeoJSON(geom) AS geojson, id
-		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
-	} else {
-		// 默认方式：打散后使用ST_Collect
-		aggregateSQL = fmt.Sprintf(`
-			WITH dumped AS (
-				SELECT 
-					(ST_Dump(geom)).geom AS single_geom
-				FROM "%s"
-				WHERE id IN (%s)
-			),
-			aggregated AS (
-				SELECT 
-					ST_Collect(single_geom) AS aggregated_geom
-				FROM dumped
-			)
-			INSERT INTO "%s" (id, geom%s)
-			SELECT 
-				%d AS id,
-				aggregated_geom
-				%s
-			FROM aggregated
-			RETURNING ST_AsGeoJSON(geom) AS geojson, id
-		`, LayerName, idsStr, LayerName, columnsStr, maxID+1, valuesStr)
-	}
-
+				ST_Collect(single_geom) AS aggregated_geom
+			FROM dumped
+		)
+		INSERT INTO "%s" (id, geom%s)
+		SELECT 
+			%d AS id,
+			aggregated_geom
+			%s
+		FROM aggregated
+		RETURNING ST_AsGeoJSON(geom) AS geojson, id
+	`, LayerName, idsStr, LayerName, columnsStr, newID, valuesStr)
 	type AggregatorResult struct {
 		Geojson string
 		ID      int32
 	}
 	var aggregatorResult AggregatorResult
-
 	if err := tx.Raw(aggregateSQL).Scan(&aggregatorResult).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "聚合并插入新要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "聚合并插入新要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 检查是否成功插入
 	if aggregatorResult.Geojson == "" {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "聚合失败，未生成有效几何",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "聚合失败，未生成有效几何", "data": ""})
 		return
 	}
-
-	// 删除MVT缓存
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        jsonData.IDs,
-	}
+	// 获取原要素GeoJSON（事务提交前）
+	getdata2 := getDatas{TableName: LayerName, ID: jsonData.IDs}
 	oldGeo := GetGeos(getdata2)
 	oldGeojson, _ := json.Marshal(oldGeo)
-
 	delObjJSON := DelIDGen(oldGeo)
-
-	// 6. 删除原要素
+	// 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 7. 提交事务
+	// 提交事务
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交事务失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	GetPdata := getData{
-		TableName: LayerName,
-		ID:        aggregatorResult.ID,
-	}
+	GetPdata := getData{TableName: LayerName, ID: aggregatorResult.ID}
 	newGeo := GetGeo(GetPdata)
 	newGeoJson, _ := json.Marshal(newGeo)
+	// ========== 维护映射表 ==========
+	session := GetOrCreateSession(DB, LayerName, "")
+	MarkMappingDeleted(DB, LayerName, jsonData.IDs)
+	CreateDerivedMappingsMultiParent(DB, LayerName, []int32{aggregatorResult.ID}, jsonData.IDs, session.ID)
+	// ========== 记录操作 ==========
+	inputIDs := MarshalIDs(jsonData.IDs)
+	outputIDs := MarshalIDs([]int32{aggregatorResult.ID})
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
 		Type:         "要素聚合",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeoJson,
 		DelObjectIDs: delObjJSON,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
-
 	DB.Create(&RecordResult)
-
-	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": fmt.Sprintf("成功聚合%d个要素为1个Multi类型要素，使用ID(%d)的属性", len(jsonData.IDs), jsonData.MainID),
@@ -2782,160 +2031,96 @@ type AreaOnAreaData struct {
 	IDs       []int32 `json:"ids"`
 }
 
-// 面要素去重叠
-// 面要素去重叠
 func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 	var jsonData AreaOnAreaData
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": err.Error(), "data": ""})
 		return
 	}
-
 	if len(jsonData.IDs) < 2 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "至少需要选择2个要素进行叠加分析",
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "至少需要选择2个要素进行叠加分析", "data": ""})
 		return
 	}
-
 	DB := models.DB
 	LayerName := jsonData.LayerName
 	EXT := GetFileExt(LayerName)
-
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": result.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 500, "message": result.Error.Error(), "data": ""})
 		return
 	}
-
 	tx := DB.Begin()
 	if tx.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "开启事务失败: " + tx.Error.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开启事务失败: " + tx.Error.Error(), "data": ""})
 		return
 	}
-
-	// ========== 使用 advisory lock 防止并发冲突 ==========
 	lockSQL := fmt.Sprintf(`SELECT pg_advisory_xact_lock(hashtext('%s_id_lock'))`, LayerName)
 	if err := tx.Exec(lockSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取锁失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取锁失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	idList := make([]string, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
 		idList[i] = fmt.Sprintf("%d", id)
 	}
 	idsStr := strings.Join(idList, ",")
-
-	// 1. 验证所有ID是否存在
+	// 验证所有ID
 	var count int64
 	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "验证要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "验证要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if int(count) != len(jsonData.IDs) {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": fmt.Sprintf("部分ID不存在，期望%d个，实际找到%d个", len(jsonData.IDs), count), "data": ""})
 		return
 	}
-
-	// 2. 检查几何类型是否都是面
+	// 检查几何类型
 	type GeometryTypeData struct {
 		ID   int32
 		Type string
 	}
 	var geomTypes []GeometryTypeData
-	checkGeomSQL := fmt.Sprintf(`
-		SELECT id, ST_GeometryType(geom) AS type FROM "%s" WHERE id IN (%s)
-	`, LayerName, idsStr)
+	checkGeomSQL := fmt.Sprintf(`SELECT id, ST_GeometryType(geom) AS type FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Raw(checkGeomSQL).Scan(&geomTypes).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取几何类型失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取几何类型失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	nonPolygons := []int32{}
 	for _, geom := range geomTypes {
 		if geom.Type != "ST_Polygon" && geom.Type != "ST_MultiPolygon" {
 			nonPolygons = append(nonPolygons, geom.ID)
 		}
 	}
-
 	if len(nonPolygons) > 0 {
 		tx.Rollback()
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": fmt.Sprintf("以下ID对应的要素不是面类型，无法进行叠加分析: %v", nonPolygons),
-			"data":    "",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": fmt.Sprintf("以下ID不是面类型: %v", nonPolygons), "data": ""})
 		return
 	}
-
-	// ========== 3. 获取附加列名（用于构建INSERT语句） ==========
+	// 获取表结构
 	var sampleFeature map[string]interface{}
 	getSampleSQL := fmt.Sprintf(`SELECT * FROM "%s" LIMIT 1`, LayerName)
 	if err := tx.Raw(getSampleSQL).Scan(&sampleFeature).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取表结构失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取表结构失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 获取所有附加列（排除id和geom）
 	var additionalColumns []string
 	for key := range sampleFeature {
 		if key != "id" && key != "geom" {
 			additionalColumns = append(additionalColumns, key)
 		}
 	}
-
-	// 4. 获取原始要素的GeoJSON（用于记录）
-	getdata := getDatas{
-		TableName: LayerName,
-		ID:        jsonData.IDs,
-	}
+	// 获取原始要素GeoJSON
+	getdata := getDatas{TableName: LayerName, ID: jsonData.IDs}
 	oldGeo := GetGeos(getdata)
 	oldGeojson, _ := json.Marshal(oldGeo)
-
-	// 删除MVT缓存（原要素）
+	// 删除MVT缓存
 	if len(oldGeo.Features) >= 10 {
 		pgmvt.DelMVTALL(DB, jsonData.LayerName)
 	} else {
@@ -2943,131 +2128,79 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 			pgmvt.DelMVT(DB, jsonData.LayerName, feature.Geometry)
 		}
 	}
-
-	// ========== 5. 获取当前表的最大ID和对应的映射字段最大值 ==========
+	// 获取最大ID和映射字段最大值
 	var maxID int32
 	getMaxIDSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) FROM "%s"`, LayerName)
 	if err := tx.Raw(getMaxIDSQL).Scan(&maxID).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "获取最大ID失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "获取最大ID失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 根据文件扩展名确定映射字段
 	var mappingField string
 	var maxMappingValue int32
-
 	if EXT == ".shp" {
 		mappingField = "objectid"
 	} else if EXT == ".gdb" {
 		mappingField = "fid"
 	}
-
 	delObjectIDs := DelIDGen(oldGeo)
-
-	// 如果有映射字段，获取其最大值
 	if mappingField != "" {
 		getMaxMappingSQL := fmt.Sprintf(`SELECT COALESCE(MAX("%s"), 0) FROM "%s"`, mappingField, LayerName)
 		if tx.Raw(getMaxMappingSQL).Scan(&maxMappingValue).Error != nil {
 			maxMappingValue = 0
 		}
 	}
-
+	// GDAL叠加分析
 	gdallayer, err := Gogeo.ConvertGeoJSONToGDALLayer(&oldGeo, LayerName)
 	if err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "转换GeoJSON失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "转换GeoJSON失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	analysisGDAL, err := Gogeo.AreaOnAreaAnalysis(gdallayer, 0.00000001)
 	if err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "叠加分析失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "叠加分析失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 将GDAL结果转换为GeoJSON
 	analysisGeoJSON, err := Gogeo.LayerToGeoJSON(analysisGDAL)
 	if err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "转换分析结果失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "转换分析结果失败: " + err.Error(), "data": ""})
 		return
 	}
-
 	if len(analysisGeoJSON.Features) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "叠加分析失败，未生成任何结果几何",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "叠加分析失败，未生成任何结果几何", "data": ""})
 		return
 	}
-
-	// ========== 7. 插入新要素（从analysisGeoJSON获取每个要素的属性） ==========
+	// 插入新要素
 	newFeatureIDs := make([]int32, 0)
-
-	// 构建列名（包括id, geom和所有附加列）
 	insertCols := "id, geom"
 	for _, col := range additionalColumns {
 		insertCols += fmt.Sprintf(`, "%s"`, col)
 	}
-
-	// 构建INSERT语句
 	insertSQL := fmt.Sprintf(`INSERT INTO "%s" (%s) VALUES `, LayerName, insertCols)
 	valueStrings := make([]string, 0)
-
 	for i, feature := range analysisGeoJSON.Features {
 		newID := maxID + int32(i) + 1
 		newFeatureIDs = append(newFeatureIDs, newID)
-
-		// 使用 geojson.NewGeometry 包装 orb.Geometry
 		geojsonGeom := geojson.NewGeometry(feature.Geometry)
 		geomBytes, err := json.Marshal(geojsonGeom)
 		if err != nil {
 			tx.Rollback()
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"code":    500,
-				"message": fmt.Sprintf("序列化几何对象失败: %v", err),
-				"data":    "",
-			})
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": fmt.Sprintf("序列化几何对象失败: %v", err), "data": ""})
 			return
 		}
-
 		geomStr := string(geomBytes)
 		geomStr = strings.ReplaceAll(geomStr, "'", "''")
-
-		// 构建值列表
 		valueList := fmt.Sprintf(`%d, ST_GeomFromGeoJSON('%s')`, newID, geomStr)
-
-		// ✅ 关键修复：从当前要素的Properties获取属性
 		featureProps := feature.Properties
-
-		// 添加所有附加列的值
 		for _, col := range additionalColumns {
 			if mappingField != "" && col == mappingField {
-				// 使用映射字段的自增值（objectid 或 fid）
 				newMappingValue := maxMappingValue + int32(i) + 1
 				valueList += fmt.Sprintf(`, %d`, newMappingValue)
 			} else {
-				// ✅ 从当前要素的属性中获取值
 				if val, exists := featureProps[col]; exists && val != nil {
 					valueList += formatFieldValue(val)
 				} else {
@@ -3075,62 +2208,55 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 				}
 			}
 		}
-
 		valueStrings = append(valueStrings, fmt.Sprintf(`(%s)`, valueList))
 	}
-
 	if len(valueStrings) == 0 {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "无法生成有效的插入语句",
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "无法生成有效的插入语句", "data": ""})
 		return
 	}
-
 	insertSQL += strings.Join(valueStrings, ",")
 	if err := tx.Exec(insertSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "插入新要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "插入新要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 8. 删除原要素
+	// 删除原要素
 	deleteSQL := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, LayerName, idsStr)
 	if err := tx.Exec(deleteSQL).Error; err != nil {
 		tx.Rollback()
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除原要素失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除原要素失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 9. 提交事务
+	// 提交事务
 	if err := tx.Commit().Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "提交事务失败: " + err.Error(),
-			"data":    "",
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交事务失败: " + err.Error(), "data": ""})
 		return
 	}
-
-	// 10. 获取分析后的要素信息（用于记录）
-	getdata2 := getDatas{
-		TableName: LayerName,
-		ID:        newFeatureIDs,
-	}
+	// 获取新要素信息
+	getdata2 := getDatas{TableName: LayerName, ID: newFeatureIDs}
 	newGeo := GetGeos(getdata2)
 	newGeojson, _ := json.Marshal(newGeo)
-
-	// 11. 统计重叠和非重叠区域
+	// ========== 维护映射表 ==========
+	session := GetOrCreateSession(DB, LayerName, "")
+	MarkMappingDeleted(DB, LayerName, jsonData.IDs)
+	// 为每个新要素创建派生映射
+	for _, nid := range newFeatureIDs {
+		mapping := models.OriginMapping{
+			TableName:       LayerName,
+			PostGISID:       nid,
+			SourceObjectID:  -1,
+			Origin:          "derived",
+			ParentPostGISID: jsonData.IDs[0],
+			SessionID:       session.ID,
+			IsDeleted:       false,
+		}
+		DB.Create(&mapping)
+	}
+	// ========== 记录操作 ==========
+	inputIDs := MarshalIDs(jsonData.IDs)
+	outputIDs := MarshalIDs(newFeatureIDs)
+	// 统计重叠和非重叠
 	overlapCount := 0
 	nonOverlapCount := 0
 	for _, feature := range analysisGeoJSON.Features {
@@ -3143,18 +2269,20 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		}
 	}
 
-	// 12. 记录操作
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
 		Type:         "面要素去重叠",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeojson,
 		DelObjectIDs: delObjectIDs,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
 	DB.Create(&RecordResult)
 
-	// 13. 构建返回数据
 	returnData := make([]gin.H, len(newGeo.Features))
 	for i, feature := range newGeo.Features {
 		returnData[i] = gin.H{
@@ -3165,7 +2293,6 @@ func (uc *UserController) AreaOnAreaAnalysis(c *gin.Context) {
 		}
 	}
 
-	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code": 200,
 		"message": fmt.Sprintf("成功完成叠加分析,生成%d个新要素（重叠区域%d个，非重叠区域%d个）",
@@ -3240,260 +2367,6 @@ func GetFileExt(TableName string) string {
 		return ""
 	}
 	return ext
-}
-
-// 同步编辑到文件
-func (uc *UserController) SyncToFile(c *gin.Context) {
-	TableName := c.Query("TableName")
-
-	DB := models.DB
-	var Schema models.MySchema
-	if err := DB.Where("en = ?", TableName).First(&Schema).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": fmt.Sprintf("未找到图层配置: %v", err),
-		})
-		return
-	}
-
-	var sourceConfigs []pgmvt.SourceConfig
-
-	if err := json.Unmarshal(Schema.Source, &sourceConfigs); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": fmt.Sprintf("解析源配置失败: %v", err),
-		})
-		return
-	}
-	sourceConfig := sourceConfigs[0]
-	if sourceConfig.SourcePath == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "该图层没有绑定源文件",
-		})
-		return
-	}
-
-	var GeoRecords []models.GeoRecord
-	DB.Where("table_name = ?", TableName).Find(&GeoRecords)
-
-	// 判断源头文件是gdb还是shp
-	Soucepath := sourceConfig.SourcePath
-	SouceLayer := sourceConfig.SourceLayerName
-	AttMap := sourceConfig.AttMap
-
-	// 获取文件扩展名
-	ext := strings.ToLower(filepath.Ext(Soucepath))
-
-	if ext != ".shp" && ext != ".gdb" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    500,
-			"message": "不支持的文件格式,仅支持GDB和SHP",
-		})
-		return
-	}
-
-	var totalDeleted int
-	var totalInserted int
-	var errors []string
-
-	// 处理每条记录
-	if len(GeoRecords) >= 1 {
-		for _, record := range GeoRecords {
-			// 1. 处理删除操作
-			if len(record.DelObjectIDs) > 0 {
-				var delIDs []int32
-				if err := json.Unmarshal(record.DelObjectIDs, &delIDs); err != nil {
-					errors = append(errors, fmt.Sprintf("解析DelObjectIDs失败: %v", err))
-					continue
-				}
-
-				if len(delIDs) > 0 {
-					// 构建WHERE子句 - 使用源文件的关键字段
-					whereClause := buildWhereClause(sourceConfig.KeyAttribute, delIDs)
-
-					var deletedCount int
-					var err error
-
-					if ext == ".shp" {
-						// Shapefile删除
-						deletedCount, err = Gogeo.DeleteShapeFeaturesByFilter(Soucepath, whereClause)
-					}
-					if ext == ".gdb" {
-						deletedCount, err = Gogeo.DeleteFeaturesByFilter(Soucepath, SouceLayer, whereClause)
-					}
-
-					if err != nil {
-						errors = append(errors, fmt.Sprintf("删除要素失败: %v", err))
-						continue
-					}
-					totalDeleted += deletedCount
-				}
-			}
-
-			// 2. 处理新增/更新操作
-			if len(record.NewGeojson) > 0 {
-				var fc geojson.FeatureCollection
-				if err := json.Unmarshal(record.NewGeojson, &fc); err != nil {
-					errors = append(errors, fmt.Sprintf("解析NewGeojson失败: %v", err))
-					continue
-				}
-
-				if len(fc.Features) > 0 {
-					// **关键步骤: 将GeoJSON字段名映射回源文件字段名**
-					mappedFC, err := mapFieldsToSource(&fc, AttMap)
-					if err != nil {
-						errors = append(errors, fmt.Sprintf("字段映射失败: %v", err))
-						continue
-					}
-
-					// 转换GeoJSON为GDALLayer
-					gdalLayer, err := Gogeo.ConvertGeoJSONToGDALLayer(mappedFC, SouceLayer)
-					if err != nil {
-						errors = append(errors, fmt.Sprintf("转换GeoJSON失败: %v", err))
-						continue
-					}
-
-					// 插入选项配置
-					options := &Gogeo.InsertOptions{
-						StrictMode:          false, // 非严格模式,允许部分失败
-						SyncInterval:        100,   // 每100条同步一次
-						SkipInvalidGeometry: true,  // 跳过无效几何
-						CreateMissingFields: false, // 不创建缺失字段(使用现有字段)
-					}
-
-					var insertErr error
-					if ext == ".shp" {
-						// 插入到Shapefile
-						insertErr = Gogeo.InsertLayerToShapefile(gdalLayer, Soucepath, options)
-					}
-					if ext == ".gdb" {
-						// 插入到GDB
-						insertErr = Gogeo.InsertLayerToGDB(gdalLayer, Soucepath, SouceLayer, options)
-					}
-
-					if insertErr != nil {
-						errors = append(errors, fmt.Sprintf("插入要素失败: %v", insertErr))
-						continue
-					}
-					totalInserted += len(fc.Features)
-
-					// 清理资源
-					if gdalLayer != nil {
-						gdalLayer.Close() // 假设有Close方法
-					}
-				}
-			}
-		}
-	}
-
-	//同步字段操作
-	var FieldRecord []models.FieldRecord
-	DB.Where("table_name = ?", TableName).Find(&FieldRecord)
-	postGISConfig := &Gogeo.PostGISConfig{
-		Host:     config.MainConfig.Host,
-		Port:     config.MainConfig.Port,
-		Database: config.MainConfig.Dbname,
-		User:     config.MainConfig.Username,
-		Password: config.MainConfig.Password,
-		Schema:   "public",
-		Table:    TableName,
-	}
-	if len(FieldRecord) >= 1 {
-		if ext == ".gdb" {
-			for _, record := range FieldRecord {
-				if record.Type == "value" {
-					options := &Gogeo.SyncFieldOptions{
-						SourceField:      record.OldFieldName,                   // PostGIS中的字段名
-						TargetField:      mapField(record.OldFieldName, AttMap), // GDB中的字段名（可选，默认同名）
-						SourceIDField:    "fid",                                 // PostGIS的ID字段（小写）
-						TargetIDField:    "FID",
-						BatchSize:        1000,
-						UseTransaction:   true,
-						UpdateNullValues: false,
-					}
-					_, err := Gogeo.SyncFieldFromPostGIS(
-						postGISConfig,
-						sourceConfig.SourcePath,
-						SouceLayer,
-						options,
-					)
-					if err != nil {
-						fmt.Printf("同步失败: %v\n", err)
-					}
-				}
-				if record.Type == "add" {
-					gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
-					fieldDef := Gogeo.FieldDefinition{
-						Name:      record.NewFieldName,
-						Type:      gdbFieldType,
-						Width:     width,
-						Precision: precision,
-						Nullable:  true,
-						Default:   nil,
-					}
-					err := Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
-					if err != nil {
-						log.Fatal(err)
-					}
-				}
-				if record.Type == "modify" {
-					// 1. 删除旧字段
-					oldFieldName := mapField(record.OldFieldName, AttMap)
-					err := Gogeo.DeleteField(Soucepath, SouceLayer, oldFieldName)
-					if err != nil {
-						errors = append(errors, fmt.Sprintf("删除旧字段 %s 失败: %v", oldFieldName, err))
-						continue
-					}
-
-					// 2. 创建新字段
-					gdbFieldType, width, precision := mapPostGISTypeToGDB(record.NewFieldType)
-
-					fieldDef := Gogeo.FieldDefinition{
-						Name:      record.NewFieldName,
-						Type:      gdbFieldType,
-						Width:     width,
-						Precision: precision,
-						Nullable:  true,
-						Default:   nil,
-					}
-
-					err = Gogeo.AddField(Soucepath, SouceLayer, fieldDef)
-					if err != nil {
-						errors = append(errors, fmt.Sprintf("创建新字段 %s 失败: %v", record.NewFieldName, err))
-					} else {
-						fmt.Printf("成功修改字段: %s -> %s\n", oldFieldName, record.NewFieldName)
-					}
-				}
-				if record.Type == "delete" {
-					Gogeo.DeleteField(Soucepath, SouceLayer, mapField(record.OldFieldName, AttMap))
-				}
-
-			}
-
-		}
-
-	}
-
-	// 同步完成后,可选择清空GeoRecord记录
-	DB.Where("table_name = ?", TableName).Delete(&models.GeoRecord{})
-	DB.Where("table_name = ?", TableName).Delete(&models.FieldRecord{})
-	// 构建响应
-	response := gin.H{
-		"code":           200,
-		"message":        "同步完成",
-		"total_deleted":  totalDeleted,
-		"total_inserted": totalInserted,
-		"records_count":  len(GeoRecords),
-	}
-
-	if len(errors) > 0 {
-		response["code"] = 207 // 部分成功
-		response["message"] = "同步完成,但有部分错误"
-		response["errors"] = errors
-	}
-
-	c.JSON(http.StatusOK, response)
 }
 
 // buildWhereClause 构建WHERE子句
@@ -3761,96 +2634,58 @@ type delDatas struct {
 func (uc *UserController) DelGeosToSchema(c *gin.Context) {
 	var jsonData delDatas
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "请求参数错误",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请求参数错误", "error": err.Error()})
 		return
 	}
-
-	// 验证参数
 	if len(jsonData.IDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "至少需要选择1个要素进行删除",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "至少需要选择1个要素进行删除"})
 		return
 	}
-
 	DB := models.DB
-
-	// 获取所有要删除的要素
-	getdata := getDatas{
-		TableName: jsonData.TableName,
-		ID:        jsonData.IDs,
-	}
+	getdata := getDatas{TableName: jsonData.TableName, ID: jsonData.IDs}
 	geos := GetGeos(getdata)
-
 	if len(geos.Features) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    404,
-			"message": "未找到指定的要素",
-		})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 404, "message": "未找到指定的要素"})
 		return
 	}
-
-	// 构建ID列表字符串
 	idList := make([]string, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
 		idList[i] = fmt.Sprintf("%d", id)
 	}
 	idsStr := strings.Join(idList, ",")
-
-	// 执行批量删除
 	sql := fmt.Sprintf(`DELETE FROM "%s" WHERE id IN (%s)`, jsonData.TableName, idsStr)
 	result := DB.Exec(sql)
-
 	if err := result.Error; err != nil {
 		log.Printf("Failed to delete records: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "删除要素失败",
-			"error":   err.Error(),
-		})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除要素失败", "error": err.Error()})
 		return
 	}
-
 	rowsAffected := result.RowsAffected
 	if rowsAffected == 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    200,
-			"message": "没有要素被删除",
-			"count":   0,
-		})
+		c.JSON(http.StatusOK, gin.H{"code": 200, "message": "没有要素被删除", "count": 0})
 		return
 	}
-
-	// 删除MVT缓存
 	pgmvt.DelMVTALL(DB, jsonData.TableName)
-
-	// 生成删除的ObjectIDs
+	// 创建会话 + 维护映射
+	session := GetOrCreateSession(DB, jsonData.TableName, jsonData.Username)
+	MarkMappingDeleted(DB, jsonData.TableName, jsonData.IDs)
 	delObjJSON := DelIDGen(geos)
 	OldGeojson, _ := json.Marshal(geos)
-
-	// 记录操作日志
 	recordResult := models.GeoRecord{
 		TableName:    jsonData.TableName,
 		Username:     jsonData.Username,
 		Type:         "批量要素删除",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		DelObjectIDs: delObjJSON,
 		OldGeojson:   OldGeojson,
 		BZ:           jsonData.BZ,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     MarshalIDs(jsonData.IDs),
+		OutputIDs:    MarshalIDs([]int32{}),
 	}
-
 	if err := DB.Create(&recordResult).Error; err != nil {
 		log.Printf("Failed to create geo record: %v", err)
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"code":    200,
-		"message": fmt.Sprintf("成功删除%d个要素", rowsAffected),
-		"count":   rowsAffected,
-	})
+	c.JSON(http.StatusOK, gin.H{"code": 200, "message": fmt.Sprintf("成功删除%d个要素", rowsAffected), "count": rowsAffected})
 }

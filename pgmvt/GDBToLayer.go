@@ -440,6 +440,16 @@ type SourceConfig struct {
 	AttMap          []ProcessedFieldInfo `json:"att_map"`
 }
 
+func InitOriginMapping(db *gorm.DB, tableName string, keyField string) error {
+	// keyField: "objectid" for shp, "fid" for gdb
+	sql := fmt.Sprintf(`
+        INSERT INTO origin_mappings (table_name, post_gisid, source_object_id, origin, session_id, is_deleted)
+        SELECT '%s', id, "%s", 'original', 0, false
+        FROM "%s"
+    `, tableName, keyField, tableName)
+	return db.Exec(sql).Error
+}
+
 // AddGDBDirectlyOptimized 优化后的GDB导入函数
 func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, targetLayers []string, Main string, Color string, Opacity string, Userunits string, LineWidth string) []string {
 	layers, err := Gogeo.GDBToPostGIS(gdbPath, targetLayers)
@@ -511,8 +521,10 @@ func AddGDBDirectlyOptimized(DB *gorm.DB, gdbPath string, targetLayers []string,
 		// 处理schema记录，使用tableName作为EN，layerCN作为CN，fullMain作为Main
 		geoType := mapGeoTypeToStandard(layer.GeoType)
 		handleSchemaRecord(DB, tableName, layerCN, fullMain, Color, Opacity, geoType, replacer, Userunits, LineWidth, SC)
+		InitOriginMapping(DB, tableName, "fid")
 		processedTables = append(processedTables, tableName)
 	}
+
 	return processedTables
 }
 

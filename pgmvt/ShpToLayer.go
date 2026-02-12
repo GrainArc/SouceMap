@@ -1011,6 +1011,7 @@ func AddSHPDirectlyOptimized(DB *gorm.DB, shpPath string, EN, CN, Main string, C
 	SC.AttMap = attmap
 	// 处理schema记录
 	geoType := mapGeoTypeToStandard(shpLayer.GeoType)
+	InitOriginMapping(DB, tableName, "objectid")
 	handleSchemaRecord(DB, tableName, CN, Main, Color, Opacity, geoType, replacer, Userunits, LineWidth, SC)
 	processedTables = tableName
 

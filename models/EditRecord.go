@@ -13,6 +13,11 @@ type GeoRecord struct {
 	OldGeojson   datatypes.JSON `gorm:"type:jsonb"`
 	NewGeojson   datatypes.JSON `gorm:"type:jsonb"`
 	DelObjectIDs datatypes.JSON `gorm:"type:jsonb"`
+	// 新增
+	SessionID int64          `gorm:"index"`      // 所属编辑会话
+	SeqNo     int            `gorm:"default:0"`  // 会话内操作序号，用于有序回退
+	InputIDs  datatypes.JSON `gorm:"type:jsonb"` // 输入的PostGIS IDs
+	OutputIDs datatypes.JSON `gorm:"type:jsonb"`
 }
 
 type FieldRecord struct {
