@@ -443,7 +443,7 @@ type SourceConfig struct {
 func InitOriginMapping(db *gorm.DB, tableName string, keyField string) error {
 	// keyField: "objectid" for shp, "fid" for gdb
 	sql := fmt.Sprintf(`
-        INSERT INTO origin_mappings (table_name, post_gisid, source_object_id, origin, session_id, is_deleted)
+        INSERT INTO origin_mapping (table_name, post_gisid, source_object_id, origin, session_id, is_deleted)
         SELECT '%s', id, "%s", 'original', 0, false
         FROM "%s"
     `, tableName, keyField, tableName)
