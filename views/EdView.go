@@ -283,9 +283,10 @@ func DelIDGen(geom geojson.FeatureCollection) []byte {
 
 // 图层要素修改
 
+// ChangeGeoToSchema 图层要素修改
 func (uc *UserController) ChangeGeoToSchema(c *gin.Context) {
 	var jsonData geoData
-	c.BindJSON(&jsonData) //将前端geojson转换为geo对象s
+	c.BindJSON(&jsonData)
 	DB := models.DB
 	getData := getData{ID: jsonData.ID, TableName: jsonData.TableName}
 	geo := GetGeo(getData)
@@ -293,15 +294,26 @@ func (uc *UserController) ChangeGeoToSchema(c *gin.Context) {
 	methods.UpdateGeojsonToTable(DB, jsonData.GeoJson, jsonData.TableName, jsonData.ID)
 	NewGeojson, _ := json.MarshalIndent(jsonData.GeoJson, "", "  ")
 	delObjJSON := DelIDGen(geo)
-	result := models.GeoRecord{TableName: jsonData.TableName,
+
+	session := GetOrCreateSession(DB, jsonData.TableName, jsonData.Username)
+	inputIDs := MarshalIDs([]int32{jsonData.ID})
+	outputIDs := MarshalIDs([]int32{jsonData.ID})
+
+	result := models.GeoRecord{
+		TableName:    jsonData.TableName,
 		GeoID:        jsonData.ID,
 		Username:     jsonData.Username,
 		Type:         "要素修改",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   OldGeojson,
 		NewGeojson:   NewGeojson,
 		DelObjectIDs: delObjJSON,
-		BZ:           jsonData.BZ}
+		BZ:           jsonData.BZ,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
+	}
 	err := DB.Create(&result).Error
 	if err != nil {
 		log.Printf("Failed to create geo record: %v", err)
@@ -662,7 +674,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 		// 数据库操作失败，返回500内部错误
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,                  // 状态码：服务器内部错误
-			"message": "删除记录失败",             // 错误提示信息
+			"message": "删除记录失败",       // 错误提示信息
 			"error":   result.Error.Error(), // 具体错误信息（生产环境可考虑隐藏）
 		})
 		return // 提前返回
@@ -672,9 +684,9 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		// 没有找到匹配的记录
 		c.JSON(http.StatusOK, gin.H{
-			"code":    200,          // 状态码：请求成功
+			"code":    200,                    // 状态码：请求成功
 			"message": "没有找到该用户的记录", // 提示信息
-			"count":   0,            // 删除的记录数量
+			"count":   0,                      // 删除的记录数量
 		})
 		return // 提前返回
 	}
@@ -682,7 +694,7 @@ func (uc *UserController) DelChangeRecord(c *gin.Context) {
 	// 删除成功，返回成功响应
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,                 // 状态码：请求成功
-		"message": "清空记录成功",            // 成功提示信息
+		"message": "清空记录成功",      // 成功提示信息
 		"count":   result.RowsAffected, // 返回实际删除的记录数量
 	})
 }
@@ -1824,6 +1836,7 @@ func degreesToMetersLon(degrees float64, latitude float64) float64 {
 	return degrees * DegreesToRadians * N * math.Cos(latRad)
 }
 
+// OffsetFeature 要素平移
 func (uc *UserController) OffsetFeature(c *gin.Context) {
 	var jsonData OffsetData
 	if err := c.ShouldBindJSON(&jsonData); err != nil {
@@ -1835,7 +1848,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 验证参数
 	if len(jsonData.IDs) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"code":    400,
@@ -1857,7 +1869,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	DB := models.DB
 	LayerName := jsonData.LayerName
 
-	// 查询schema信息
 	var schema models.MySchema
 	result := DB.Where("en = ?", LayerName).First(&schema)
 	if result.Error != nil {
@@ -1869,9 +1880,8 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// ========== 新增：获取文件扩展名并确定映射字段 ==========
 	idFieldName := "id"
-	// 开启事务
+
 	tx := DB.Begin()
 	if tx.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1882,14 +1892,12 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 构建ID列表字符串
 	idList := make([]string, len(jsonData.IDs))
 	for i, id := range jsonData.IDs {
 		idList[i] = fmt.Sprintf("%d", id)
 	}
 	idsStr := strings.Join(idList, ",")
 
-	// 1. 验证所有ID是否存在
 	var count int64
 	checkSQL := fmt.Sprintf(`SELECT COUNT(*) FROM "%s" WHERE "%s" IN (%s)`, LayerName, "id", idsStr)
 	if err := tx.Raw(checkSQL).Count(&count).Error; err != nil {
@@ -1912,7 +1920,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 2. 获取原始要素的GeoJSON（用于记录）
 	getdata2 := getDatas{
 		TableName: LayerName,
 		ID:        jsonData.IDs,
@@ -1920,8 +1927,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	oldGeo := GetGeos(getdata2)
 	oldGeojson, _ := json.Marshal(oldGeo)
 
-	// ========== 关键改动：米转度数 ==========
-	// 获取要素的中心纬度，用于计算经度偏移
 	var centerLat float64
 	latSQL := fmt.Sprintf(`
 		SELECT AVG(ST_Y(ST_Centroid(geom))) FROM "%s" WHERE "%s" IN (%s)
@@ -1937,16 +1942,13 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 转换单位：米 -> 度数
 	offsetLat := metersToDegreesLat(jsonData.YOffset, centerLat)
 	offsetLon := metersToDegreeeLon(jsonData.XOffset, centerLat)
 
-	// 3. 执行平移操作（使用转换后的度数）
 	offsetSQL := fmt.Sprintf(`
 		UPDATE "%s"
 		SET geom = ST_Translate(geom, %f, %f)
-		WHERE "%s" IN (%s)
-		RETURNING "%s", ST_AsGeoJSON(geom) AS geojson
+		WHERE "%s" IN (%s)RETURNING "%s", ST_AsGeoJSON(geom) AS geojson
 	`, LayerName, offsetLon, offsetLat, idFieldName, idsStr, idFieldName)
 
 	type OffsetResult struct {
@@ -1965,7 +1967,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 检查是否成功更新
 	if len(offsetResults) == 0 {
 		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -1976,10 +1977,8 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 4. 删除MVT缓存
 	pgmvt.DelMVTALL(DB, jsonData.LayerName)
 
-	// 5. 提交事务
 	if err := tx.Commit().Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"code":    500,
@@ -1989,7 +1988,6 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 		return
 	}
 
-	// 6. 获取更新后的要素信息
 	getdata3 := getDatas{
 		TableName: LayerName,
 		ID:        jsonData.IDs,
@@ -1998,19 +1996,25 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 	newGeojson, _ := json.Marshal(newGeo)
 
 	delObjectIDs := DelIDGen(oldGeo)
-	// 8. 记录操作
+
+	session := GetOrCreateSession(DB, LayerName, "")
+	inputIDs := MarshalIDs(jsonData.IDs)
+	outputIDs := MarshalIDs(jsonData.IDs)
+
 	RecordResult := models.GeoRecord{
 		TableName:    jsonData.LayerName,
 		Type:         "要素平移",
-		Date:         time.Now().Format("2006-01-02 15:04:05"),
+		Date:         timeNowStr(),
 		OldGeojson:   oldGeojson,
 		NewGeojson:   newGeojson,
 		DelObjectIDs: delObjectIDs,
+		SessionID:    session.ID,
+		SeqNo:        GetNextSeqNo(DB, session.ID),
+		InputIDs:     inputIDs,
+		OutputIDs:    outputIDs,
 	}
-
 	DB.Create(&RecordResult)
 
-	// 返回成功结果
 	c.JSON(http.StatusOK, gin.H{
 		"code":    200,
 		"message": fmt.Sprintf("成功平移%d个要素，X偏移: %f米, Y偏移: %f米", len(jsonData.IDs), jsonData.XOffset, jsonData.YOffset),
@@ -2019,8 +2023,7 @@ func (uc *UserController) OffsetFeature(c *gin.Context) {
 			"offset_x_m": jsonData.XOffset,
 			"offset_y_m": jsonData.YOffset,
 			"offset_lon": offsetLon,
-			"offset_lat": offsetLat,
-			"id_field":   idFieldName,
+			"offset_lat": offsetLat, "id_field": idFieldName,
 		},
 	})
 }
