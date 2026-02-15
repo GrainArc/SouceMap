@@ -805,7 +805,7 @@ func (uc *UserController) DelSchema(c *gin.Context) {
 			return
 		}
 	}
-
+	DB.Where("table_name = ?", TableName).Delete(&models.OriginMapping{})
 	// 删除表
 	sql := fmt.Sprintf("DROP TABLE IF EXISTS %s", TableNames)
 	if err := DB.Exec(sql).Error; err != nil {
