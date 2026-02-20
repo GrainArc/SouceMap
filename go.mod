@@ -70,3 +70,7 @@ require (
 	gorm.io/driver/sqlite v1.6.0 // indirect
 	gorm.io/gorm v1.31.1 // indirect
 )
+
+require github.com/GrainArc/Gogeo v1.6.13
+replace github.com/GrainArc/Gogeo => D:/GO/GolandProjects/GdalProj/Gogeo
+
